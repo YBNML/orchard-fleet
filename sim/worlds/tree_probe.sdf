@@ -1,0 +1,163 @@
+<?xml version="1.0" ?>
+<!--
+  나무 메시 로드 검증 월드 (단계 1b)
+
+  확인 대상:
+   1. gz-sim(assimp 5.3.1)이 Blender 4.0 이 뽑은 .glb 를 읽는가
+   2. <submesh> 로 glb 안의 개별 오브젝트(trunk/feathers/leaf_*)를 선택할 수 있는가
+      → 되면 glb 한 개로 부위별 semantic 라벨을 붙일 수 있다
+   3. gpu_lidar 가 잎 카드와 과실에서 점을 돌려주는가
+      (gpu_lidar 는 렌더링 기반이라 collision 없이 visual 만으로 맞아야 한다)
+
+  왼쪽: tree_body.glb 를 submesh 4개로 분리 + 부위별 Label
+  오른쪽: tree_full.glb 통짜 (배경 행 방식)
+-->
+<sdf version="1.9">
+  <world name="tree_probe">
+
+    <plugin filename="gz-sim-physics-system"           name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"     name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system"           name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <physics name="fast" type="dart">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <scene>
+      <ambient>0.7 0.7 0.7 1</ambient>
+      <background>0.25 0.35 0.55</background>
+      <shadows>false</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.2 0.4 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.4 0.42 0.3 1</ambient><diffuse>0.4 0.42 0.3 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>10</label></plugin>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ================================================================= -->
+    <!-- 좌 : tree_body.glb 를 submesh 로 쪼개고 부위별 Label              -->
+    <!-- ================================================================= -->
+    <model name="tree_split">
+      <static>true</static>
+      <pose>-1.2 0 0 0 0 0</pose>
+      <link name="link">
+        <visual name="trunk">
+          <geometry><mesh>
+            <uri>model://apple_tree_s07_0042/meshes/tree_body.glb</uri>
+            <submesh><name>trunk</name></submesh>
+          </mesh></geometry>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>20</label></plugin>
+        </visual>
+        <visual name="feathers">
+          <geometry><mesh>
+            <uri>model://apple_tree_s07_0042/meshes/tree_body.glb</uri>
+            <submesh><name>feathers</name></submesh>
+          </mesh></geometry>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>21</label></plugin>
+        </visual>
+        <visual name="leaf_healthy">
+          <geometry><mesh>
+            <uri>model://apple_tree_s07_0042/meshes/tree_body.glb</uri>
+            <submesh><name>leaf_healthy</name></submesh>
+          </mesh></geometry>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>30</label></plugin>
+        </visual>
+        <visual name="leaf_diseased">
+          <geometry><mesh>
+            <uri>model://apple_tree_s07_0042/meshes/tree_body.glb</uri>
+            <submesh><name>leaf_diseased</name></submesh>
+          </mesh></geometry>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>31</label></plugin>
+        </visual>
+        <!-- 주간만 충돌 프리미티브. 잎·과실에는 collision 을 두지 않는다 (설계서 §9-1) -->
+        <collision name="trunk_collision">
+          <pose>0 0 1.6 0 0 0</pose>
+          <geometry><cylinder><radius>0.06</radius><length>3.2</length></cylinder></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ================================================================= -->
+    <!-- 우 : tree_full.glb 통짜 (배경 행 방식)                            -->
+    <!-- ================================================================= -->
+    <model name="tree_whole">
+      <static>true</static>
+      <pose>1.2 0 0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><mesh>
+            <uri>model://apple_tree_s07_0042/meshes/tree_full.glb</uri>
+          </mesh></geometry>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>40</label></plugin>
+        </visual>
+        <collision name="trunk_collision">
+          <pose>0 0 1.6 0 0 0</pose>
+          <geometry><cylinder><radius>0.06</radius><length>3.2</length></cylinder></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ================================================================= -->
+    <!-- 관측기 — 카메라 + 세그멘테이션 + MID-70 상당 gpu_lidar            -->
+    <!-- MID-70 실제 마운트(D12) 재현: 틸트 없음, z=0.645                  -->
+    <!-- ================================================================= -->
+    <model name="probe">
+      <static>true</static>
+      <pose>0 -4.0 0.645 0 0 1.5708</pose>
+      <link name="link">
+        <sensor name="rgb" type="camera">
+          <topic>tree/rgb</topic><always_on>1</always_on><update_rate>4</update_rate>
+          <camera>
+            <horizontal_fov>1.20</horizontal_fov>
+            <image><width>960</width><height>720</height></image>
+            <clip><near>0.05</near><far>60</far></clip>
+          </camera>
+        </sensor>
+        <sensor name="semantic" type="segmentation">
+          <topic>tree/semantic</topic><always_on>1</always_on><update_rate>4</update_rate>
+          <camera>
+            <segmentation_type>semantic</segmentation_type>
+            <horizontal_fov>1.20</horizontal_fov>
+            <image><width>960</width><height>720</height></image>
+            <clip><near>0.05</near><far>60</far></clip>
+          </camera>
+        </sensor>
+        <!-- MID-70 상당: 113x113, ±0.6143 rad (원형 FOV 마스킹 전), 0.05~90 m -->
+        <sensor name="mid70" type="gpu_lidar">
+          <topic>tree/mid70</topic><always_on>1</always_on><update_rate>10</update_rate>
+          <lidar>
+            <scan>
+              <horizontal><samples>113</samples><min_angle>-0.6143</min_angle><max_angle>0.6143</max_angle></horizontal>
+              <vertical><samples>113</samples><min_angle>-0.6143</min_angle><max_angle>0.6143</max_angle></vertical>
+            </scan>
+            <range><min>0.05</min><max>90.0</max><resolution>0.01</resolution></range>
+            <noise><type>gaussian</type><mean>0.0</mean><stddev>0.02</stddev></noise>
+          </lidar>
+        </sensor>
+      </link>
+    </model>
+
+  </world>
+</sdf>

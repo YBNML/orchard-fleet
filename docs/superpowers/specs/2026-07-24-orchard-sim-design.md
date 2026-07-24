@@ -151,12 +151,31 @@ gen_tree.py --height 3.2 --canopy_w 1.2 --n_feathers 28 --n_apples 60 --seed N
   2. 측지   : 원기둥 28개, 방사 6분할
   3. 엽군   : 알파 테스트 잎-클러스터 카드 (2048² 아틀라스에 5~20잎/쿼드)
               150~400장/그루 × 2 tris.  개별 잎 카드 금지 (4,000 tris vs 600)
-  4. 과실   : icosphere subdiv 1 (80 tris), ⌀0.075
+  4. 과실   : icosphere 세분 2회 (80 tris), ⌀0.075
               엽군 내부에 기각 샘플링 → 단면 가시율 55~65% 달성
-  5. 익스포트: COLLADA .dae
-  6. 정답출력: {tree_id, apple_id, world_xyz, diameter, cluster_id, label_id}
+  5. 익스포트: glTF 바이너리 .glb  (아래 참조)
+  6. 정답출력: {tree_id, apple_id, local_xyz, diameter, cluster_id, label_id} + severity
 gen_world.py → 플랫 월드 SDF, 그루당 <include> 하나, Label 플러그인 내장
 ```
+
+**메시 포맷은 COLLADA 가 아니라 glTF 다 (2026-07-25 확정).**
+Gazebo 문서는 COLLADA 를 권장하지만 **Ubuntu 24.04 의 Blender 4.0.2 빌드에 COLLADA
+익스포터가 없다** — `bpy.ops.wm.collada_export` 가 존재하지 않는다 (WITH_OPENCOLLADA 미포함).
+사용 가능한 것은 `obj / ply / fbx / gltf / x3d / stl` 뿐이다.
+glTF 를 고른 근거: `libgz-common5-graphics.so` 가 `libassimp.so.5`(5.3.1)에 링크돼 있고
+assimp 가 glTF 를 지원한다. `.glb` 는 단일 바이너리라 텍스처 동봉이 쉽고 PBR 머티리얼이
+그대로 넘어간다 — 병징 알베도 맵(§8.8)에 필요하다. **gz-sim 로드를 실측으로 확인했다.**
+
+**`<submesh>` 로 부위별 라벨을 붙인다 (실측 확인).**
+`.glb` 하나에 trunk / feathers / leaf_healthy / leaf_diseased 를 별도 오브젝트로 담고,
+SDF 에서 `<mesh><submesh><name>trunk</name></submesh></mesh>` 로 골라 각 `<visual>` 에
+Label 을 단다. 파일 하나로 부위별 semantic 라벨이 전부 나온다.
+실측: trunk 3,899 px / feathers 2,669 / leaf_healthy 14,277 / leaf_diseased 9,554 로 전부 분리됨.
+
+**gpu_lidar 는 collision 없이 visual 만으로 맞는다 (실측 확인).**
+렌더링 기반 센서이므로 잎 카드와 과실에 `<collision>` 이 없어도 점군에 나타난다.
+실측: 12,769 광선 중 7,150 반사(56.0%), 센서보다 0.5 m 위 점 712개 = 수관 명중.
+따라서 §9-1 의 "잎·과실에는 collision 을 두지 않는다"가 인지 성능을 해치지 않는다.
 
 **Sapling Tree Gen을 쓰지 않는다.** 자연스러운 분기를 만들지만 세장방추형은 의도적으로 인위적인
 수형이라 직접 스크립팅하는 편이 쉽다.
