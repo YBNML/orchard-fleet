@@ -1,0 +1,233 @@
+<?xml version="1.0" ?>
+<!--
+  라벨 인스턴스 분리 검증 월드 (단계 1)
+
+  목적: 과실을 어떤 SDF 구조로 배치해야 panoptic 세그멘테이션이 개별 인스턴스로
+        분리하는지 실측 판정한다. 월드 생성기 아키텍처 전체가 이 답에 달려 있다.
+
+  두 리서치 브리프가 정면 충돌했다:
+    · 브리프 1 — Ogre2SegmentationMaterialSwitcher 가 TopLevelModelVisual()->Name() 으로
+      묶으므로 한 모델 안의 visual 들은 인스턴스 1개로 뭉개진다 → 과실마다 최상위 모델 필요
+    · 브리프 2 — visual 마다 Label 을 달면 인스턴스가 자동 부여된다.
+      오히려 중첩 include 가 gz-sim #1579 로 깨진다
+
+  구성 (각 3개 구체):
+    A (40) 모델1 / 링크1 / visual 3개,   각 visual 에 Label
+    B (41) 모델1 / 링크3개,              각 링크의 visual 에 Label
+    C (42) 최상위 <model> 3개,           각 모델에 Label
+    D (43) 최상위 <include> 3개,         각 include 에 Label   ← 생성기가 쓸 실제 패턴
+    E (44) 부모 모델 안 중첩 <include> 3개                      ← gz-sim #1579 재현 시도
+
+  카메라는 (0,-11,2.0) 에서 +y 를 본다. 따라서 월드 x = 이미지 가로, 월드 y = 깊이.
+  가림을 없애기 위해:
+    · 각 구성의 구체 3개를 x 로 벌린다 (깊이로 늘어놓지 않는다)
+    · 앞줄 A/B/C 는 y=0, z=0.4 / 뒷줄 D/E 는 y=4, z=1.9 로 높이를 띄운다
+-->
+<sdf version="1.9">
+  <world name="label_probe">
+
+    <plugin filename="gz-sim-physics-system"           name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"     name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system"           name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <physics name="fast" type="dart">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <scene>
+      <ambient>0.7 0.7 0.7 1</ambient>
+      <background>0.25 0.35 0.55</background>
+      <shadows>false</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.2 0.4 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material>
+            <ambient>0.75 0.75 0.75 1</ambient>
+            <diffuse>0.75 0.75 0.75 1</diffuse>
+          </material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
+            <label>10</label>
+          </plugin>
+        </visual>
+      </link>
+    </model>
+
+    <!-- === A (40) 모델1 / 링크1 / visual 3개 ============================ -->
+    <model name="cfgA_one_link_three_visuals">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <visual name="a1">
+          <pose>-5.0 0 0.4 0 0 0</pose>
+          <geometry><sphere><radius>0.4</radius></sphere></geometry>
+          <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>40</label></plugin>
+        </visual>
+        <visual name="a2">
+          <pose>-4.0 0 0.4 0 0 0</pose>
+          <geometry><sphere><radius>0.4</radius></sphere></geometry>
+          <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>40</label></plugin>
+        </visual>
+        <visual name="a3">
+          <pose>-3.0 0 0.4 0 0 0</pose>
+          <geometry><sphere><radius>0.4</radius></sphere></geometry>
+          <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>40</label></plugin>
+        </visual>
+      </link>
+    </model>
+
+    <!-- === B (41) 모델1 / 링크 3개 ====================================== -->
+    <model name="cfgB_three_links">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="b1_link">
+        <pose>-1.0 0 0.4 0 0 0</pose>
+        <visual name="b1">
+          <geometry><sphere><radius>0.4</radius></sphere></geometry>
+          <material><ambient>0.1 0.9 0.1 1</ambient><diffuse>0.1 0.9 0.1 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>41</label></plugin>
+        </visual>
+      </link>
+      <link name="b2_link">
+        <pose>0 0 0.4 0 0 0</pose>
+        <visual name="b2">
+          <geometry><sphere><radius>0.4</radius></sphere></geometry>
+          <material><ambient>0.1 0.9 0.1 1</ambient><diffuse>0.1 0.9 0.1 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>41</label></plugin>
+        </visual>
+      </link>
+      <link name="b3_link">
+        <pose>1.0 0 0.4 0 0 0</pose>
+        <visual name="b3">
+          <geometry><sphere><radius>0.4</radius></sphere></geometry>
+          <material><ambient>0.1 0.9 0.1 1</ambient><diffuse>0.1 0.9 0.1 1</diffuse></material>
+          <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>41</label></plugin>
+        </visual>
+      </link>
+    </model>
+
+    <!-- === C (42) 최상위 <model> 3개 ==================================== -->
+    <model name="cfgC_1">
+      <static>true</static><pose>3.0 0 0.4 0 0 0</pose>
+      <link name="link"><visual name="visual">
+        <geometry><sphere><radius>0.4</radius></sphere></geometry>
+        <material><ambient>0.1 0.1 0.9 1</ambient><diffuse>0.1 0.1 0.9 1</diffuse></material>
+      </visual></link>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>42</label></plugin>
+    </model>
+    <model name="cfgC_2">
+      <static>true</static><pose>4.0 0 0.4 0 0 0</pose>
+      <link name="link"><visual name="visual">
+        <geometry><sphere><radius>0.4</radius></sphere></geometry>
+        <material><ambient>0.1 0.1 0.9 1</ambient><diffuse>0.1 0.1 0.9 1</diffuse></material>
+      </visual></link>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>42</label></plugin>
+    </model>
+    <model name="cfgC_3">
+      <static>true</static><pose>5.0 0 0.4 0 0 0</pose>
+      <link name="link"><visual name="visual">
+        <geometry><sphere><radius>0.4</radius></sphere></geometry>
+        <material><ambient>0.1 0.1 0.9 1</ambient><diffuse>0.1 0.1 0.9 1</diffuse></material>
+      </visual></link>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>42</label></plugin>
+    </model>
+
+    <!-- === D (43) 최상위 <include> 3개 — 생성기가 쓸 실제 패턴 =========== -->
+    <include>
+      <name>cfgD_1</name><uri>model://probe_sphere</uri><pose>-3.5 4 1.9 0 0 0</pose>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>43</label></plugin>
+    </include>
+    <include>
+      <name>cfgD_2</name><uri>model://probe_sphere</uri><pose>-2.5 4 1.9 0 0 0</pose>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>43</label></plugin>
+    </include>
+    <include>
+      <name>cfgD_3</name><uri>model://probe_sphere</uri><pose>-1.5 4 1.9 0 0 0</pose>
+      <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>43</label></plugin>
+    </include>
+
+    <!-- === E (44) 부모 모델 안 중첩 <include> 3개 (gz-sim #1579) ========= -->
+    <model name="cfgE_parent_row">
+      <static>true</static>
+      <pose>2.5 4 0 0 0 0</pose>
+      <include>
+        <name>e1</name><uri>model://probe_sphere</uri><pose>-1.0 0 1.9 0 0 0</pose>
+        <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>44</label></plugin>
+      </include>
+      <include>
+        <name>e2</name><uri>model://probe_sphere</uri><pose>0 0 1.9 0 0 0</pose>
+        <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>44</label></plugin>
+      </include>
+      <include>
+        <name>e3</name><uri>model://probe_sphere</uri><pose>1.0 0 1.9 0 0 0</pose>
+        <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>44</label></plugin>
+      </include>
+    </model>
+
+    <!-- === 관측 카메라 ================================================== -->
+    <model name="probe_camera">
+      <static>true</static>
+      <pose>0 -11 2.0 0 0.06 1.5708</pose>
+      <link name="link">
+        <sensor name="panoptic" type="segmentation">
+          <topic>probe/panoptic</topic><always_on>1</always_on><update_rate>4</update_rate>
+          <camera>
+            <segmentation_type>panoptic</segmentation_type>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>960</width><height>540</height></image>
+            <clip><near>0.1</near><far>60</far></clip>
+          </camera>
+        </sensor>
+        <sensor name="semantic" type="segmentation">
+          <topic>probe/semantic</topic><always_on>1</always_on><update_rate>4</update_rate>
+          <camera>
+            <segmentation_type>semantic</segmentation_type>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>960</width><height>540</height></image>
+            <clip><near>0.1</near><far>60</far></clip>
+          </camera>
+        </sensor>
+        <sensor name="rgb" type="camera">
+          <topic>probe/rgb</topic><always_on>1</always_on><update_rate>4</update_rate>
+          <camera>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>960</width><height>540</height></image>
+            <clip><near>0.1</near><far>60</far></clip>
+          </camera>
+        </sensor>
+        <sensor name="boxes_visible" type="boundingbox_camera">
+          <topic>probe/boxes_visible</topic><always_on>1</always_on><update_rate>4</update_rate>
+          <camera>
+            <box_type>visible_2d</box_type>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>960</width><height>540</height></image>
+            <clip><near>0.1</near><far>60</far></clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+
+  </world>
+</sdf>
