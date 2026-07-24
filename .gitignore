@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .venv/
 docs/research/*.jsonl
+
+# 대용량 참고자료 원본 (마크다운 추출본은 커밋)
+docs/reference/*.pptx
