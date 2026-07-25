@@ -214,7 +214,8 @@
       <span>스택 <b>ROS 2 Jazzy · Gazebo Harmonic 8.11.0</b></span>
       <span>진행 <b>단계 0–3 / 9 완료</b></span>
       <span>기준일 <b>2026-07-25</b></span>
-      <span>GPU <b>GTX 1660 SUPER (복구됨)</b></span>
+      <span>과수원 <b>31.5 × 60 m · 계단식 9단</b></span>
+      <span>RTF <b>0.72 (주행용)</b></span>
     </div>
 
     <div class="pipeline" role="list">
@@ -243,6 +244,7 @@
     <a href="#s1">1 · 라벨·나무 생성기</a>
     <a href="#s2">2 · 과수원 월드</a>
     <a href="#s3">3 · 로봇 모델</a>
+    <a href="#perf">실측 · RTF 병목</a>
     <div class="grp">참조</div>
     <a href="#filemap">파일 맵</a>
     <a href="#labels">라벨 체계</a>
@@ -396,19 +398,90 @@ gz sim shapes.sdf                       <span class="c"># 스모크 테스트</s
         <p>지형 하이트맵(513×513 8-bit)과 나무·지주·2존 지면을 절차적으로 배치합니다. 실측(§01)에 따라
           <strong>2계층 구조</strong>를 강제합니다 — 배경목은 과실 구워넣은 통짜 모델 <code>&lt;include&gt;</code>,
           계측 블록은 나무 몸체 + 과실마다 최상위 <code>&lt;include&gt;</code>로 인스턴스를 확보합니다.</p>
-        <pre>python3 scripts/gen_heightmap.py <span class="c"># 513×513 지형</span>
-python3 scripts/gen_world.py --rows 4 --trees-per-row 20 \
-        --instrumented-rows 2 --instrumented-trees 10 --posts \
-        --out sim/worlds/orchard.sdf</pre>
+        <pre>python3 scripts/gen_heightmap.py --rows 10 --trees-per-row 41
+python3 scripts/gen_world.py --rows 10 --trees-per-row 41 \
+        --instrumented-rows 2 --instrumented-trees 10 \
+        <span class="p">--environment --detail 2</span> --robot scout_mini_mid70 \
+        --out sim/worlds/orchard_gt.sdf</pre>
+
+        <h3>계단식(단구식) 지형</h3>
+        <p>국내 구릉지 과수원은 비탈을 그대로 쓰지 않고 계단식으로 조성합니다.
+          그 구조를 그대로 재현했습니다 — <strong>통로 안은 평지</strong>, 통로 사이는 단차,
+          <strong>통로 끝 선회 구역에서 단차가 램프로 풀려</strong> 옆 통로로 넘어갑니다.</p>
+        <pre>   통로0 (평지) ────┐
+                    └╲ 법면 1.2 m (수관하부 청경대)
+        통로1 (평지) ─┴───┐
+                          └╲
+             통로2 (평지) ─┴──</pre>
+        <div class="tbl-wrap"><table>
+          <tr><th>검증 항목</th><th>실측</th><th>판정</th></tr>
+          <tr><td>통로 평탄도 (주행방향 / 횡단)</td><td class="mono">0.6–1.9 cm / 0.0–0.2 cm</td><td class="pass">평지</td></tr>
+          <tr><td>통로간 단차 (무작위 25–50 cm 요청)</td><td class="mono">26 · 33 · 38 · 28 · 48 · 50 · 26 · 34 cm</td><td class="pass">범위 내</td></tr>
+          <tr><td>법면 경사 / 주행폭 내 경사</td><td class="mono">58% / 0.6%</td><td class="pass">주행면 밖</td></tr>
+          <tr><td>선회 구역 램프</td><td class="mono">8.1°</td><td class="pass">등판 30° 대비 여유</td></tr>
+          <tr><td>나무 378그루 지면 정합</td><td class="mono">최대 오차 0.7 mm</td><td class="pass">뜸·파묻힘 없음</td></tr>
+        </table></div>
+        <div class="callout"><span class="lbl">숨은 함정</span>
+          <p>테라스를 지형 전체(120 m)로 올리면 <span class="mono">size_z</span>가 12.9 m가 되어
+          8-bit 하이트맵 양자화가 <strong>5 cm</strong>로 굵어집니다 — "평지" 통로에 계단 아티팩트가 생깁니다.
+          과수원 밖을 평탄화해 4.8 m / <strong>1.9 cm</strong>로 낮췄습니다 (통로 노이즈 2.5 cm보다 곱게).</p></div>
+        <p>지형과 월드의 격자가 어긋나면 나무가 법면 한가운데 서게 되는데 이건 조용히 잘못되므로,
+          <code>gen_world</code>가 <strong>격자 정합성을 검사해 하드 실패</strong>시킵니다.</p>
+
+        <h3>규모 &amp; 디테일</h3>
         <div class="tiles">
-          <div class="tile"><div class="k">배치</div><div class="v">4<small>×</small>20</div></div>
-          <div class="tile"><div class="k">배경목 / 계측목</div><div class="v">58<small> / </small>19</div></div>
-          <div class="tile"><div class="k">과실 인스턴스</div><div class="v">1,140</div></div>
-          <div class="tile"><div class="k">총 엔티티</div><div class="v">1,233</div></div>
-          <div class="tile good"><div class="k">헤드리스 RTF</div><div class="v">0.999</div></div>
+          <div class="tile"><div class="k">배치</div><div class="v">10<small>×</small>41</div></div>
+          <div class="tile"><div class="k">나무 영역</div><div class="v">31.5<small>×</small>60<small> m</small></div></div>
+          <div class="tile"><div class="k">배경목 / 계측목</div><div class="v">378<small> / </small>20</div></div>
+          <div class="tile"><div class="k">과실 인스턴스</div><div class="v">1,200</div></div>
+          <div class="tile good"><div class="k">visual 총계</div><div class="v">2,488</div></div>
         </div>
-        <p>지형은 평면을 쓰지 않습니다 — 완전 평면은 오도메트리·IMU 거동과 LiDAR 지면분할을 실제보다 쉽게
-          만들어 결과를 오도합니다. 120×120 m에 총기복 1.5 m(1–2% 완경사)를 줍니다.</p>
+        <p><strong>행 디테일</strong> — 지주 + 3단 와이어(1.00 / 2.00 / 2.90 m) + 말단 앵커,
+          수관하부 청경(나지)대 1.2 m, 점적관수 호스, 통로 잡초, 낙과.
+          <strong>환경</strong> — 철망 담장 울타리, 방풍림, 창고·물탱크·호스릴·비료포대,
+          트랙터·스피드스프레이어, 수확 컨테이너, 전신주+전선, 돌무더기, 진입로(바퀴자국 포함).</p>
+      </div>
+    </section>
+
+    <!-- PERF -->
+    <section id="perf">
+      <div class="stage">
+        <div class="stage-head">
+          <span class="stage-no">실측</span>
+          <h3 class="stage-title">RTF 병목은 렌더링이 아니라 모델 엔티티 수</h3>
+          <span class="chip done">규명 완료</span>
+        </div>
+        <p>"디테일을 더 넣으면 무리인가"에 답하려고 요소별로 분리 측정했습니다
+          (<code>scripts/bench_rtf.sh</code>, 전부 헤드리스).</p>
+        <div class="tbl-wrap"><table>
+          <tr><th>구성</th><th>모델 엔티티</th><th>RTF</th></tr>
+          <tr><td>과수원만, <strong>센서 0개</strong>, FCL 충돌</td><td class="mono">1,754</td><td class="mono">0.274</td></tr>
+          <tr><td>+ bullet 충돌검출</td><td class="mono">1,754</td><td class="mono">0.304</td></tr>
+          <tr><td><strong>과실 인스턴스만 제거</strong></td><td class="mono">554</td><td class="mono pass">1.211</td></tr>
+          <tr><td>디테일 최대 + 로봇/센서, 과실 0</td><td class="mono">443</td><td class="mono pass">0.718</td></tr>
+          <tr><td>디테일 최대 + 로봇/센서 + 과실 1,200</td><td class="mono">1,643</td><td class="mono">0.230</td></tr>
+        </table></div>
+        <div class="callout"><span class="lbl">결론</span>
+          <p>센서가 하나도 없는 실행이 이미 0.274 — <strong>렌더링은 범인이 아닙니다.</strong>
+          과실 인스턴스 1,200개를 빼자 RTF가 <strong>4배</strong> 뛰었습니다(삼각형은 거의 안 줄었는데도).
+          <strong>비용은 삼각형 수가 아니라 모델 엔티티 개수에 붙습니다.</strong></p></div>
+        <p>그래서 디테일을 "모델 많이"가 아니라 <strong>"적은 모델 안에 visual 많이"</strong>로 재구성했습니다
+          (<code>Prop</code> 클래스가 이 규율을 강제).</p>
+        <div class="tbl-wrap"><table>
+          <tr><th></th><th>이전</th><th>이후</th></tr>
+          <tr><td>환경 모델 엔티티</td><td class="mono">76</td><td class="mono pass">14</td></tr>
+          <tr><td>행 디테일 모델 엔티티</td><td class="mono">80 (지주뿐)</td><td class="mono pass">30</td></tr>
+          <tr><td>visual 총계</td><td class="mono">~700</td><td class="mono pass">2,488</td></tr>
+        </table></div>
+        <h3>월드 2종 분리</h3>
+        <p>과실별 인스턴스는 정답 라벨 생성에만 필요하고 주행 개발엔 불필요합니다.</p>
+        <div class="tbl-wrap"><table>
+          <tr><th>월드</th><th>용도</th><th>과실</th><th>RTF</th></tr>
+          <tr><td class="mono">orchard_nav.sdf</td><td>Nav2 · FAST-LIO2 개발, 실시간 주행</td><td class="mono">0</td><td class="mono pass">0.72</td></tr>
+          <tr><td class="mono">orchard_gt.sdf</td><td>데이터셋 생성 (<code>real_time_factor=0</code> 최대속도)</td><td class="mono">1,200</td><td class="mono">0.23</td></tr>
+        </table></div>
+        <p>데이터셋 생성은 실시간일 필요가 없어 0.23이 문제되지 않습니다.
+          아직 안 쓴 레버: <strong>Levels</strong>(로봇 주변 열만 상주), 수관 카메라 상시 렌더 → 촬영 시점만.</p>
       </div>
     </section>
 
@@ -453,7 +526,8 @@ python3 scripts/gen_world.py --rows 4 --trees-per-row 20 \
         <tr><td class="mono">scripts/gen_tree.py</td><td>세장방추형 사과나무 생성 (Blender bpy)</td></tr>
         <tr><td class="mono">scripts/gen_heightmap.py</td><td>지형 하이트맵 생성</td></tr>
         <tr><td class="mono">scripts/gen_world.py</td><td>과수원 월드 조립 (배경목/계측목/지주)</td></tr>
-        <tr><td class="mono">scripts/0{1,2,3}_verify_*</td><td>단계별 실측 검증</td></tr>
+        <tr><td class="mono">scripts/0{1,2,3,4}_verify_*</td><td>단계별 실측 검증 (라벨·나무·로봇·지형)</td></tr>
+        <tr><td class="mono">scripts/bench_rtf.sh</td><td>RTF 벤치마크 (요소별 분리 측정)</td></tr>
         <tr><td class="mono">sim/models/scout_mini_mid70/</td><td>로봇 SDF (섀시·4륜·센서 6종·DiffDrive)</td></tr>
         <tr><td class="mono">sim/models/orchard_terrain/</td><td>지형 모델 (하이트맵 collision+visual)</td></tr>
         <tr><td class="mono">docs/superpowers/specs/…design.md</td><td>설계서 (D1–D13, §1–§13)</td></tr>
@@ -473,7 +547,15 @@ python3 scripts/gen_world.py --rows 4 --trees-per-row 20 \
         <tr><td class="mono">12</td><td>trellis_post</td><td class="mono">31</td><td>leaf_diseased</td></tr>
         <tr><td class="mono">20</td><td>trunk</td><td class="mono">40</td><td>fruit_healthy</td></tr>
         <tr><td class="mono">21</td><td>branch</td><td class="mono">41</td><td>fruit_diseased</td></tr>
+        <tr><td class="mono">11</td><td>weed</td><td class="mono">43</td><td>fruit_fallen</td></tr>
+        <tr><td class="mono">13</td><td>wire</td><td class="mono">60</td><td>structure</td></tr>
+        <tr><td class="mono">61</td><td>machinery</td><td class="mono">62</td><td>container</td></tr>
+        <tr><td class="mono">63</td><td>windbreak</td><td class="mono">64</td><td>rock</td></tr>
+        <tr><td class="mono">65</td><td>road</td><td class="mono">66</td><td>soil (청경)</td></tr>
+        <tr><td class="mono">67</td><td>irrigation</td><td class="mono">—</td><td>50–59 lesion_*</td></tr>
       </table></div>
+      <p>60–67은 비작물 객체입니다. 세그멘테이션 카메라로 <strong>12종 전부 정상 부착을 실측 확인</strong>했습니다
+        — 월드 로드 시 나오는 <code>plugin, child of element[sdf]</code> 경고는 무해합니다.</p>
       <p><strong>D13 병해 판정</strong>: 생성기가 나무마다 severity 0–10을 정답으로 함께 출력하고,
         이진 라벨은 <code>severity ≥ 6</code>로 파생합니다. 원본 severity를 보존하므로 임계값을 바꿔도
         재라벨링이 불필요합니다.</p>
@@ -500,7 +582,7 @@ severity 6 ~ 10  →  병충해 (DEFECT)</pre>
 </div>
 
 <footer>
-  <div class="wrap">YBNML · Phase 1 개발 매뉴얼 · 단계 0–3 완료 · 2026-07-25 · 재현 가능 개발 로그</div>
+  <div class="wrap">YBNML · Phase 1 개발 매뉴얼 · 단계 0–3 완료 + 계단식 지형·디테일 확충 · 2026-07-25 · 재현 가능 개발 로그</div>
 </footer>
 
 <script>
