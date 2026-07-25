@@ -20,6 +20,50 @@ import math
 import os
 import random
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+
+# ── 경사면 지형 높이 샘플링 ─────────────────────────────────────────────────
+class Terrain:
+    """gen_heightmap.py 가 남긴 높이 필드를 읽어 (x,y) → z(m) 를 준다.
+
+    나무·로봇·오브젝트를 경사면에 앉히기 위한 것. 평지 폴백도 지원한다.
+    """
+    def __init__(self, models_dir, name):
+        self.ok = False
+        base = os.path.join(models_dir, name)
+        npy = os.path.join(base, "heightmap.npy")
+        meta = os.path.join(base, "heightmap_meta.json")
+        if np is None or not (os.path.exists(npy) and os.path.exists(meta)):
+            return
+        self.H = np.load(npy)
+        with open(meta) as f:
+            self.m = json.load(f)
+        self.n = self.H.shape[0]
+        self.ok = True
+
+    def z(self, x, y, flip_x=False, flip_y=False):
+        if not self.ok:
+            return 0.0
+        half = self.m["half"]; E = self.m["size_x"]; n = self.n
+        fx = (x + half) / E
+        fy = (y + half) / E
+        if flip_x:
+            fx = 1 - fx
+        if flip_y:
+            fy = 1 - fy
+        col = min(max(fx * (n - 1), 0), n - 1)
+        row = min(max(fy * (n - 1), 0), n - 1)
+        c0, r0 = int(col), int(row)
+        c1, r1 = min(c0 + 1, n - 1), min(r0 + 1, n - 1)
+        dc, dr = col - c0, row - r0
+        top = self.H[r0, c0] * (1 - dc) + self.H[r0, c1] * dc
+        bot = self.H[r1, c0] * (1 - dc) + self.H[r1, c1] * dc
+        return float(top * (1 - dr) + bot * dr)
+
 # 세장방추형 기본 배치 (설계서 §4.1)
 DEFAULTS = dict(
     row_spacing=3.50,        # 열간 m
@@ -109,21 +153,137 @@ def sdf_footer():
     return "\n  </world>\n</sdf>\n"
 
 
-def bg_tree_include(name, model, x, y, yaw):
+def bg_tree_include(name, model, x, y, z, yaw):
     """배경목: tree_full(과실 구워넣음) 모델을 통째로 <include>.
 
     model.config 의 기본 SDF 가 model.sdf(=full 버전)이므로 <include> 하나로
     과실까지 렌더링된다. 나무 전체가 하나의 semantic 라벨을 갖는다(인스턴스 불필요).
+    z 는 경사면 지형 높이 (Terrain.z).
     """
     return f"""    <include>
       <name>{name}</name>
       <uri>model://{model}</uri>
-      <pose>{x:.3f} {y:.3f} 0 0 0 {yaw:.4f}</pose>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>
     </include>
 """
 
 
-def instrumented_tree(inst_name, model, x, y, yaw, body_parts, body_mesh, cfg_height,
+# ── 나무 영역 밖 환경 오브젝트 ──────────────────────────────────────────────
+def windbreak_tree(name, x, y, z, h, seed):
+    """방풍림 — 트렁크 + 길쭉한 타원체 수관 (포플러/사이프러스류 근사).
+
+    SDF 에 원뿔 프리미티브가 없어 ellipsoid 로 수관을 만든다. 정적, 충돌 없음.
+    """
+    r = 0.6 + (seed % 5) * 0.06
+    crown_h = h * 0.78
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose>
+      <link name="link">
+        <visual name="trunk">
+          <pose>0 0 {h * 0.11:.3f} 0 0 0</pose>
+          <geometry><cylinder><radius>0.12</radius><length>{h * 0.22:.3f}</length></cylinder></geometry>
+          <material><ambient>0.28 0.2 0.13 1</ambient><diffuse>0.28 0.2 0.13 1</diffuse></material>
+        </visual>
+        <visual name="crown">
+          <pose>0 0 {h * 0.22 + crown_h / 2:.3f} 0 0 0</pose>
+          <geometry><ellipsoid><radii>{r:.3f} {r:.3f} {crown_h / 2:.3f}</radii></ellipsoid></geometry>
+          <material><ambient>0.12 0.3 0.14 1</ambient><diffuse>0.14 0.34 0.16 1</diffuse></material>
+        </visual>
+        <collision name="trunk_c">
+          <pose>0 0 {h / 2:.3f} 0 0 0</pose>
+          <geometry><cylinder><radius>0.15</radius><length>{h:.3f}</length></cylinder></geometry>
+        </collision>
+      </link>
+    </model>
+"""
+
+
+def farm_shed(name, x, y, z, yaw=0.0):
+    """농막/창고 — 벽체 박스 + 박공 지붕(기울인 박스 2장 근사)."""
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>
+      <link name="link">
+        <visual name="wall">
+          <pose>0 0 1.25 0 0 0</pose>
+          <geometry><box><size>4.0 3.0 2.5</size></box></geometry>
+          <material><ambient>0.7 0.68 0.6 1</ambient><diffuse>0.72 0.7 0.62 1</diffuse></material>
+        </visual>
+        <visual name="roof_l">
+          <pose>0 -0.85 2.9 0.5 0 0</pose>
+          <geometry><box><size>4.2 2.1 0.12</size></box></geometry>
+          <material><ambient>0.35 0.15 0.12 1</ambient><diffuse>0.4 0.17 0.13 1</diffuse></material>
+        </visual>
+        <visual name="roof_r">
+          <pose>0 0.85 2.9 -0.5 0 0</pose>
+          <geometry><box><size>4.2 2.1 0.12</size></box></geometry>
+          <material><ambient>0.35 0.15 0.12 1</ambient><diffuse>0.4 0.17 0.13 1</diffuse></material>
+        </visual>
+        <collision name="c"><pose>0 0 1.25 0 0 0</pose>
+          <geometry><box><size>4.0 3.0 2.5</size></box></geometry></collision>
+      </link>
+    </model>
+"""
+
+
+def water_tank(name, x, y, z):
+    """관수용 물탱크 — 회색 원기둥."""
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose>
+      <link name="link">
+        <visual name="body">
+          <pose>0 0 1.25 0 0 0</pose>
+          <geometry><cylinder><radius>1.1</radius><length>2.5</length></cylinder></geometry>
+          <material><ambient>0.55 0.57 0.6 1</ambient><diffuse>0.6 0.62 0.66 1</diffuse></material>
+        </visual>
+        <collision name="c"><pose>0 0 1.25 0 0 0</pose>
+          <geometry><cylinder><radius>1.1</radius><length>2.5</length></cylinder></geometry></collision>
+      </link>
+    </model>
+"""
+
+
+def build_environment(cfg, terrain, orchard_x0, orchard_x1, orchard_y0, orchard_y1,
+                      flip_x, flip_y, rng):
+    """나무 영역 밖에 방풍림·창고·물탱크를 배치한다."""
+    out = []
+    zf = lambda x, y: terrain.z(x, y, flip_x, flip_y)
+
+    # 방풍림: 과수원 좌우 바깥 경계를 따라 일렬 (경사 위/아래쪽 가장자리)
+    margin = 4.0
+    for side, wx in ((-1, orchard_x0 - margin), (1, orchard_x1 + margin)):
+        y = orchard_y0 - 3.0
+        i = 0
+        while y <= orchard_y1 + 3.0:
+            h = rng.uniform(4.5, 6.5)
+            jx = wx + rng.gauss(0, 0.3)
+            out.append(windbreak_tree(f"windbreak_{'L' if side < 0 else 'R'}_{i}",
+                                      jx, y, zf(jx, y), h, rng.randint(0, 99)))
+            y += rng.uniform(2.8, 3.6)
+            i += 1
+
+    # 창고: 아래쪽 선회 구간 바깥 모서리
+    sx = orchard_x1 + margin - 1.0
+    sy = orchard_y0 - cfg["headland"] - 2.0
+    out.append(farm_shed("farm_shed", sx, sy, zf(sx, sy), yaw=rng.uniform(-0.3, 0.3)))
+
+    # 물탱크: 창고 옆
+    tx, ty = sx - 4.0, sy + 0.5
+    out.append(water_tank("water_tank", tx, ty, zf(tx, ty)))
+
+    # 위쪽 선회 구간 바깥에도 방풍림 몇 그루
+    for i in range(5):
+        wx = orchard_x0 + i * (orchard_x1 - orchard_x0) / 4.0
+        wy = orchard_y1 + cfg["headland"] + 2.0 + rng.gauss(0, 0.5)
+        h = rng.uniform(4.5, 6.0)
+        out.append(windbreak_tree(f"windbreak_top_{i}", wx, wy, zf(wx, wy), h, rng.randint(0, 99)))
+
+    return out
+
+
+def instrumented_tree(inst_name, model, x, y, z, yaw, body_parts, body_mesh, cfg_height,
                       trunk_r, apples):
     """계측 블록: 나무 몸체(인라인) + 과실마다 최상위 apple <include>.
 
@@ -131,6 +291,7 @@ def instrumented_tree(inst_name, model, x, y, yaw, body_parts, body_mesh, cfg_he
     <include> 는 model.config 기본 SDF(full)만 로드하므로, body 를 쓰려면
     tree_body.glb 서브메시를 참조하는 <model> 을 인라인으로 조립한다.
     과실은 각각 최상위 <include> 여야 panoptic 인스턴스가 분리된다(2026-07-25 실측).
+    z 는 경사면 지형 높이. 과실도 z 만큼 올려 지면 위에 얹는다.
     """
     c, s = math.cos(yaw), math.sin(yaw)
     visuals = "".join(f"""        <visual name="{bp['part']}">
@@ -146,7 +307,7 @@ def instrumented_tree(inst_name, model, x, y, yaw, body_parts, body_mesh, cfg_he
 
     parts = [f"""    <model name="{inst_name}">
       <static>true</static>
-      <pose>{x:.3f} {y:.3f} 0 0 0 {yaw:.4f}</pose>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>
       <link name="link">
 {visuals}        <collision name="trunk_collision">
           <pose>0 0 {cfg_height / 2:.3f} 0 0 0</pose>
@@ -163,7 +324,7 @@ def instrumented_tree(inst_name, model, x, y, yaw, body_parts, body_mesh, cfg_he
         parts.append(f"""    <include>
       <name>{inst_name}__{a['apple_id']}</name>
       <uri>model://apple</uri>
-      <pose>{wx:.3f} {wy:.3f} {lz:.3f} 0 0 0</pose>
+      <pose>{wx:.3f} {wy:.3f} {z + lz:.3f} 0 0 0</pose>
       <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
         <label>{label}</label>
       </plugin>
@@ -172,15 +333,17 @@ def instrumented_tree(inst_name, model, x, y, yaw, body_parts, body_mesh, cfg_he
     return "".join(parts)
 
 
-def trellis_posts(models_dir, cfg, row_x, y0, y1):
-    """열을 따라 일정 간격으로 지주를 세운다. collision 없는 얇은 원기둥 visual."""
+def trellis_posts(cfg, row_x, y0, y1, zf):
+    """열을 따라 일정 간격으로 지주를 세운다. collision 없는 얇은 원기둥 visual.
+    zf(x,y) 로 경사면 높이에 맞춰 세운다."""
     posts = []
     y = y0
     idx = 0
     while y <= y1:
+        z = zf(row_x, y)
         posts.append(f"""    <model name="post_r{row_x:.1f}_{idx}">
       <static>true</static>
-      <pose>{row_x:.3f} {y:.3f} 1.48 0 0 0</pose>
+      <pose>{row_x:.3f} {y:.3f} {z + 1.48:.3f} 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry><cylinder><radius>0.0375</radius><length>2.96</length></cylinder></geometry>
@@ -210,6 +373,10 @@ def main():
     ap.add_argument("--posts", action="store_true", help="지주 생성")
     ap.add_argument("--robot", default=None,
                     help="스폰할 로봇 모델명 (예: scout_mini_mid70). 통로 시작점에 배치")
+    ap.add_argument("--environment", action="store_true",
+                    help="나무 영역 밖 방풍림·창고·물탱크 배치")
+    ap.add_argument("--flip-x", action="store_true", help="지형 x 샘플링 뒤집기 (경사 방향 안 맞을 때)")
+    ap.add_argument("--flip-y", action="store_true", help="지형 y 샘플링 뒤집기")
     for k, v in DEFAULTS.items():
         ap.add_argument(f"--{k.replace('_', '-')}", type=type(v), default=v)
     args = ap.parse_args()
@@ -225,6 +392,13 @@ def main():
     body_pool = [t for t in trees if t["body"]]
     if not bg_pool or not body_pool:
         raise SystemExit("배경용(model_full.sdf) 또는 계측용(model.sdf) 모델이 부족합니다.")
+
+    # ── 경사면 지형 로드 ────────────────────────────────────────────────
+    terrain = Terrain(models_dir, args.terrain_model)
+    zf = lambda x, y: terrain.z(x, y, args.flip_x, args.flip_y)
+    if not terrain.ok:
+        print("[gen_world]   ⚠ 경사면 높이필드 없음 → 평지(z=0)로 배치. "
+              "gen_heightmap.py 를 먼저 실행하면 경사면에 앉습니다.")
 
     # ── 배치 격자 ──────────────────────────────────────────────────────
     R, T = args.rows, args.trees_per_row
@@ -255,13 +429,14 @@ def main():
             jy = ty + rng.gauss(0, cfg["pos_jitter"])
             yaw = rng.gauss(0, cfg["yaw_jitter"])
 
+            tz = zf(jx, jy)
             if is_inst_row and t < args.instrumented_trees:
                 pick = rng.choice(body_pool)
                 gt = json.load(open(os.path.join(models_dir, pick["name"], "ground_truth.json")))
                 inst = f"{pick['name']}__r{r}t{t}"
                 trunk_r = gt["geometry"]["trunk_base_dia"] / 2
                 body.append(instrumented_tree(
-                    inst, pick["name"], jx, jy, yaw,
+                    inst, pick["name"], jx, jy, tz, yaw,
                     gt["body_parts"], gt.get("body_mesh", "tree_body.glb"),
                     gt["geometry"]["height"], trunk_r, gt["apples"]))
                 stats["instrumented"] += 1
@@ -270,23 +445,32 @@ def main():
                 pick = rng.choice(bg_pool)
                 name = f"{pick['name']}__r{r}t{t}"
                 # 배경목: model.config 기본 SDF(full, 과실 구워넣음)를 <include>
-                body.append(bg_tree_include(name, pick["name"], jx, jy, yaw))
+                body.append(bg_tree_include(name, pick["name"], jx, jy, tz, yaw))
                 stats["bg"] += 1
 
         if args.posts:
-            body.append(trellis_posts(models_dir, cfg,
-                                      rx, y0 - cfg["tree_spacing"], y0 + col_l + cfg["tree_spacing"]))
+            body.append(trellis_posts(cfg, rx,
+                                      y0 - cfg["tree_spacing"], y0 + col_l + cfg["tree_spacing"], zf))
             stats["posts"] += 1
+
+    # 환경 오브젝트 (나무 영역 밖)
+    if args.environment:
+        env = build_environment(cfg, terrain, x0, x0 + row_w, y0, y0 + col_l,
+                                args.flip_x, args.flip_y, rng)
+        body.append("\n    <!-- 환경 오브젝트 -->\n")
+        body.extend(env)
+        stats["env"] = len(env)
 
     # 로봇 스폰 — 첫 통로(0열과 1열 사이) 시작점, 선회 구간에서 진입
     robot_block = ""
     if args.robot:
         spawn_x = x0 + cfg["row_spacing"] / 2          # 0열과 1열 사이 통로 중앙
         spawn_y = y0 - cfg["headland"] / 2             # 선회 구간
+        spawn_z = zf(spawn_x, spawn_y) + 0.20          # 경사면 위 + 여유
         robot_block = f"""    <include>
       <name>{args.robot}</name>
       <uri>model://{args.robot}</uri>
-      <pose>{spawn_x:.3f} {spawn_y:.3f} 0.20 0 0 1.5708</pose>
+      <pose>{spawn_x:.3f} {spawn_y:.3f} {spawn_z:.3f} 0 0 1.5708</pose>
     </include>
 """
 
@@ -304,12 +488,19 @@ def main():
         f.write(sdf_footer())
 
     total_entities = (stats["bg"] + stats["instrumented"] + stats["apples"]
-                      + stats["posts"] * ((int(col_l / cfg["post_spacing"]) + 2)))
+                      + stats["posts"] * ((int(col_l / cfg["post_spacing"]) + 2))
+                      + stats.get("env", 0))
     print(f"[gen_world] {out}")
     print(f"[gen_world]   {R}행 x {T}주  (열간 {cfg['row_spacing']} / 주간 {cfg['tree_spacing']} m)")
     print(f"[gen_world]   배경목 {stats['bg']} / 계측목 {stats['instrumented']}"
           f" / 결주 {stats['missing']}")
     print(f"[gen_world]   과실 인스턴스 {stats['apples']:,} (계측 블록만)")
+    if stats.get("env"):
+        print(f"[gen_world]   환경 오브젝트 {stats['env']} (방풍림·창고·물탱크)")
+    if terrain.ok:
+        zmin = zf(x0, y0); zmax = zf(x0 + row_w, y0)
+        print(f"[gen_world]   경사면: 열 방향 지면 높이 {zmin:.2f} → {zmax:.2f} m "
+              f"(구배 {terrain.m['grade']:.1%})")
     print(f"[gen_world]   대략 총 엔티티 {total_entities:,}")
     print(f"[gen_world]   과수원 {row_w:.1f} x {col_l:.1f} m + 선회 {cfg['headland']} m")
 

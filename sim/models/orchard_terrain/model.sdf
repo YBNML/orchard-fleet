@@ -1,45 +1,26 @@
 <?xml version="1.0" ?>
-<!--
-  과수원 지형 (설계서 §4.2)
-
-  · <collision> 과 <visual> 에 동일한 <heightmap> 블록을 둔다
-  · heightmap PNG 는 513x513, 8-bit grayscale, 알파 없음 (gen_heightmap.py 산출)
-  · <size>120 120 1.5</size> → 120x120 m, 총기복 1.5 m ≈ 1~2% 완경사
-  · bullet collision detector 권장 (gz-sim heightmap.sdf)
--->
+<!-- 자동 생성 (gen_heightmap.py). 경사면 지형: 열을 가로지르는 4.5% 구배 -->
 <sdf version="1.9">
   <model name="orchard_terrain">
     <static>true</static>
     <link name="link">
       <collision name="collision">
-        <geometry>
-          <heightmap>
-            <uri>model://orchard_terrain/materials/textures/orchard_heightmap.png</uri>
-            <size>120 120 1.5</size>
-            <pos>0 0 0</pos>
-          </heightmap>
-        </geometry>
+        <geometry><heightmap>
+          <uri>model://orchard_terrain/materials/textures/orchard_heightmap.png</uri>
+          <size>120.0 120.0 5.4704</size><pos>0 0 0</pos>
+        </heightmap></geometry>
       </collision>
       <visual name="visual">
-        <geometry>
-          <heightmap>
-            <uri>model://orchard_terrain/materials/textures/orchard_heightmap.png</uri>
-            <size>120 120 1.5</size>
-            <pos>0 0 0</pos>
-            <texture>
-              <size>10</size>
-              <diffuse>model://orchard_terrain/materials/textures/grass.png</diffuse>
-              <normal>model://orchard_terrain/materials/textures/flat_normal.png</normal>
-            </texture>
-          </heightmap>
-        </geometry>
-        <material>
-          <ambient>0.4 0.45 0.3 1</ambient>
-          <diffuse>0.4 0.45 0.3 1</diffuse>
-        </material>
-        <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label">
-          <label>10</label>
-        </plugin>
+        <geometry><heightmap>
+          <uri>model://orchard_terrain/materials/textures/orchard_heightmap.png</uri>
+          <size>120.0 120.0 5.4704</size><pos>0 0 0</pos>
+          <texture><size>8</size>
+            <diffuse>model://orchard_terrain/materials/textures/grass.png</diffuse>
+            <normal>model://orchard_terrain/materials/textures/flat_normal.png</normal>
+          </texture>
+        </heightmap></geometry>
+        <material><ambient>0.42 0.46 0.32 1</ambient><diffuse>0.42 0.46 0.32 1</diffuse></material>
+        <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>10</label></plugin>
       </visual>
     </link>
   </model>

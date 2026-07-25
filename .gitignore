@@ -16,3 +16,6 @@ sim/models/orchard_terrain/materials/textures/*.png
 # 생성된 월드 (재생성 가능)
 sim/worlds/orchard.sdf
 sim/worlds/orchard_robot.sdf
+sim/models/orchard_terrain/model.sdf
+sim/models/orchard_terrain/heightmap.npy
+sim/models/orchard_terrain/heightmap_meta.json
