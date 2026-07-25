@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>livox_ros_driver2</name>
+  <version>1.0.0</version>
+  <description>
+    Livox CustomMsg / CustomPoint 메시지 정의 (시뮬레이션 전용 스텁).
+
+    실제 livox_ros_driver2 는 MID-70 을 지원하지 않고 ROS 2 Jazzy 바이너리도 없다.
+    이 프로젝트는 시뮬레이션 전용(설계서 D8)이므로, FAST-LIO2 가 수정 없이 빌드되도록
+    메시지 정의만 원본과 동일한 이름·필드로 제공한다. 드라이버 기능은 없다.
+  </description>
+  <maintainer email="rla1231013@gmail.com">myhome</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <depend>std_msgs</depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export><build_type>ament_cmake</build_type></export>
+</package>
