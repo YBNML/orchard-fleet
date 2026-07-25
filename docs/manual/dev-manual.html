@@ -1,0 +1,540 @@
+<title>YBNML 과수원 시뮬레이션 — 개발 매뉴얼</title>
+<style>
+  :root {
+    --ground: #f4f6ef;
+    --surface: #ffffff;
+    --surface-2: #eef1e7;
+    --ink: #1a1e15;
+    --ink-soft: #3d4335;
+    --muted: #5f6650;
+    --line: #d9ddcd;
+    --accent: #3f6b2e;
+    --accent-soft: #e4eed9;
+    --bark: #7a5b3a;
+    --ok: #3f6b2e;
+    --warn: #b3781a;
+    --defect: #b23a2e;
+    --pending: #9aa088;
+    --code-bg: #1c2016;
+    --code-ink: #d7dcc9;
+    --code-tok: #a9c98a;
+    --shadow: 0 1px 2px rgba(26,30,21,.06), 0 6px 24px -12px rgba(26,30,21,.18);
+    --serif: Georgia, "Iowan Old Style", Palatino, "Book Antiqua", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #11140d; --surface: #191d13; --surface-2: #20261a;
+      --ink: #e9ebe0; --ink-soft: #c3c8b5; --muted: #949b83; --line: #2c3322;
+      --accent: #83b45f; --accent-soft: #23301a; --bark: #b08a5e;
+      --ok: #83b45f; --warn: #d8a445; --defect: #e0705f; --pending: #6a7159;
+      --code-bg: #0c0f08; --code-ink: #cfd5c1; --code-tok: #9fc47f;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #11140d; --surface: #191d13; --surface-2: #20261a;
+    --ink: #e9ebe0; --ink-soft: #c3c8b5; --muted: #949b83; --line: #2c3322;
+    --accent: #83b45f; --accent-soft: #23301a; --bark: #b08a5e;
+    --ok: #83b45f; --warn: #d8a445; --defect: #e0705f; --pending: #6a7159;
+    --code-bg: #0c0f08; --code-ink: #cfd5c1; --code-tok: #9fc47f;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"] {
+    --ground: #f4f6ef; --surface: #ffffff; --surface-2: #eef1e7;
+    --ink: #1a1e15; --ink-soft: #3d4335; --muted: #5f6650; --line: #d9ddcd;
+    --accent: #3f6b2e; --accent-soft: #e4eed9; --bark: #7a5b3a;
+    --ok: #3f6b2e; --warn: #b3781a; --defect: #b23a2e; --pending: #9aa088;
+    --code-bg: #1c2016; --code-ink: #d7dcc9; --code-tok: #a9c98a;
+    --shadow: 0 1px 2px rgba(26,30,21,.06), 0 6px 24px -12px rgba(26,30,21,.18);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 48px); }
+  .layout { display: grid; grid-template-columns: 1fr; gap: 0; }
+  @media (min-width: 1000px) {
+    .layout { grid-template-columns: 240px minmax(0, 1fr); gap: 56px; align-items: start; }
+  }
+
+  /* ── Header ── */
+  header.masthead {
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--surface), var(--ground));
+  }
+  .masthead .wrap { padding-top: 40px; padding-bottom: 34px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 14px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  h1.title {
+    font-family: var(--serif); font-weight: 600; font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.08; margin: 0 0 12px; letter-spacing: -0.01em; text-wrap: balance;
+  }
+  .lede { font-size: clamp(16px, 2.2vw, 19px); color: var(--ink-soft); max-width: 62ch; margin: 0; }
+  .meta-row {
+    margin-top: 22px; display: flex; gap: 10px 26px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  }
+  .meta-row b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ── Progress pipeline ── */
+  .pipeline {
+    margin-top: 28px; display: flex; gap: 4px; align-items: stretch;
+    overflow-x: auto; padding-bottom: 4px;
+  }
+  .pip {
+    flex: 1 1 0; min-width: 82px; border-radius: 7px; padding: 9px 10px;
+    background: var(--surface-2); border: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 3px; text-decoration: none; color: inherit;
+    transition: transform .12s ease, border-color .12s ease;
+  }
+  .pip:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .pip .n { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .pip .nm { font-size: 12px; font-weight: 600; line-height: 1.25; }
+  .pip.done { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+  .pip.done .n { color: var(--accent); }
+  .pip.cur { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
+  .pip.cur .n { color: var(--warn); }
+  .pip .tick { font-size: 11px; color: var(--accent); font-weight: 700; }
+
+  /* ── Nav ── */
+  nav.toc { position: sticky; top: 18px; font-size: 14px; display: none; }
+  @media (min-width: 1000px) { nav.toc { display: block; } }
+  nav.toc .grp { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); margin: 18px 0 8px; }
+  nav.toc a { display: block; color: var(--ink-soft); text-decoration: none; padding: 4px 10px;
+    border-left: 2px solid var(--line); line-height: 1.35; }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+
+  main { padding: 40px 0 96px; min-width: 0; }
+  section { margin-bottom: 52px; scroll-margin-top: 24px; }
+  h2 { font-family: var(--serif); font-weight: 600; font-size: clamp(22px, 3vw, 28px);
+    margin: 0 0 6px; letter-spacing: -0.01em; text-wrap: balance; }
+  h3 { font-size: 16px; font-weight: 700; margin: 26px 0 8px; color: var(--ink); }
+  .sec-kicker { font-family: var(--mono); font-size: 12px; color: var(--accent);
+    letter-spacing: .1em; text-transform: uppercase; margin: 0 0 4px; }
+  p { max-width: 68ch; }
+  p, li { color: var(--ink-soft); }
+  a { color: var(--accent); }
+  strong { color: var(--ink); font-weight: 650; }
+
+  /* ── Stage card ── */
+  .stage { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px 24px; box-shadow: var(--shadow); margin-bottom: 18px; }
+  .stage-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .stage-no { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .stage-title { font-family: var(--serif); font-size: 20px; font-weight: 600; margin: 0; }
+  .chip { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .chip.done { background: var(--accent-soft); color: var(--accent); }
+  .chip.cur { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .chip.todo { background: var(--surface-2); color: var(--pending); }
+
+  /* ── Data tiles ── */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
+  .tile { background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; }
+  .tile .k { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: .03em; }
+  .tile .v { font-family: var(--mono); font-size: 21px; font-weight: 650; color: var(--ink);
+    font-variant-numeric: tabular-nums; margin-top: 3px; line-height: 1.1; }
+  .tile .v small { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .tile.good .v { color: var(--ok); }
+  .tile.warn .v { color: var(--warn); }
+
+  /* ── Code ── */
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 10px;
+    padding: 15px 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px;
+    line-height: 1.65; margin: 14px 0; border: 1px solid color-mix(in srgb, var(--code-bg) 80%, #000); }
+  pre .c { color: color-mix(in srgb, var(--code-ink) 55%, transparent); }
+  pre .p { color: var(--code-tok); }
+  code:not(pre code) { font-family: var(--mono); font-size: .88em; background: var(--surface-2);
+    padding: 1px 6px; border-radius: 5px; color: var(--ink); border: 1px solid var(--line); }
+
+  /* ── Tables ── */
+  .tbl-wrap { overflow-x: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted); background: var(--surface-2); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td.mono, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .pass { color: var(--ok); font-weight: 700; }
+  .fail { color: var(--defect); font-weight: 700; }
+
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .callout.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .callout p { margin: 0; max-width: none; }
+  .callout .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; display: block; margin-bottom: 4px; }
+  .callout.warn .lbl { color: var(--warn); }
+
+  ul.clean { list-style: none; padding: 0; margin: 12px 0; }
+  ul.clean li { padding: 5px 0 5px 22px; position: relative; }
+  ul.clean li::before { content: "›"; position: absolute; left: 4px; color: var(--accent); font-weight: 700; }
+
+  /* ── Theme toggle ── */
+  .toggle { position: fixed; top: 14px; right: 14px; z-index: 20;
+    background: var(--surface); border: 1px solid var(--line); color: var(--ink-soft);
+    font-family: var(--mono); font-size: 11px; padding: 7px 11px; border-radius: 8px;
+    cursor: pointer; box-shadow: var(--shadow); }
+  .toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 13px;
+    padding: 26px 0 40px; font-family: var(--mono); }
+  .decisions { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap: 10px; margin: 14px 0; }
+  .dcard { border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; background: var(--surface); }
+  .dcard .id { font-family: var(--mono); font-size: 11px; color: var(--accent); font-weight: 700; }
+  .dcard .t { font-weight: 650; font-size: 14px; margin: 2px 0 3px; }
+  .dcard .d { font-size: 12.5px; color: var(--muted); }
+</style>
+
+<button class="toggle" id="themeToggle" aria-label="테마 전환">◐ 테마</button>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow"><span class="dot"></span> YBNML · Phase 1 개발 매뉴얼</p>
+    <h1 class="title">사과 과수원 노지 시뮬레이션</h1>
+    <p class="lede">Scout Mini에 Livox MID-70을 실은 무인이동체가 사과 과수원(세장방추형)을 자율주행하며
+      영상·점군을 수집하고, 착과 카운팅과 병해 증상을 탐지하기 위한 Gazebo 시뮬레이션. 이 문서는 코드 진행에
+      맞춰 갱신되는 재현 가능한 개발 로그입니다.</p>
+    <div class="meta-row">
+      <span>스택 <b>ROS 2 Jazzy · Gazebo Harmonic 8.11.0</b></span>
+      <span>진행 <b>단계 0–3 / 9 완료</b></span>
+      <span>기준일 <b>2026-07-25</b></span>
+      <span>GPU <b>GTX 1660 SUPER (복구됨)</b></span>
+    </div>
+
+    <div class="pipeline" role="list">
+      <a class="pip done" href="#s0" role="listitem"><span class="n">00 <span class="tick">✓</span></span><span class="nm">환경</span></a>
+      <a class="pip done" href="#s1" role="listitem"><span class="n">01 <span class="tick">✓</span></span><span class="nm">라벨·나무</span></a>
+      <a class="pip done" href="#s2" role="listitem"><span class="n">02 <span class="tick">✓</span></span><span class="nm">월드</span></a>
+      <a class="pip done" href="#s3" role="listitem"><span class="n">03 <span class="tick">✓</span></span><span class="nm">로봇</span></a>
+      <a class="pip cur" href="#next" role="listitem"><span class="n">04</span><span class="nm">인터페이스</span></a>
+      <a class="pip" href="#next" role="listitem"><span class="n">05</span><span class="nm">Stage-0</span></a>
+      <a class="pip" href="#next" role="listitem"><span class="n">06</span><span class="nm">Nav2</span></a>
+      <a class="pip" href="#next" role="listitem"><span class="n">07</span><span class="nm">FAST-LIO2</span></a>
+      <a class="pip" href="#next" role="listitem"><span class="n">08</span><span class="nm">데이터</span></a>
+      <a class="pip" href="#next" role="listitem"><span class="n">09</span><span class="nm">병해</span></a>
+    </div>
+  </div>
+</header>
+
+<div class="wrap layout">
+  <nav class="toc" aria-label="목차">
+    <div class="grp">개요</div>
+    <a href="#overview">프로젝트 개요</a>
+    <a href="#decisions">확정 결정 D1–D13</a>
+    <a href="#blockers">환경 블로커</a>
+    <div class="grp">완료 단계</div>
+    <a href="#s0">0 · 스택 설치</a>
+    <a href="#s1">1 · 라벨·나무 생성기</a>
+    <a href="#s2">2 · 과수원 월드</a>
+    <a href="#s3">3 · 로봇 모델</a>
+    <div class="grp">참조</div>
+    <a href="#filemap">파일 맵</a>
+    <a href="#labels">라벨 체계</a>
+    <a href="#next">다음 단계</a>
+  </nav>
+
+  <main>
+    <!-- OVERVIEW -->
+    <section id="overview">
+      <p class="sec-kicker">Overview</p>
+      <h2>무엇을 만드는가</h2>
+      <p>이 프로젝트는 예전 스타트업에서 운용하던 장비 구성(Scout Mini + Livox MID-70)을 시뮬레이션으로
+        재현해, 실제로 수집했던 데이터와 비교 가능한 파이프라인을 다시 세우는 작업입니다. 실제 과수원을
+        컴퓨터로 주행할 수는 없으므로, 노지 사과 과수원을 Gazebo에 절차적으로 생성하고 그 안에서 로봇이
+        자율주행하며 데이터를 수집합니다.</p>
+      <div class="tiles">
+        <div class="tile"><div class="k">과종 · 수형</div><div class="v" style="font-size:15px">사과 · 세장방추형</div></div>
+        <div class="tile"><div class="k">재식 거리</div><div class="v">3.5<small>×</small>1.5<small> m</small></div></div>
+        <div class="tile"><div class="k">분석 목표</div><div class="v" style="font-size:15px">착과 · 병해</div></div>
+        <div class="tile"><div class="k">주행</div><div class="v" style="font-size:15px">Nav2 자율</div></div>
+        <div class="tile"><div class="k">SLAM</div><div class="v" style="font-size:15px">FAST-LIO2</div></div>
+      </div>
+      <p>Phase 1(이 문서)의 산출물은 <strong>과수원 월드 · 로봇 모델 · 자율주행 · 정답 라벨 파이프라인</strong>입니다.
+        통합 관제 시스템은 Phase 2로 분리했습니다.</p>
+    </section>
+
+    <!-- DECISIONS -->
+    <section id="decisions">
+      <p class="sec-kicker">Locked decisions</p>
+      <h2>확정 결정 D1–D13</h2>
+      <p>아래는 재론하지 않기로 고정한 결정입니다. D1–D2는 하드웨어·호환성이, D3–D11은 사용자 선택이,
+        D12–D13은 예전 스타트업 실제 구성이 근거입니다.</p>
+      <div class="decisions">
+        <div class="dcard"><span class="id">D1</span><div class="t">Gazebo Harmonic</div><div class="d">Isaac Sim은 RT 코어 부재·VRAM 6&lt;16GB로 불가</div></div>
+        <div class="dcard"><span class="id">D2</span><div class="t">ROS 2 Jazzy</div><div class="d">noble Tier 1 유일 LTS (2029-05 EOL)</div></div>
+        <div class="dcard"><span class="id">D3</span><div class="t">사과 세장방추형</div><div class="d">RDA 농사로 3.5×1.5 m</div></div>
+        <div class="dcard"><span class="id">D4</span><div class="t">착과 + 병해</div><div class="d">종 진단 아닌 증상 탐지로 한정</div></div>
+        <div class="dcard"><span class="id">D5</span><div class="t">Nav2 자율주행</div><div class="d">텔레옵·단순 추종 아님</div></div>
+        <div class="dcard"><span class="id">D6</span><div class="t">FAST-LIO2</div><div class="d">협FOV 솔리드스테이트 설계 대상</div></div>
+        <div class="dcard"><span class="id">D7</span><div class="t">MID-70 단독</div><div class="d">360° 라이다 추가 안 함 · 완화책 별도</div></div>
+        <div class="dcard"><span class="id">D8</span><div class="t">시뮬레이션 전용</div><div class="d">MID-70 Jazzy 드라이버 부재 무관해짐</div></div>
+        <div class="dcard"><span class="id">D9</span><div class="t">월드 우선 순서</div><div class="d">월드→로봇→자율주행→데이터</div></div>
+        <div class="dcard"><span class="id">D10</span><div class="t">실데이터 보류</div><div class="d">AI Hub 신청 뒤로</div></div>
+        <div class="dcard"><span class="id">D11</span><div class="t">웹 매뉴얼</div><div class="d">이 문서 · 단계마다 갱신</div></div>
+        <div class="dcard"><span class="id">D12</span><div class="t">MID-70 마운트</div><div class="d">틸트 없음 · 40cm 높게 · 앞면 정렬</div></div>
+        <div class="dcard"><span class="id">D13</span><div class="t">병해 임계값</div><div class="d">severity 0–5 정상 / 6–10 병충해</div></div>
+      </div>
+    </section>
+
+    <!-- BLOCKERS -->
+    <section id="blockers">
+      <p class="sec-kicker">Environment</p>
+      <h2>먼저 넘은 두 블로커</h2>
+      <h3>1. NVIDIA 드라이버 (Secure Boot)</h3>
+      <p>DKMS가 빌드한 <code>nvidia.ko</code>가 머신 소유자 키로 서명됐으나 그 키가 MOK에 등록되지 않아
+        커널 lockdown이 로드를 거부. 모니터가 NVIDIA 카드에 꽂혀 있어 화면은 가속 없는 프레임버퍼로 나오고
+        GPU는 놀고 있었습니다. MOK 등록 + <code>prime-select nvidia</code>로 복구.</p>
+      <pre><span class="c"># MOK 등록 (재부팅 시 파란 화면에서 Enroll)</span>
+sudo mokutil --import /var/lib/shim-signed/mok/MOK.der
+sudo prime-select nvidia   <span class="c"># ★ on-demand면 gz sim이 계속 iGPU를 씀</span>
+sudo reboot</pre>
+      <div class="callout"><span class="lbl">복구 확인</span>
+        <p><span class="mono">nvidia-smi</span> → GTX 1660 SUPER 580.173.02 · <span class="mono">card2 → nvidia</span> ·
+        OpenGL renderer <span class="mono">NVIDIA GeForce GTX 1660 SUPER</span> (llvmpipe/Intel 아님)</p></div>
+      <h3>2. packages.ros.org HTTPS 인증서 불일치</h3>
+      <p>OSU 미러로 CNAME되며 <code>*.osuosl.org</code> 인증서를 제시해 HTTPS가 실패. 그러나 공식
+        <code>ros2-apt-source</code> .deb가 원래 <code>http://</code>로 설정하고 무결성은 GPG 서명으로
+        보장하므로 <strong>우회가 필요 없습니다</strong>. <code>https://packages.ros.org</code> 소스 줄을
+        손으로 쓰지 말 것.</p>
+    </section>
+
+    <!-- STAGE 0 -->
+    <section id="s0">
+      <div class="stage">
+        <div class="stage-head">
+          <span class="stage-no">단계 00</span>
+          <h3 class="stage-title">ROS 2 Jazzy + Gazebo Harmonic 설치</h3>
+          <span class="chip done">완료 · 검증</span>
+        </div>
+        <p>네이티브 설치. Docker 없음, Gazebo Classic 없음. Gazebo는 Jazzy부터 <code>ros-jazzy-*-vendor</code>
+          패키지로 오므로 <code>packages.osrfoundation.org</code>를 추가하지 않습니다(두 벌 설치 충돌).</p>
+        <pre>sudo bash scripts/00_install_stack.sh   <span class="c"># 로케일·저장소·스택·검증 일괄</span>
+source ~/.bashrc                        <span class="c"># QT_QPA_PLATFORM=xcb 포함 (Wayland 필수)</span>
+gz sim shapes.sdf                       <span class="c"># 스모크 테스트</span></pre>
+        <p><strong>실측 검증</strong> — 설계가 가정한 버전이 그대로 확인됐고, 조건부로 넣었던 STVL·nav2_route
+          바이너리가 모두 존재해 소스 빌드가 불필요했습니다.</p>
+        <div class="tbl-wrap"><table>
+          <tr><th>구성요소</th><th>버전</th><th>비고</th></tr>
+          <tr><td>gz-sim</td><td class="mono">8.11.0</td><td>브리프 예측과 일치</td></tr>
+          <tr><td>ros_gz</td><td class="mono">1.0.22</td><td>Jazzy/noble</td></tr>
+          <tr><td>navigation2</td><td class="mono">1.3.12</td><td>MPPI 기본</td></tr>
+          <tr><td>spatio_temporal_voxel_layer</td><td class="mono">2.5.5</td><td class="pass">바이너리 존재</td></tr>
+          <tr><td>nav2_route</td><td class="mono">1.3.12</td><td class="pass">경로 그래프 사용 가능</td></tr>
+          <tr><td>OpenGL renderer</td><td class="mono">GTX 1660 SUPER</td><td>4.6.0 / 6144 MB</td></tr>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- STAGE 1 -->
+    <section id="s1">
+      <div class="stage">
+        <div class="stage-head">
+          <span class="stage-no">단계 01</span>
+          <h3 class="stage-title">라벨 인스턴스 분리 실측 + 사과나무 생성기</h3>
+          <span class="chip done">완료 · 검증</span>
+        </div>
+        <p>두 리서치 브리프가 "과실을 어떤 SDF 구조로 배치해야 인스턴스 분리가 되는가"에서 정면 충돌했습니다.
+          월드 생성기 아키텍처 전체가 여기 달려 있어 5개 구성을 한 월드에 넣고 실측으로 결정했습니다.</p>
+        <div class="tbl-wrap"><table>
+          <tr><th>구성</th><th>SDF 구조</th><th>기대</th><th>실측</th><th>판정</th></tr>
+          <tr><td class="mono">A</td><td>한 모델 / 한 링크 / visual 3개</td><td class="mono">3</td><td class="mono">1</td><td class="fail">뭉개짐</td></tr>
+          <tr><td class="mono">B</td><td>한 모델 / 링크 3개</td><td class="mono">3</td><td class="mono">1</td><td class="fail">뭉개짐</td></tr>
+          <tr><td class="mono">C</td><td>최상위 &lt;model&gt; 3개</td><td class="mono">3</td><td class="mono">3</td><td class="pass">분리</td></tr>
+          <tr><td class="mono">D</td><td>최상위 &lt;include&gt; 3개</td><td class="mono">3</td><td class="mono">3</td><td class="pass">분리</td></tr>
+          <tr><td class="mono">E</td><td>부모 모델 안 중첩 &lt;include&gt;</td><td class="mono">3</td><td class="mono">1</td><td class="fail">뭉개짐</td></tr>
+        </table></div>
+        <div class="callout warn"><span class="lbl">함정 회피</span>
+          <p><strong>인스턴스 분리는 최상위 non-nested 모델 단위로만 일어납니다.</strong> 브리프 2의
+          "per-visual Label로 인스턴스가 자동 부여된다"는 반증됐습니다. 그대로 갔다면 마스크는 그럴듯하지만
+          인스턴스가 나무당 1개 — 착과 카운팅 정답이 통째로 무의미해질 뻔했습니다. 부수적으로 panoptic 채널
+          인코딩도 브리프와 반대(<span class="mono">ch2=라벨, ch0·ch1=인스턴스</span>)임을 확인했습니다.</p></div>
+
+        <h3>Blender 사과나무 생성기</h3>
+        <p>다운로드 가능한 과수 에셋이 없어(Fuel 13개 검색어 조회 결과 0개) 절차적으로 생성합니다.
+          세장방추형은 의도적으로 인위적인 수형이라 직접 스크립팅이 자연스러운 분기 생성기보다 쉽습니다.</p>
+        <pre>blender --background --python scripts/gen_tree.py -- \
+        --seed 42 <span class="p">--severity 7</span> --out sim/models
+<span class="c"># → severity 7 → DEFECT (임계 6) · 잎 병징 42% · 과실 60(병징 11)</span>
+<span class="c"># → 삼각형 body 1,692 / full 6,492 / 공유 과실 80</span></pre>
+        <p>메시는 <strong>glTF(.glb)</strong>로 내보냅니다 — Ubuntu 24.04 Blender 4.0.2에 COLLADA 익스포터가
+          없고, <code>gz-common5-graphics</code>가 <code>libassimp.so.5</code>에 링크돼 glTF를 읽습니다.
+          <code>&lt;submesh&gt;</code>로 파일 하나에서 부위별 라벨을 붙입니다.</p>
+        <div class="tiles">
+          <div class="tile good"><div class="k">submesh 부위 분리</div><div class="v">4<small> 부위</small></div></div>
+          <div class="tile good"><div class="k">gpu_lidar 반사</div><div class="v">56<small>%</small></div></div>
+          <div class="tile"><div class="k">수관 명중 점</div><div class="v">712</div></div>
+          <div class="tile"><div class="k">severity→판정</div><div class="v" style="font-size:15px">0–5 / 6–10</div></div>
+        </div>
+        <p class="mono" style="font-size:12px;color:var(--muted)">검증: trunk 3,899 · feathers 2,669 · leaf_healthy 14,277 · leaf_diseased 9,554 px — 전부 독립 라벨. gpu_lidar 12,769 광선 중 7,150 반사 (collision 없는 잎·과실 명중).</p>
+      </div>
+    </section>
+
+    <!-- STAGE 2 -->
+    <section id="s2">
+      <div class="stage">
+        <div class="stage-head">
+          <span class="stage-no">단계 02</span>
+          <h3 class="stage-title">과수원 월드 생성기 + 지형</h3>
+          <span class="chip done">완료 · 검증</span>
+        </div>
+        <p>지형 하이트맵(513×513 8-bit)과 나무·지주·2존 지면을 절차적으로 배치합니다. 실측(§01)에 따라
+          <strong>2계층 구조</strong>를 강제합니다 — 배경목은 과실 구워넣은 통짜 모델 <code>&lt;include&gt;</code>,
+          계측 블록은 나무 몸체 + 과실마다 최상위 <code>&lt;include&gt;</code>로 인스턴스를 확보합니다.</p>
+        <pre>python3 scripts/gen_heightmap.py <span class="c"># 513×513 지형</span>
+python3 scripts/gen_world.py --rows 4 --trees-per-row 20 \
+        --instrumented-rows 2 --instrumented-trees 10 --posts \
+        --out sim/worlds/orchard.sdf</pre>
+        <div class="tiles">
+          <div class="tile"><div class="k">배치</div><div class="v">4<small>×</small>20</div></div>
+          <div class="tile"><div class="k">배경목 / 계측목</div><div class="v">58<small> / </small>19</div></div>
+          <div class="tile"><div class="k">과실 인스턴스</div><div class="v">1,140</div></div>
+          <div class="tile"><div class="k">총 엔티티</div><div class="v">1,233</div></div>
+          <div class="tile good"><div class="k">헤드리스 RTF</div><div class="v">0.999</div></div>
+        </div>
+        <p>지형은 평면을 쓰지 않습니다 — 완전 평면은 오도메트리·IMU 거동과 LiDAR 지면분할을 실제보다 쉽게
+          만들어 결과를 오도합니다. 120×120 m에 총기복 1.5 m(1–2% 완경사)를 줍니다.</p>
+      </div>
+    </section>
+
+    <!-- STAGE 3 -->
+    <section id="s3">
+      <div class="stage">
+        <div class="stage-head">
+          <span class="stage-no">단계 03</span>
+          <h3 class="stage-title">Scout Mini + MID-70 로봇 모델</h3>
+          <span class="chip done">완료 · 검증</span>
+        </div>
+        <p>제원은 <code>westonrobot/scout_ros2</code> 스펙과 일치시키되, 관성은 재계산했습니다 —
+          기존 파일의 휠 관성이 Husky 유산으로 40–285배 과대했고 이는 스키드스티어 요 응답을 지배해
+          시뮬 튜닝 게인을 실기에서 무용하게 만듭니다. 구동은 <code>gz-sim DiffDrive</code>(실제
+          <code>scout_base</code>가 독립 노드라 <code>gz_ros2_control</code>은 쓰지 않음).</p>
+        <h3>MID-70 마운트 (D12 — 실제 구성 재현)</h3>
+        <p>로봇과 같은 방향(<strong>틸트 없음</strong>), 로봇보다 <strong>40 cm 높게</strong>, 앞면 정렬 →
+          <code>base_link</code> 기준 <span class="mono">(0.275, 0, 0.645)</span>. 틸트가 없어 지면 사각이
+          전방 0.91 m 생기지만, 대신 수관 상단(수고 3.2 m)이 3.5 m 앞에서 시야에 들어옵니다.</p>
+        <pre>bash scripts/03_verify_robot.sh   <span class="c"># 로드·센서·주행 검증</span></pre>
+        <div class="tbl-wrap"><table>
+          <tr><th>검증 항목</th><th>결과</th><th>판정</th></tr>
+          <tr><td>센서 토픽 6종</td><td class="mono">MID-70·IMU·navsat·cam×3·odom</td><td class="pass">전부 발행</td></tr>
+          <tr><td>직진 1.0 m/s</td><td class="mono">y 드리프트 3e-9 m</td><td class="pass">윤거 정확</td></tr>
+          <tr><td>제자리회전 0.5 rad/s</td><td class="mono">x·y 불변, yaw 변화</td><td class="pass">스키드스티어 정상</td></tr>
+          <tr><td>RTF (로봇+센서, 평지)</td><td class="mono">~1.00</td><td class="pass">양호</td></tr>
+          <tr><td>RTF (로봇+과수원 통합)</td><td class="mono">0.55–0.84</td><td style="color:var(--warn);font-weight:700">최적화 여지</td></tr>
+        </table></div>
+        <div class="callout warn"><span class="lbl">알려진 이슈</span>
+          <p>통합 RTF 0.55–0.84는 설계 목표(0.8–1.0) 하단입니다. Levels(<span class="mono">--levels</span>)
+          미적용, 수관 카메라 2대가 1920×1080 상시 렌더 중 — 데이터 수집·Nav2 단계 전에 §9 레버로 0.8+ 확보 예정.</p></div>
+      </div>
+    </section>
+
+    <!-- FILE MAP -->
+    <section id="filemap">
+      <p class="sec-kicker">Reference</p>
+      <h2>파일 맵</h2>
+      <div class="tbl-wrap"><table>
+        <tr><th>경로</th><th>역할</th></tr>
+        <tr><td class="mono">scripts/00_install_stack.sh</td><td>스택 설치·검증 일괄</td></tr>
+        <tr><td class="mono">scripts/gen_tree.py</td><td>세장방추형 사과나무 생성 (Blender bpy)</td></tr>
+        <tr><td class="mono">scripts/gen_heightmap.py</td><td>지형 하이트맵 생성</td></tr>
+        <tr><td class="mono">scripts/gen_world.py</td><td>과수원 월드 조립 (배경목/계측목/지주)</td></tr>
+        <tr><td class="mono">scripts/0{1,2,3}_verify_*</td><td>단계별 실측 검증</td></tr>
+        <tr><td class="mono">sim/models/scout_mini_mid70/</td><td>로봇 SDF (섀시·4륜·센서 6종·DiffDrive)</td></tr>
+        <tr><td class="mono">sim/models/orchard_terrain/</td><td>지형 모델 (하이트맵 collision+visual)</td></tr>
+        <tr><td class="mono">docs/superpowers/specs/…design.md</td><td>설계서 (D1–D13, §1–§13)</td></tr>
+        <tr><td class="mono">docs/findings/</td><td>실측 검증 기록 (라벨·로봇)</td></tr>
+        <tr><td class="mono">docs/research/</td><td>리서치 원문 (에이전트 25 + 검증 14)</td></tr>
+      </table></div>
+    </section>
+
+    <!-- LABELS -->
+    <section id="labels">
+      <h2>라벨 체계 &amp; severity 매핑</h2>
+      <p>정답 세그멘테이션 라벨 ID(0–255)와 병해 severity→외형 매핑입니다. 기존 파이프라인(Fast R-CNN
+        부위검출 → ResNet18 분류)이 부위 단위이므로 라벨도 부위 단위로 설계했습니다.</p>
+      <div class="tbl-wrap"><table>
+        <tr><th>ID</th><th>클래스</th><th>ID</th><th>클래스</th></tr>
+        <tr><td class="mono">10</td><td>ground</td><td class="mono">30</td><td>leaf_healthy</td></tr>
+        <tr><td class="mono">12</td><td>trellis_post</td><td class="mono">31</td><td>leaf_diseased</td></tr>
+        <tr><td class="mono">20</td><td>trunk</td><td class="mono">40</td><td>fruit_healthy</td></tr>
+        <tr><td class="mono">21</td><td>branch</td><td class="mono">41</td><td>fruit_diseased</td></tr>
+      </table></div>
+      <p><strong>D13 병해 판정</strong>: 생성기가 나무마다 severity 0–10을 정답으로 함께 출력하고,
+        이진 라벨은 <code>severity ≥ 6</code>로 파생합니다. 원본 severity를 보존하므로 임계값을 바꿔도
+        재라벨링이 불필요합니다.</p>
+      <pre>severity 0 ~ 5   →  정상   (NORMAL)
+severity 6 ~ 10  →  병충해 (DEFECT)</pre>
+    </section>
+
+    <!-- NEXT -->
+    <section id="next">
+      <p class="sec-kicker">Roadmap</p>
+      <h2>다음 단계</h2>
+      <ul class="clean">
+        <li><strong>04 · 인터페이스 계약</strong> — <code>livox_sim_bridge</code>: 원형 FOV 마스킹 + FAST-LIO2용 CustomMsg 합성</li>
+        <li><strong>05 · Stage-0 스캐폴드</strong> — gz 모델 포즈로 완벽한 <code>map→odom</code>을 발행해 Nav2를 먼저 튜닝</li>
+        <li><strong>06 · Nav2</strong> — 사전 매핑 정적 레이어 + STVL + MPPI, 통로 2.3 m 왕복·선회</li>
+        <li><strong>07 · FAST-LIO2</strong> — 실제 위치추정으로 교체, X 미관측은 행 이벤트 리셋으로 회피</li>
+        <li><strong>08 · 데이터 파이프라인</strong> — GT 센서 + 데이터셋 작성기 + 타임스탬프 동일성 assert</li>
+        <li><strong>09 · 병해 에셋</strong> — 잎·과실 PBR 병징 텍스처 + 병반 데칼</li>
+      </ul>
+      <p style="margin-top:18px">전체 규모 추정 약 50–56 person-day. 최대 단일 항목은 Nav2가 아니라
+        에셋·라벨 파이프라인입니다. 이 문서는 각 단계가 끝날 때마다 같은 URL로 갱신됩니다.</p>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">YBNML · Phase 1 개발 매뉴얼 · 단계 0–3 완료 · 2026-07-25 · 재현 가능 개발 로그</div>
+</footer>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById("themeToggle");
+    btn.addEventListener("click", function () {
+      var cur = root.getAttribute("data-theme");
+      if (!cur) {
+        cur = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      root.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+    });
+
+    // 목차 활성 표시
+    var links = Array.prototype.slice.call(document.querySelectorAll("nav.toc a"));
+    var map = {};
+    links.forEach(function (a) {
+      var id = a.getAttribute("href").slice(1);
+      var el = document.getElementById(id);
+      if (el) map[id] = a;
+    });
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          links.forEach(function (l) { l.classList.remove("active"); });
+          var a = map[e.target.id];
+          if (a) a.classList.add("active");
+        }
+      });
+    }, { rootMargin: "-20% 0px -70% 0px" });
+    Object.keys(map).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) obs.observe(el);
+    });
+  })();
+</script>
