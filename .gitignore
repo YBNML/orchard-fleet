@@ -19,3 +19,6 @@ sim/worlds/orchard_robot.sdf
 sim/models/orchard_terrain/model.sdf
 sim/models/orchard_terrain/heightmap.npy
 sim/models/orchard_terrain/heightmap_meta.json
+
+# Scout Mini 원본 메시 (33MB, 재취득 가능 — docs/reference/scout_mini_mesh_ATTRIBUTION.md 참조)
+sim/models/scout_mini_mid70/meshes/*.dae
