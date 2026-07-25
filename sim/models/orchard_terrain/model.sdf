@@ -1,5 +1,7 @@
 <?xml version="1.0" ?>
-<!-- 자동 생성 (gen_heightmap.py). 경사면 지형: 열을 가로지르는 4.5% 구배 -->
+<!-- 자동 생성 (gen_heightmap.py)
+     계단식 과수원 지형: 통로 9개 테라스, 통로간 단차 0.37 m,
+     법면 폭 1.20 m, 선회 구역에서 연속 램프로 전환 -->
 <sdf version="1.9">
   <model name="orchard_terrain">
     <static>true</static>
@@ -7,13 +9,13 @@
       <collision name="collision">
         <geometry><heightmap>
           <uri>model://orchard_terrain/materials/textures/orchard_heightmap.png</uri>
-          <size>120.0 120.0 5.4704</size><pos>0 0 0</pos>
+          <size>120.0 120.0 4.8188</size><pos>0 0 0</pos>
         </heightmap></geometry>
       </collision>
       <visual name="visual">
         <geometry><heightmap>
           <uri>model://orchard_terrain/materials/textures/orchard_heightmap.png</uri>
-          <size>120.0 120.0 5.4704</size><pos>0 0 0</pos>
+          <size>120.0 120.0 4.8188</size><pos>0 0 0</pos>
           <texture><size>8</size>
             <diffuse>model://orchard_terrain/materials/textures/grass.png</diffuse>
             <normal>model://orchard_terrain/materials/textures/flat_normal.png</normal>

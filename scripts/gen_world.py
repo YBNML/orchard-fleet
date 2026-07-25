@@ -169,6 +169,20 @@ def bg_tree_include(name, model, x, y, z, yaw):
 
 
 # ── 나무 영역 밖 환경 오브젝트 ──────────────────────────────────────────────
+# 라벨 체계 확장 (설계서 §8.3 의 0~59 뒤를 잇는다)
+LBL_STRUCTURE = 60      # 건물·탱크·울타리·전신주
+LBL_MACHINERY = 61      # 농기계 (트랙터·스피드스프레이어)
+LBL_CONTAINER = 62      # 수확 컨테이너
+LBL_WINDBREAK = 63      # 방풍림
+LBL_ROCK = 64           # 돌무더기 등 자연 장애물
+LBL_ROAD = 65           # 진입로
+
+
+def _lbl(n):
+    return (f'          <plugin filename="gz-sim-label-system" '
+            f'name="gz::sim::systems::Label"><label>{n}</label></plugin>\n')
+
+
 def windbreak_tree(name, x, y, z, h, seed):
     """방풍림 — 트렁크 + 길쭉한 타원체 수관 (포플러/사이프러스류 근사).
 
@@ -184,12 +198,12 @@ def windbreak_tree(name, x, y, z, h, seed):
           <pose>0 0 {h * 0.11:.3f} 0 0 0</pose>
           <geometry><cylinder><radius>0.12</radius><length>{h * 0.22:.3f}</length></cylinder></geometry>
           <material><ambient>0.28 0.2 0.13 1</ambient><diffuse>0.28 0.2 0.13 1</diffuse></material>
-        </visual>
+{_lbl(LBL_WINDBREAK)}        </visual>
         <visual name="crown">
           <pose>0 0 {h * 0.22 + crown_h / 2:.3f} 0 0 0</pose>
           <geometry><ellipsoid><radii>{r:.3f} {r:.3f} {crown_h / 2:.3f}</radii></ellipsoid></geometry>
           <material><ambient>0.12 0.3 0.14 1</ambient><diffuse>0.14 0.34 0.16 1</diffuse></material>
-        </visual>
+{_lbl(LBL_WINDBREAK)}        </visual>
         <collision name="trunk_c">
           <pose>0 0 {h / 2:.3f} 0 0 0</pose>
           <geometry><cylinder><radius>0.15</radius><length>{h:.3f}</length></cylinder></geometry>
@@ -209,17 +223,17 @@ def farm_shed(name, x, y, z, yaw=0.0):
           <pose>0 0 1.25 0 0 0</pose>
           <geometry><box><size>4.0 3.0 2.5</size></box></geometry>
           <material><ambient>0.7 0.68 0.6 1</ambient><diffuse>0.72 0.7 0.62 1</diffuse></material>
-        </visual>
+{_lbl(LBL_STRUCTURE)}        </visual>
         <visual name="roof_l">
           <pose>0 -0.85 2.9 0.5 0 0</pose>
           <geometry><box><size>4.2 2.1 0.12</size></box></geometry>
           <material><ambient>0.35 0.15 0.12 1</ambient><diffuse>0.4 0.17 0.13 1</diffuse></material>
-        </visual>
+{_lbl(LBL_STRUCTURE)}        </visual>
         <visual name="roof_r">
           <pose>0 0.85 2.9 -0.5 0 0</pose>
           <geometry><box><size>4.2 2.1 0.12</size></box></geometry>
           <material><ambient>0.35 0.15 0.12 1</ambient><diffuse>0.4 0.17 0.13 1</diffuse></material>
-        </visual>
+{_lbl(LBL_STRUCTURE)}        </visual>
         <collision name="c"><pose>0 0 1.25 0 0 0</pose>
           <geometry><box><size>4.0 3.0 2.5</size></box></geometry></collision>
       </link>
@@ -237,7 +251,7 @@ def water_tank(name, x, y, z):
           <pose>0 0 1.25 0 0 0</pose>
           <geometry><cylinder><radius>1.1</radius><length>2.5</length></cylinder></geometry>
           <material><ambient>0.55 0.57 0.6 1</ambient><diffuse>0.6 0.62 0.66 1</diffuse></material>
-        </visual>
+{_lbl(LBL_STRUCTURE)}        </visual>
         <collision name="c"><pose>0 0 1.25 0 0 0</pose>
           <geometry><cylinder><radius>1.1</radius><length>2.5</length></cylinder></geometry></collision>
       </link>
@@ -245,40 +259,309 @@ def water_tank(name, x, y, z):
 """
 
 
+def harvest_bins(name, x, y, z, yaw, stacks=2, per_stack=3):
+    """사과 수확용 목재 컨테이너(빈) 더미. 과수원에서 가장 흔한 적치물."""
+    W, D, Hh = 1.15, 1.15, 0.75
+    parts = [f'    <model name="{name}">\n      <static>true</static>\n'
+             f'      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>\n'
+             f'      <link name="link">\n']
+    for s in range(stacks):
+        for i in range(per_stack):
+            ox = s * (W + 0.12)
+            oz = Hh / 2 + i * Hh
+            parts.append(
+                f'        <visual name="bin_{s}_{i}">\n'
+                f'          <pose>{ox:.3f} 0 {oz:.3f} 0 0 0</pose>\n'
+                f'          <geometry><box><size>{W} {D} {Hh}</size></box></geometry>\n'
+                f'          <material><ambient>0.52 0.36 0.20 1</ambient>'
+                f'<diffuse>0.58 0.40 0.22 1</diffuse></material>\n'
+                + _lbl(LBL_CONTAINER) +
+                f'        </visual>\n')
+    parts.append(
+        f'        <collision name="c">\n'
+        f'          <pose>{(stacks - 1) * (W + 0.12) / 2:.3f} 0 {per_stack * Hh / 2:.3f} 0 0 0</pose>\n'
+        f'          <geometry><box><size>{stacks * (W + 0.12):.2f} {D} {per_stack * Hh:.2f}</size></box></geometry>\n'
+        f'        </collision>\n      </link>\n    </model>\n')
+    return "".join(parts)
+
+
+def tractor(name, x, y, z, yaw):
+    """소형 트랙터 — 차체 + 캐빈 + 앞뒤 바퀴."""
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>
+      <link name="link">
+        <visual name="body">
+          <pose>0 0 0.72 0 0 0</pose>
+          <geometry><box><size>2.9 1.3 0.75</size></box></geometry>
+          <material><ambient>0.15 0.35 0.15 1</ambient><diffuse>0.18 0.45 0.18 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="cabin">
+          <pose>-0.45 0 1.55 0 0 0</pose>
+          <geometry><box><size>1.15 1.2 0.9</size></box></geometry>
+          <material><ambient>0.2 0.22 0.25 1</ambient><diffuse>0.25 0.28 0.32 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="wheel_fl">
+          <pose>1.0 0.72 0.42 -1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.42</radius><length>0.28</length></cylinder></geometry>
+          <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="wheel_fr">
+          <pose>1.0 -0.72 0.42 -1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.42</radius><length>0.28</length></cylinder></geometry>
+          <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="wheel_rl">
+          <pose>-0.95 0.75 0.62 -1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.62</radius><length>0.36</length></cylinder></geometry>
+          <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="wheel_rr">
+          <pose>-0.95 -0.75 0.62 -1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.62</radius><length>0.36</length></cylinder></geometry>
+          <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <collision name="c"><pose>0 0 0.9 0 0 0</pose>
+          <geometry><box><size>3.0 1.6 1.8</size></box></geometry></collision>
+      </link>
+    </model>
+"""
+
+
+def speed_sprayer(name, x, y, z, yaw):
+    """스피드스프레이어 — 국내 과수원 방제의 표준 장비. 원통 약액탱크 + 송풍구."""
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>
+      <link name="link">
+        <visual name="tank">
+          <pose>0 0 1.0 0 1.5708 0</pose>
+          <geometry><cylinder><radius>0.62</radius><length>2.0</length></cylinder></geometry>
+          <material><ambient>0.75 0.72 0.15 1</ambient><diffuse>0.85 0.82 0.18 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="fan">
+          <pose>-1.15 0 0.95 0 1.5708 0</pose>
+          <geometry><cylinder><radius>0.5</radius><length>0.35</length></cylinder></geometry>
+          <material><ambient>0.3 0.3 0.32 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="chassis">
+          <pose>0 0 0.42 0 0 0</pose>
+          <geometry><box><size>2.4 1.15 0.35</size></box></geometry>
+          <material><ambient>0.25 0.25 0.28 1</ambient><diffuse>0.3 0.3 0.33 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="w_l"><pose>0.7 0.62 0.32 -1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.32</radius><length>0.22</length></cylinder></geometry>
+          <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <visual name="w_r"><pose>0.7 -0.62 0.32 -1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.32</radius><length>0.22</length></cylinder></geometry>
+          <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+{_lbl(LBL_MACHINERY)}        </visual>
+        <collision name="c"><pose>0 0 0.9 0 0 0</pose>
+          <geometry><box><size>2.6 1.3 1.6</size></box></geometry></collision>
+      </link>
+    </model>
+"""
+
+
+def utility_pole(name, x, y, z):
+    """전신주 + 완목. 과수원 가장자리를 따라 선다."""
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose>
+      <link name="link">
+        <visual name="pole">
+          <pose>0 0 4.0 0 0 0</pose>
+          <geometry><cylinder><radius>0.13</radius><length>8.0</length></cylinder></geometry>
+          <material><ambient>0.55 0.55 0.52 1</ambient><diffuse>0.6 0.6 0.57 1</diffuse></material>
+{_lbl(LBL_STRUCTURE)}        </visual>
+        <visual name="crossarm">
+          <pose>0 0 7.2 0 0 0</pose>
+          <geometry><box><size>0.1 1.8 0.1</size></box></geometry>
+          <material><ambient>0.35 0.28 0.2 1</ambient><diffuse>0.4 0.32 0.22 1</diffuse></material>
+{_lbl(LBL_STRUCTURE)}        </visual>
+        <collision name="c"><pose>0 0 4.0 0 0 0</pose>
+          <geometry><cylinder><radius>0.15</radius><length>8.0</length></cylinder></geometry></collision>
+      </link>
+    </model>
+"""
+
+
+def hose_reel(name, x, y, z, yaw):
+    """관수용 호스릴 — 받침대 + 감긴 호스 드럼."""
+    return f"""    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>
+      <link name="link">
+        <visual name="frame">
+          <pose>0 0 0.18 0 0 0</pose>
+          <geometry><box><size>1.1 0.8 0.35</size></box></geometry>
+          <material><ambient>0.4 0.15 0.12 1</ambient><diffuse>0.5 0.18 0.14 1</diffuse></material>
+{_lbl(LBL_STRUCTURE)}        </visual>
+        <visual name="drum">
+          <pose>0 0 0.62 1.5708 0 0</pose>
+          <geometry><cylinder><radius>0.42</radius><length>0.55</length></cylinder></geometry>
+          <material><ambient>0.15 0.18 0.35 1</ambient><diffuse>0.18 0.22 0.42 1</diffuse></material>
+{_lbl(LBL_STRUCTURE)}        </visual>
+        <collision name="c"><pose>0 0 0.5 0 0 0</pose>
+          <geometry><box><size>1.1 0.9 1.0</size></box></geometry></collision>
+      </link>
+    </model>
+"""
+
+
+def rock_pile(name, x, y, z, seed, rng):
+    """돌무더기 — 개간 시 골라낸 돌을 가장자리에 쌓아둔 것."""
+    parts = [f'    <model name="{name}">\n      <static>true</static>\n'
+             f'      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose>\n      <link name="link">\n']
+    n = rng.randint(4, 8)
+    for i in range(n):
+        r = rng.uniform(0.16, 0.34)
+        ox, oy = rng.gauss(0, 0.45), rng.gauss(0, 0.45)
+        oz = r * rng.uniform(0.6, 1.4)
+        g = rng.uniform(0.38, 0.55)
+        parts.append(
+            f'        <visual name="r{i}">\n'
+            f'          <pose>{ox:.3f} {oy:.3f} {oz:.3f} 0 0 0</pose>\n'
+            f'          <geometry><ellipsoid><radii>{r:.3f} {r * 0.85:.3f} {r * 0.7:.3f}</radii></ellipsoid></geometry>\n'
+            f'          <material><ambient>{g:.2f} {g:.2f} {g * 0.95:.2f} 1</ambient>'
+            f'<diffuse>{g + .05:.2f} {g + .05:.2f} {g:.2f} 1</diffuse></material>\n'
+            + _lbl(LBL_ROCK) +
+            f'        </visual>\n')
+    parts.append('        <collision name="c"><pose>0 0 0.25 0 0 0</pose>\n'
+                 '          <geometry><box><size>1.4 1.4 0.5</size></box></geometry></collision>\n'
+                 '      </link>\n    </model>\n')
+    return "".join(parts)
+
+
+def fence_run(prefix, pts, zf, post_gap=3.0):
+    """울타리 — 말뚝 + 2단 와이어. pts 를 따라 지형에 맞춰 세운다."""
+    out = []
+    idx = 0
+    for (ax, ay), (bx, by) in zip(pts[:-1], pts[1:]):
+        seg = math.hypot(bx - ax, by - ay)
+        n = max(int(seg / post_gap), 1)
+        for i in range(n):
+            t = i / n
+            px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+            pz = zf(px, py)
+            out.append(f"""    <model name="{prefix}_p{idx}">
+      <static>true</static>
+      <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>
+      <link name="link">
+        <visual name="post">
+          <pose>0 0 0.6 0 0 0</pose>
+          <geometry><cylinder><radius>0.045</radius><length>1.2</length></cylinder></geometry>
+          <material><ambient>0.42 0.34 0.24 1</ambient><diffuse>0.48 0.38 0.27 1</diffuse></material>
+{_lbl(LBL_STRUCTURE)}        </visual>
+      </link>
+    </model>
+""")
+            idx += 1
+    return "".join(out)
+
+
+def access_road(name, x_start, x_end, y, zf, width=3.0, segments=24):
+    """진입로 — 지형을 따라가는 흙길. 짧은 판을 이어 붙여 계단 지형에 맞춘다."""
+    out = []
+    for i in range(segments):
+        t0, t1 = i / segments, (i + 1) / segments
+        xa = x_start + (x_end - x_start) * t0
+        xb = x_start + (x_end - x_start) * t1
+        xm = (xa + xb) / 2
+        za, zb = zf(xa, y), zf(xb, y)
+        zm = (za + zb) / 2
+        seg_len = abs(xb - xa)
+        pitch = -math.atan2(zb - za, seg_len) if seg_len > 1e-6 else 0.0
+        out.append(f"""    <model name="{name}_{i}">
+      <static>true</static>
+      <pose>{xm:.3f} {y:.3f} {zm + 0.02:.3f} 0 {pitch:.4f} 0</pose>
+      <link name="link">
+        <visual name="v">
+          <geometry><box><size>{seg_len * 1.05:.3f} {width} 0.04</size></box></geometry>
+          <material><ambient>0.44 0.38 0.30 1</ambient><diffuse>0.5 0.43 0.34 1</diffuse></material>
+{_lbl(LBL_ROAD)}        </visual>
+      </link>
+    </model>
+""")
+    return "".join(out)
+
+
 def build_environment(cfg, terrain, orchard_x0, orchard_x1, orchard_y0, orchard_y1,
                       flip_x, flip_y, rng):
-    """나무 영역 밖에 방풍림·창고·물탱크를 배치한다."""
+    """나무 영역 밖 환경 구성 — 방풍림·울타리·건물·농기계·적치물·진입로."""
     out = []
     zf = lambda x, y: terrain.z(x, y, flip_x, flip_y)
-
-    # 방풍림: 과수원 좌우 바깥 경계를 따라 일렬 (경사 위/아래쪽 가장자리)
+    HL = cfg["headland"]
     margin = 4.0
-    for side, wx in ((-1, orchard_x0 - margin), (1, orchard_x1 + margin)):
-        y = orchard_y0 - 3.0
+    fx0, fx1 = orchard_x0 - margin, orchard_x1 + margin      # 부지 경계 x
+    fy0, fy1 = orchard_y0 - HL - 3.0, orchard_y1 + HL + 3.0  # 부지 경계 y
+
+    # ── 방풍림: 좌우 경계 + 위쪽 ──────────────────────────────────────
+    for tag, wx in (("L", fx0 - 1.5), ("R", fx1 + 1.5)):
+        y = fy0 + 1.0
         i = 0
-        while y <= orchard_y1 + 3.0:
-            h = rng.uniform(4.5, 6.5)
+        while y <= fy1 - 1.0:
             jx = wx + rng.gauss(0, 0.3)
-            out.append(windbreak_tree(f"windbreak_{'L' if side < 0 else 'R'}_{i}",
-                                      jx, y, zf(jx, y), h, rng.randint(0, 99)))
+            out.append(windbreak_tree(f"windbreak_{tag}_{i}", jx, y, zf(jx, y),
+                                      rng.uniform(4.5, 6.5), rng.randint(0, 99)))
             y += rng.uniform(2.8, 3.6)
             i += 1
+    for i in range(6):
+        wx = fx0 + i * (fx1 - fx0) / 5.0
+        wy = fy1 + 1.5 + rng.gauss(0, 0.4)
+        out.append(windbreak_tree(f"windbreak_top_{i}", wx, wy, zf(wx, wy),
+                                  rng.uniform(4.5, 6.0), rng.randint(0, 99)))
 
-    # 창고: 아래쪽 선회 구간 바깥 모서리
-    sx = orchard_x1 + margin - 1.0
-    sy = orchard_y0 - cfg["headland"] - 2.0
-    out.append(farm_shed("farm_shed", sx, sy, zf(sx, sy), yaw=rng.uniform(-0.3, 0.3)))
+    # ── 울타리: 부지 경계 (아래쪽은 진입로 때문에 끊는다) ─────────────
+    out.append(fence_run("fence_w", [(fx0, fy0), (fx0, fy1)], zf))
+    out.append(fence_run("fence_e", [(fx1, fy0), (fx1, fy1)], zf))
+    out.append(fence_run("fence_n", [(fx0, fy1), (fx1, fy1)], zf))
+    gate = (fx0 + fx1) / 2
+    out.append(fence_run("fence_s1", [(fx0, fy0), (gate - 2.5, fy0)], zf))
+    out.append(fence_run("fence_s2", [(gate + 2.5, fy0), (fx1, fy0)], zf))
 
-    # 물탱크: 창고 옆
-    tx, ty = sx - 4.0, sy + 0.5
+    # ── 진입로: 아래쪽 선회 구간을 가로질러 게이트로 ──────────────────
+    road_y = orchard_y0 - HL * 0.55
+    out.append(access_road("access_road", fx0 + 0.5, fx1 - 0.5, road_y, zf))
+
+    # ── 건물·설비: 아래쪽 선회 구간 바깥 ─────────────────────────────
+    sx, sy = fx1 - 2.5, fy0 + 2.5
+    out.append(farm_shed("farm_shed", sx, sy, zf(sx, sy), yaw=rng.uniform(-0.25, 0.25)))
+    tx, ty = sx - 5.5, sy + 0.5
     out.append(water_tank("water_tank", tx, ty, zf(tx, ty)))
+    hx, hy = sx - 3.0, sy - 1.2
+    out.append(hose_reel("hose_reel", hx, hy, zf(hx, hy), rng.uniform(0, 3.14)))
 
-    # 위쪽 선회 구간 바깥에도 방풍림 몇 그루
-    for i in range(5):
-        wx = orchard_x0 + i * (orchard_x1 - orchard_x0) / 4.0
-        wy = orchard_y1 + cfg["headland"] + 2.0 + rng.gauss(0, 0.5)
-        h = rng.uniform(4.5, 6.0)
-        out.append(windbreak_tree(f"windbreak_top_{i}", wx, wy, zf(wx, wy), h, rng.randint(0, 99)))
+    # ── 농기계: 진입로 근처 ──────────────────────────────────────────
+    trx, try_ = fx0 + 3.0, fy0 + 2.0
+    out.append(tractor("tractor", trx, try_, zf(trx, try_), rng.uniform(-0.4, 0.4)))
+    spx, spy = trx + 4.5, try_ + 0.3
+    out.append(speed_sprayer("speed_sprayer", spx, spy, zf(spx, spy), rng.uniform(-0.4, 0.4)))
+
+    # ── 수확 컨테이너: 선회 구간 양끝에 몇 무더기 ────────────────────
+    for i, (bx, by) in enumerate([
+        (orchard_x0 + 2.0, orchard_y0 - HL * 0.45),
+        (orchard_x0 + 9.0, orchard_y1 + HL * 0.45),
+        (orchard_x1 - 3.0, orchard_y1 + HL * 0.5),
+    ]):
+        out.append(harvest_bins(f"harvest_bins_{i}", bx, by, zf(bx, by),
+                                rng.uniform(0, 3.14),
+                                stacks=rng.randint(1, 3), per_stack=rng.randint(2, 4)))
+
+    # ── 전신주: 동쪽 경계를 따라 ─────────────────────────────────────
+    for i in range(4):
+        px = fx1 + 2.5
+        py = fy0 + (fy1 - fy0) * (i + 0.5) / 4
+        out.append(utility_pole(f"utility_pole_{i}", px, py, zf(px, py)))
+
+    # ── 돌무더기: 가장자리 여기저기 ──────────────────────────────────
+    for i in range(6):
+        rx = rng.choice([fx0 - 0.8, fx1 + 0.8, rng.uniform(fx0, fx1)])
+        ry = rng.uniform(fy0 + 1.0, fy1 - 1.0)
+        if orchard_x0 - 1 < rx < orchard_x1 + 1 and orchard_y0 - 1 < ry < orchard_y1 + 1:
+            continue        # 나무 구역 안에는 두지 않는다
+        out.append(rock_pile(f"rock_pile_{i}", rx, ry, zf(rx, ry), i, rng))
 
     return out
 
@@ -399,6 +682,21 @@ def main():
     if not terrain.ok:
         print("[gen_world]   ⚠ 경사면 높이필드 없음 → 평지(z=0)로 배치. "
               "gen_heightmap.py 를 먼저 실행하면 경사면에 앉습니다.")
+    else:
+        # 계단식 지형은 격자에 맞춰 만들어졌다. 격자가 어긋나면 테라스 경계와
+        # 수목열이 안 맞아 나무가 법면 한가운데 서게 된다 — 조용히 잘못되므로 막는다.
+        mism = [(k, terrain.m.get(k), getattr(args, k, None))
+                for k in ("rows", "trees_per_row", "row_spacing", "tree_spacing")
+                if terrain.m.get(k) is not None
+                and abs(float(terrain.m[k]) - float(getattr(args, k))) > 1e-6]
+        if mism:
+            det = ", ".join(f"{k}: 지형 {a} vs 월드 {b}" for k, a, b in mism)
+            raise SystemExit(
+                f"[gen_world] ✘ 지형과 월드의 격자가 다릅니다 ({det}).\n"
+                f"    같은 인자로 gen_heightmap.py 를 다시 실행하세요:\n"
+                f"    python3 scripts/gen_heightmap.py --rows {args.rows} "
+                f"--trees-per-row {args.trees_per_row} "
+                f"--row-spacing {args.row_spacing} --tree-spacing {args.tree_spacing}")
 
     # ── 배치 격자 ──────────────────────────────────────────────────────
     R, T = args.rows, args.trees_per_row
@@ -496,11 +794,19 @@ def main():
           f" / 결주 {stats['missing']}")
     print(f"[gen_world]   과실 인스턴스 {stats['apples']:,} (계측 블록만)")
     if stats.get("env"):
-        print(f"[gen_world]   환경 오브젝트 {stats['env']} (방풍림·창고·물탱크)")
+        print(f"[gen_world]   환경 오브젝트 {stats['env']} "
+              f"(방풍림·울타리·창고·물탱크·농기계·컨테이너·전신주·돌무더기·진입로)")
     if terrain.ok:
-        zmin = zf(x0, y0); zmax = zf(x0 + row_w, y0)
-        print(f"[gen_world]   경사면: 열 방향 지면 높이 {zmin:.2f} → {zmax:.2f} m "
-              f"(구배 {terrain.m['grade']:.1%})")
+        # 통로(테라스) 중심의 지면 높이 — 계단이 실제로 생겼는지 바로 보인다
+        centers = [zf(x0 + (k + 0.5) * cfg["row_spacing"], 0.0) for k in range(R - 1)]
+        steps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
+        if terrain.m.get("profile", "").startswith("terraced"):
+            print(f"[gen_world]   계단식 지형: 통로 {len(centers)}단, "
+                  f"지면 {centers[0]:.2f} → {centers[-1]:.2f} m")
+            print(f"[gen_world]   통로간 단차: "
+                  + " ".join(f"{s * 100:.0f}" for s in steps) + " cm")
+        else:
+            print(f"[gen_world]   지형: 지면 {centers[0]:.2f} → {centers[-1]:.2f} m")
     print(f"[gen_world]   대략 총 엔티티 {total_entities:,}")
     print(f"[gen_world]   과수원 {row_w:.1f} x {col_l:.1f} m + 선회 {cfg['headland']} m")
 
