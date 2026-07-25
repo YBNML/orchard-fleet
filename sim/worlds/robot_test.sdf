@@ -1,0 +1,52 @@
+<?xml version="1.0" ?>
+<!--
+  로봇 검증 월드 (단계 3) — 평지에서 로봇 모델의 기본 동작 확인
+
+  검증 항목:
+   1. 모델 로드 (링크·조인트·센서 모두)
+   2. cmd_vel 주행 → odom 발행, 직진/제자리회전 (설계서 §5.3 검증 게이트)
+   3. 모든 센서 토픽 발행 (MID-70 / IMU / navsat / 카메라 3대)
+-->
+<sdf version="1.9">
+  <world name="robot_test">
+    <plugin filename="gz-sim-physics-system"           name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"     name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system"           name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system"    name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+
+    <physics name="2ms" type="dart">
+      <max_step_size>0.002</max_step_size><real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>36.57</latitude_deg><longitude_deg>128.50</longitude_deg><elevation>50</elevation>
+    </spherical_coordinates>
+
+    <scene><ambient>0.6 0.6 0.6 1</ambient><background>0.7 0.8 0.9</background>
+      <shadows>false</shadows></scene>
+    <light type="directional" name="sun"><cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose><diffuse>1 1 1 1</diffuse>
+      <direction>-0.3 0.3 -0.9</direction></light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="c"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface></collision>
+        <visual name="v"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <include>
+      <uri>model://scout_mini_mid70</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+  </world>
+</sdf>

@@ -15,3 +15,4 @@ sim/models/apple/
 sim/models/orchard_terrain/materials/textures/*.png
 # 생성된 월드 (재생성 가능)
 sim/worlds/orchard.sdf
+sim/worlds/orchard_robot.sdf

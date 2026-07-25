@@ -208,6 +208,8 @@ def main():
     ap.add_argument("--out", default="sim/worlds/orchard.sdf")
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--posts", action="store_true", help="지주 생성")
+    ap.add_argument("--robot", default=None,
+                    help="스폰할 로봇 모델명 (예: scout_mini_mid70). 통로 시작점에 배치")
     for k, v in DEFAULTS.items():
         ap.add_argument(f"--{k.replace('_', '-')}", type=type(v), default=v)
     args = ap.parse_args()
@@ -276,6 +278,18 @@ def main():
                                       rx, y0 - cfg["tree_spacing"], y0 + col_l + cfg["tree_spacing"]))
             stats["posts"] += 1
 
+    # 로봇 스폰 — 첫 통로(0열과 1열 사이) 시작점, 선회 구간에서 진입
+    robot_block = ""
+    if args.robot:
+        spawn_x = x0 + cfg["row_spacing"] / 2          # 0열과 1열 사이 통로 중앙
+        spawn_y = y0 - cfg["headland"] / 2             # 선회 구간
+        robot_block = f"""    <include>
+      <name>{args.robot}</name>
+      <uri>model://{args.robot}</uri>
+      <pose>{spawn_x:.3f} {spawn_y:.3f} 0.20 0 0 1.5708</pose>
+    </include>
+"""
+
     world_name = f"orchard_{R}x{T}"
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -284,6 +298,9 @@ def main():
         f.write(f"\n    <!-- 나무 {stats['bg']} 배경 + {stats['instrumented']} 계측"
                 f" / 결주 {stats['missing']} / 과실 인스턴스 {stats['apples']} -->\n")
         f.writelines(body)
+        if robot_block:
+            f.write("\n    <!-- 로봇 -->\n")
+            f.write(robot_block)
         f.write(sdf_footer())
 
     total_entities = (stats["bg"] + stats["instrumented"] + stats["apples"]
