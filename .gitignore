@@ -10,3 +10,8 @@ docs/research/*.jsonl
 docs/reference/*.pptx
 sim/models/apple_tree_*/
 sim/models/apple/
+
+# 지형 하이트맵/텍스처 (재생성 가능)
+sim/models/orchard_terrain/materials/textures/*.png
+# 생성된 월드 (재생성 가능)
+sim/worlds/orchard.sdf

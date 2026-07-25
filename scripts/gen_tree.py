@@ -405,7 +405,12 @@ _VISUAL = """      <visual name="{part}">
 
 
 def write_tree_model_sdf(tree_dir, name, cfg, parts, variant):
-    """variant='body' → 과실 없음 (계측 블록용) / 'full' → 과실 포함 (배경 행용)."""
+    """variant='body' → 과실 없음 (계측 블록용) / 'full' → 과실 포함 (배경 행용).
+
+    파일명 규칙:
+      variant='full' → model.sdf       (model.config 의 기본. 배경목 <include> 가 이걸 로드)
+      variant='body' → model_body.sdf  (계측 블록에서 gen_world 가 참조)
+    """
     mesh = "tree_body.glb" if variant == "body" else "tree_full.glb"
     visuals = "".join(
         _VISUAL.format(part=p, label=l, model=name, mesh=mesh) for p, l in parts)
@@ -428,8 +433,9 @@ def write_tree_model_sdf(tree_dir, name, cfg, parts, variant):
   </model>
 </sdf>
 """
-    suffix = "" if variant == "body" else "_full"
-    with open(os.path.join(tree_dir, f"model{suffix}.sdf"), "w") as f:
+    # full 이 model.config 의 기본 SDF(model.sdf)가 된다 → 배경목 <include> 가 이걸 로드
+    fname = "model_body.sdf" if variant == "body" else "model.sdf"
+    with open(os.path.join(tree_dir, fname), "w") as f:
         f.write(sdf)
 
 
@@ -562,6 +568,9 @@ def main():
         n_apples=len(tree["apples"]),
         n_apples_diseased=sum(1 for a in tree["apples"] if a["diseased"]),
         tri_counts=tris,
+        # gen_world 가 계측 블록의 나무 몸체를 인라인으로 조립할 때 쓴다
+        body_parts=[dict(part=p, label=ALL_LABELS[p]) for p in body_part_names],
+        body_mesh="tree_body.glb",
         apples=tree["apples"],
     )
     with open(os.path.join(tree_dir, "ground_truth.json"), "w") as f:
