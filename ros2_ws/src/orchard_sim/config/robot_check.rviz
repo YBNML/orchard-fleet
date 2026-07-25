@@ -1,0 +1,118 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /TF1
+        - /MID-70 점군1
+      Splitter Ratio: 0.5
+    Tree Height: 640
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 90; 100; 80
+      Alpha: 0.35
+      Reference Frame: map
+
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.5
+      Update Interval: 0
+      Frame Timeout: 15
+
+    - Class: rviz_default_plugins/PointCloud2
+      Name: MID-70 점군
+      Enabled: true
+      Topic:
+        Value: /livox/lidar
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Intensity Bounds: true
+      Decay Time: 0
+      Position Transformer: XYZ
+      Alpha: 1
+
+    - Class: rviz_default_plugins/Image
+      Name: 좌 수관 카메라
+      Enabled: true
+      Topic:
+        Value: /cam/left/image
+        Depth: 2
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+
+    - Class: rviz_default_plugins/Image
+      Name: 우 수관 카메라
+      Enabled: false
+      Topic:
+        Value: /cam/right/image
+        Depth: 2
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+
+    - Class: rviz_default_plugins/Odometry
+      Name: 오도메트리
+      Enabled: true
+      Topic:
+        Value: /odom
+        Depth: 10
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Keep: 300
+      Position Tolerance: 0.2
+      Angle Tolerance: 0.2
+      Shape:
+        Alpha: 0.7
+        Color: 255; 170; 30
+        Head Length: 0.15
+        Head Radius: 0.08
+        Shaft Length: 0.3
+        Shaft Radius: 0.03
+        Value: Arrow
+
+  Global Options:
+    Background Color: 30; 34; 26
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 22
+      Pitch: 0.55
+      Yaw: 2.2
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Target Frame: base_link
+      Near Clip Distance: 0.05
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1500
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false

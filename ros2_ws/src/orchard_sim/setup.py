@@ -11,7 +11,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch",
          ["launch/livox_bridge.launch.py", "launch/stage0.launch.py"]),
-        ("share/" + package_name + "/config", ["config/livox_bridge.yaml"]),
+        ("share/" + package_name + "/config", ["config/livox_bridge.yaml", "config/robot_check.rviz"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
