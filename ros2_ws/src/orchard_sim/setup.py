@@ -11,7 +11,8 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch",
          ["launch/livox_bridge.launch.py", "launch/stage0.launch.py"]),
-        ("share/" + package_name + "/config", ["config/livox_bridge.yaml", "config/robot_check.rviz"]),
+        ("share/" + package_name + "/config", ["config/livox_bridge.yaml", "config/bridge_core.yaml",
+          "config/bridge_cameras.yaml", "config/robot_check.rviz"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -25,6 +26,7 @@ setup(
             "livox_sim_bridge = orchard_sim.livox_sim_bridge:main",
             "sdf_static_tf = orchard_sim.sdf_static_tf:main",
             "gt_localizer = orchard_sim.gt_localizer:main",
+            "mapping_run = orchard_sim.mapping_run:main",
         ],
     },
 )

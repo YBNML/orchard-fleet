@@ -20,13 +20,15 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     pkg = get_package_share_directory("orchard_sim")
-    bridge_cfg = os.path.join(pkg, "config", "livox_bridge.yaml")
+    core_cfg = os.path.join(pkg, "config", "bridge_core.yaml")
+    cam_cfg = os.path.join(pkg, "config", "bridge_cameras.yaml")
 
     args = [
         DeclareLaunchArgument("world_name", default_value="orchard_10x41"),
@@ -34,6 +36,8 @@ def generate_launch_description():
         DeclareLaunchArgument("model_sdf",
                               default_value="/home/myhome/YBNML/sim/models/scout_mini_mid70/model.sdf"),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument("cameras", default_value="true",
+                              description="카메라 브리지. 매핑·주행 중에는 false 로 두면 RTF 가 약 22% 올라간다"),
     ]
     use_sim_time = LaunchConfiguration("use_sim_time")
     world = LaunchConfiguration("world_name")
@@ -46,7 +50,12 @@ def generate_launch_description():
     return LaunchDescription(args + [
         Node(package="ros_gz_bridge", executable="parameter_bridge",
              name="gz_bridge", output="screen",
-             parameters=[{"config_file": bridge_cfg, "use_sim_time": use_sim_time}]),
+             parameters=[{"config_file": core_cfg, "use_sim_time": use_sim_time}]),
+
+        Node(package="ros_gz_bridge", executable="parameter_bridge",
+             name="gz_bridge_cameras", output="screen",
+             condition=IfCondition(LaunchConfiguration("cameras")),
+             parameters=[{"config_file": cam_cfg, "use_sim_time": use_sim_time}]),
 
         # 참값 포즈 — 로봇 모델의 PosePublisher (frame_id/child_frame_id 가 채워진다).
         # 월드의 pose/info 는 5,478 엔트리라 브리지하면 안 되고,

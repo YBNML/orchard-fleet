@@ -121,6 +121,40 @@ print(f"   주행 폭(중앙 ±1 m) 내 최대 경사 {worst:.1%}"
 if worst >= 0.10:
     fails.append(f"주행면 내 경사 {worst:.0%} — 법면 침범")
 
+# ── 6. 통로 간 횡단 가능 대역 ───────────────────────────────────────────────
+# 2026-07-25: 매핑 주행 중 로봇이 roll -175° 로 전복했다. 통로 사이를 직선으로
+# 이동하려다 26~50 cm 단차 둑(경사 최대 60%)을 타넘으려 한 것이 원인이다.
+# 계단식 지형에서 통로 간 이동은 선회 구역의 램프에서만 가능하며, 그 대역이
+# 실제로 얼마나 되는지가 항법 가능성을 좌우한다 — 검증에 없어서 놓쳤던 항목이다.
+print("\n── 6. 통로 간 횡단 가능 대역 (선회 구역 램프) ──")
+CROSS_LIMIT = 0.25            # Scout Mini 가 횡방향으로 안전하게 넘는 한계 경사
+xs_c = np.linspace(X0, X0 + (R - 1) * S, 300)
+bands = [(0, L / 2 - 2), (L / 2 - 2, L / 2), (L / 2, L / 2 + 2),
+         (L / 2 + 2, L / 2 + 4), (L / 2 + 4, L / 2 + HL)]
+print(f"{'|y| 대역':>18} {'최대 횡경사':>12} {'각도':>8}   판정")
+print("─" * 58)
+cross_ok_from = None
+for lo, hi in bands:
+    gmax = 0.0
+    for yy in np.linspace(lo, hi, 10):
+        prof = np.array([z(xx, yy) for xx in xs_c])
+        gmax = max(gmax, float(np.abs(np.gradient(prof, xs_c)).max()))
+    ok = gmax < CROSS_LIMIT
+    if ok and cross_ok_from is None:
+        cross_ok_from = lo
+    print(f"{lo:7.1f}~{hi:6.1f} m {gmax:11.1%} {np.degrees(np.arctan(gmax)):7.1f}°   "
+          f"{'횡단 가능' if ok else '횡단 불가'}")
+
+if cross_ok_from is None:
+    fails.append("통로 간 횡단이 가능한 |y| 대역이 없다 — 로봇이 옆 통로로 갈 수 없다")
+else:
+    band_w = (L / 2 + HL) - cross_ok_from
+    print(f"\n   횡단 가능 시작 |y| = {cross_ok_from:.1f} m,  선회 구역 끝 {L/2+HL:.1f} m"
+          f"  →  가용 폭 {band_w:.1f} m")
+    print(f"   로봇 외접원 지름 0.834 m 대비 {'충분' if band_w > 2.0 else '빠듯'}")
+    if band_w < 1.5:
+        fails.append(f"횡단 가능 대역이 {band_w:.1f} m 로 너무 좁다 (램프 길이를 줄여라)")
+
 # ── 결과 ────────────────────────────────────────────────────────────────────
 print()
 if fails:

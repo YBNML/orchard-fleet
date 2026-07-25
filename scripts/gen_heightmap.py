@@ -212,8 +212,11 @@ def main():
                     help="인접 통로 간 지면 높이차 최댓값 m")
     ap.add_argument("--face-width", type=float, default=1.20,
                     help="단차면(법면) 폭 m. 수관하부 청경 폭과 같게 두는 것이 기본")
-    ap.add_argument("--ramp-frac", type=float, default=0.75,
-                    help="선회 구역 중 램프 전환에 쓰는 비율 (0~1)")
+    ap.add_argument("--ramp-frac", type=float, default=0.40,
+                    help="선회 구역 중 램프 전환에 쓰는 비율 (0~1). "
+                         "블렌드 구간은 계단과 램프가 섞여 횡단 경사가 20~40%%로 남으므로 "
+                         "짧을수록 통로 간 이동 가능 대역이 넓어진다. "
+                         "0.75 였을 때 |y|<34 m 가 전부 횡단 불가였고 실제로 로봇이 전복했다.")
     ap.add_argument("--terrace-margin", type=int, default=2,
                     help="과수원 바깥으로 몇 단 더 계단을 두고 그 밖은 평탄하게 할지. "
                          "8-bit 하이트맵 양자화를 통로 평탄성보다 곱게 유지하는 데 필요")
