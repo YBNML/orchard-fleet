@@ -35,6 +35,18 @@
         <geometry><mesh>
           <uri>model://scout_mini_mid70/meshes/mini_base_link.dae</uri>
         </mesh></geometry>
+        <!-- 원본 DAE 에 재질이 전혀 없어(material 0/effect 0/texture 0) 흰색으로
+             폴백된다. 실제 Scout Mini 의 도장 금속 차체를 PBR 로 재현한다.
+             메시가 단일 지오메트리라 부위별(오렌지 트림 등) 분리 착색은 불가능하다. -->
+        <material>
+          <ambient>0.13 0.13 0.14 1</ambient>
+          <diffuse>0.19 0.19 0.21 1</diffuse>
+          <specular>0.35 0.35 0.38 1</specular>
+          <pbr><metal>
+            <metalness>0.55</metalness>
+            <roughness>0.42</roughness>
+          </metal></pbr>
+        </material>
       </visual>
       <!-- 충돌은 프리미티브 유지 (설계서 §9-1: 시각 메시를 충돌로 쓰면 RTF 붕괴) -->
       <collision name="chassis">
@@ -62,6 +74,16 @@
         <geometry><mesh>
           <uri>model://scout_mini_mid70/meshes/mini_wheel.dae</uri>
         </mesh></geometry>
+        <!-- 고무 타이어: 무광·비금속 -->
+        <material>
+          <ambient>0.055 0.055 0.06 1</ambient>
+          <diffuse>0.085 0.085 0.09 1</diffuse>
+          <specular>0.06 0.06 0.06 1</specular>
+          <pbr><metal>
+            <metalness>0.0</metalness>
+            <roughness>0.92</roughness>
+          </metal></pbr>
+        </material>
       </visual>
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
@@ -84,6 +106,16 @@
         <geometry><mesh>
           <uri>model://scout_mini_mid70/meshes/mini_wheel.dae</uri>
         </mesh></geometry>
+        <!-- 고무 타이어: 무광·비금속 -->
+        <material>
+          <ambient>0.055 0.055 0.06 1</ambient>
+          <diffuse>0.085 0.085 0.09 1</diffuse>
+          <specular>0.06 0.06 0.06 1</specular>
+          <pbr><metal>
+            <metalness>0.0</metalness>
+            <roughness>0.92</roughness>
+          </metal></pbr>
+        </material>
       </visual>
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
@@ -106,6 +138,16 @@
         <geometry><mesh>
           <uri>model://scout_mini_mid70/meshes/mini_wheel.dae</uri>
         </mesh></geometry>
+        <!-- 고무 타이어: 무광·비금속 -->
+        <material>
+          <ambient>0.055 0.055 0.06 1</ambient>
+          <diffuse>0.085 0.085 0.09 1</diffuse>
+          <specular>0.06 0.06 0.06 1</specular>
+          <pbr><metal>
+            <metalness>0.0</metalness>
+            <roughness>0.92</roughness>
+          </metal></pbr>
+        </material>
       </visual>
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
@@ -128,6 +170,16 @@
         <geometry><mesh>
           <uri>model://scout_mini_mid70/meshes/mini_wheel.dae</uri>
         </mesh></geometry>
+        <!-- 고무 타이어: 무광·비금속 -->
+        <material>
+          <ambient>0.055 0.055 0.06 1</ambient>
+          <diffuse>0.085 0.085 0.09 1</diffuse>
+          <specular>0.06 0.06 0.06 1</specular>
+          <pbr><metal>
+            <metalness>0.0</metalness>
+            <roughness>0.92</roughness>
+          </metal></pbr>
+        </material>
       </visual>
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
@@ -161,7 +213,10 @@
         <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.001</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <visual name="mast"><geometry><cylinder><radius>0.02</radius><length>0.50</length></cylinder></geometry>
-        <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual>
+        <material><ambient>0.30 0.31 0.33 1</ambient><diffuse>0.42 0.43 0.46 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+          <pbr><metal><metalness>0.85</metalness><roughness>0.30</roughness></metal></pbr>
+        </material></visual>
       <visual name="sensor_body">
         <pose>0 0 0.29 0 0 0</pose>
         <geometry><box><size>0.0627 0.097 0.064</size></box></geometry>
