@@ -274,5 +274,20 @@
       <topic>joint_states</topic>
     </plugin>
 
+    <!-- ═══════════════ 참값 포즈 (Stage-0 스캐폴드용, 설계서 §7.5) ═══════════════ -->
+    <!-- 월드의 dynamic_pose/info 를 브리지하면 ros_gz 의 Pose_V→TFMessage 변환기가
+         gz 의 name 필드를 프레임 이름으로 옮기지 않아 frame_id 가 빈 문자열이 된다
+         (2026-07-25 실측). PosePublisher 는 header 에 frame_id/child_frame_id 를
+         제대로 채워주므로 이쪽을 쓴다. 단계 7 에서 FAST-LIO2 로 갈아끼우면 불필요해진다. -->
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_collision_pose>false</publish_collision_pose>
+      <publish_visual_pose>false</publish_visual_pose>
+      <publish_nested_model_pose>false</publish_nested_model_pose>
+      <publish_model_pose>true</publish_model_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg>
+      <update_frequency>50</update_frequency>
+    </plugin>
+
   </model>
 </sdf>
