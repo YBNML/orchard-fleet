@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -96,6 +97,14 @@ async def wait_topic(ws, suffix, timeout=10.0, pred=None):
     def _p(o):
         return o.get("topic", "").endswith(suffix) and (pred is None or pred(o.get("payload", {})))
     return await wait_frame(ws, _p, timeout)
+
+
+def has_tz_suffix(ts) -> bool:
+    """Critical 2 회귀 — naive(tz 없는) 문자열이면 대시보드의 Date.parse() 가
+    로컬시간(KST)으로 오해석해 이력 재생 시각이 9시간 어긋난다."""
+    if not ts:
+        return False
+    return ts.endswith("Z") or bool(re.search(r"[+-]\d{2}:\d{2}$", ts))
 
 
 def mission_state(cli: httpx.Client, mission_id: int, robot_id="scout01"):
@@ -288,6 +297,38 @@ async def main():
         check("9-3 GET /audit 에 명령 기록",
               any(a.get("action") in ("mission_start", "estop", "clear_estop") for a in audit_rows),
               f"{len(audit_rows)}건")
+
+        # ── 9-4~9-7. 시각 문자열에 tz 접미사(+00:00/Z) — Critical 2 회귀 ─────────
+        # SQLite 왕복 후(다른 세션의 재조회) naive 로 돌아온 datetime 에 그대로
+        # isoformat() 을 쓰면 접미사가 빠져 KST 에서 이력 재생이 9시간 어긋난다.
+        missions_list = c.get("/api/v1/missions", params={"robot_id": "scout01"},
+                              headers=h_admin).json()
+        mission_ts_ok = bool(missions_list) and all(
+            has_tz_suffix(m.get("created_at"))
+            and (m.get("started_at") is None or has_tz_suffix(m["started_at"]))
+            and (m.get("ended_at") is None or has_tz_suffix(m["ended_at"]))
+            for m in missions_list)
+        check("9-4 /missions 시각 문자열에 tz 접미사(+00:00/Z)", mission_ts_ok,
+              str([m.get("created_at") for m in missions_list]))
+
+        track_ts_ok = bool(tracks) and all(has_tz_suffix(t["ts"]) for t in tracks)
+        check("9-5 /tracks 시각 문자열에 tz 접미사(+00:00/Z)", track_ts_ok,
+              str([t["ts"] for t in tracks[:2]]))
+
+        event_ts_ok = bool(events) and all(has_tz_suffix(e["ts"]) for e in events)
+        check("9-6 /events 시각 문자열에 tz 접미사(+00:00/Z)", event_ts_ok,
+              str([e["ts"] for e in events[:2]]))
+
+        audit_ts_ok = bool(audit_rows) and all(has_tz_suffix(a["ts"]) for a in audit_rows)
+        check("9-7 /audit 시각 문자열에 tz 접미사(+00:00/Z)", audit_ts_ok,
+              str([a["ts"] for a in audit_rows[:2]]))
+
+        robots_list = c.get("/api/v1/robots", headers=h_admin).json()
+        robot_row = next((r for r in robots_list if r["id"] == "scout01"), None)
+        check("9-8 /robots 의 last_seen 시각 문자열에 tz 접미사(값이 있을 때)",
+              robot_row is not None and (robot_row.get("last_seen") is None
+                                         or has_tz_suffix(robot_row["last_seen"])),
+              str(robot_row.get("last_seen") if robot_row else None))
 
         # ── 10. stop_all → 결과 dict 에 scout01=sent ────────────────────────
         await ws_send(ws_admin, {"type": "cmd", "action": "stop_all", "cmd_id": "s10"})

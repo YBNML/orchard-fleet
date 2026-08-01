@@ -19,6 +19,7 @@ class FakeRobot:
         self.received: list[dict] = []  # 수신한 cmd/teleop 봉투 전부
         self.teleop_count = 0
         self._x = 0.0
+        self._ws = None                # 접속 중인 연결 — send_event() 가 직접 쓴다
 
     def env(self, suffix, payload):
         self.seq += 1
@@ -43,6 +44,7 @@ class FakeRobot:
                     await ws.send(self.env("mission", {"state": "done"}))
                 await asyncio.sleep(0.2)
 
+        self._ws = ws
         pump_task = asyncio.create_task(pump())
         try:
             async for raw in ws:
@@ -74,7 +76,16 @@ class FakeRobot:
                     self.mission = "running"
                     await ws.send(self.env("mission", {"state": "running"}))
         finally:
+            self._ws = None
             pump_task.cancel()
+
+    async def send_event(self, kind: str, msg: str, severity: str = "warn") -> None:
+        """테스트 스크립트가 임의 내용으로 evt 를 쏘고 싶을 때 쓴다(예: XSS 페이로드
+        회귀) — 실제 로봇이 임의 문자열을 보낼 수 있다는 걸 흉내낸다."""
+        if self._ws is None:
+            raise RuntimeError("로봇이 아직 접속하지 않았습니다")
+        await self._ws.send(self.env("event", {"kind": kind, "severity": severity,
+                                                "msg": msg, "ts": time.time()}))
 
     async def serve(self):
         import websockets

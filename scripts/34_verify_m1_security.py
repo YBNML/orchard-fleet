@@ -304,6 +304,39 @@ async def main():
         check("9-9 audit_log DB 덤프에 세션·CSRF 토큰 원문 없음",
               admin_cookie not in audit_dump and admin_csrf not in audit_dump)
 
+        # ── 10. 대시보드 XSS 방어(Critical 1 회귀) ──────────────────────────
+        # 로봇이 evt msg 에 HTML 조각을 실어 보내도, (a) 서버는 원문 그대로
+        # 저장·응답한다(필터링은 서버 책임이 아님 — 감사 원본 보존), (b) 대시보드
+        # JS 가 그 문자열을 innerHTML 에 넣기 전에 반드시 esc() 로 이스케이프한다.
+        # 실제 브라우저 실행 없이도 확인 가능한 범위로, "서버가 원문을 왜곡하지
+        # 않았다" + "취약했던 렌더 지점마다 esc() 가 적용돼 있다(정적 마커)" 를 본다.
+        XSS_PAYLOAD = "<img src=x onerror=alert(1)>"
+        await robot.send_event("xss_probe", XSS_PAYLOAD)
+        xss_row = await poll_until(
+            lambda: next((e for e in c.get("/api/v1/events", params={"robot_id": "scout01"},
+                                          headers=h_admin).json()
+                         if e.get("kind") == "xss_probe"), None),
+            timeout=5)
+        check("10-1 로봇이 보낸 evt 원문이 /events 에 그대로 적재됨"
+              " (서버는 필터링하지 않음 — 이스케이프는 대시보드 esc() 의 책임)",
+              bool(xss_row) and xss_row.get("msg") == XSS_PAYLOAD,
+              xss_row)
+
+        dash_html = httpx.get(BASE + "/", timeout=5).text
+        has_esc_helper = "function esc(" in dash_html
+        check("10-2 대시보드에 esc() 이스케이프 헬퍼 정의가 존재함", has_esc_helper)
+
+        esc_sinks = ["esc(r.id)", "esc(e.msg)", "esc(f.name)", "esc(f.summary)",
+                    "esc(w)", "esc(v)", "esc(modeName(r.state.mode))"]
+        missing_sinks = [s for s in esc_sinks if s not in dash_html]
+        check("10-3 로봇 유래 필드를 innerHTML 로 렌더하는 지점마다 esc() 적용됨"
+              " (이벤트 msg·기능 이름/설명·헬스 경고·모드·로봇 id)",
+              not missing_sinks, f"누락 의심: {missing_sinks}")
+
+        check("10-4 XSS 페이로드 원문이 대시보드 정적 마크업에 노출되지 않음"
+              " (동적 렌더만 거치므로 서빙된 HTML 자체엔 절대 없어야 함)",
+              XSS_PAYLOAD not in dash_html)
+
         # ── 보너스: 로그아웃 후 /me 401 (세션 소멸 확인 — 세션만료 TTL 검증의 대체) ─
         r_logout = c.post("/api/v1/auth/logout", headers=h_admin)
         r_me = c.get("/api/v1/auth/me")
