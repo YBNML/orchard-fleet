@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import audit, auth
@@ -132,6 +132,19 @@ def patch_robot(robot_id: str, body: dict, db=Depends(get_db),
                  user_id=user.id, role=user.role, target=robot_id,
                  detail=",".join(sorted(body.keys())))
     return {"ok": True}
+
+
+@router.get("/robots/{robot_id}/status")
+def robot_status(robot_id: str, request: Request, db=Depends(get_db),
+                 user: User = Depends(current_user)):
+    r = db.get(Robot, robot_id)
+    if r is None:
+        raise HTTPException(404, "로봇이 없습니다")
+    scope = farm_scope(db, user)
+    if scope is not None and r.farm_id not in scope:
+        raise HTTPException(403, "해당 농장 권한이 없습니다")
+    st = request.app.state.fleet.robot_status(robot_id)
+    return {"online": st.online, "last_seen": st.last_seen}
 
 
 # ── 사용자 ────────────────────────────────────────────────────────────────

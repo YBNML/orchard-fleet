@@ -25,7 +25,8 @@ def _test_settings(**kw) -> Settings:
 
 @pytest.fixture()
 def app():
-    return create_app(_test_settings())
+    from fleet_server.fleet.port import InMemoryFleetPort
+    return create_app(_test_settings(), fleet=InMemoryFleetPort())
 
 
 @pytest.fixture()

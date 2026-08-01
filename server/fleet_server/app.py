@@ -21,7 +21,7 @@ def _bootstrap_admin(app: FastAPI) -> None:
             db.commit()
 
 
-def create_app(settings: Settings | None = None, engine=None) -> FastAPI:
+def create_app(settings: Settings | None = None, engine=None, fleet=None) -> FastAPI:
     settings = settings or load_settings()
     engine = engine or make_engine(settings.db_url)
     Base.metadata.create_all(engine)
@@ -30,7 +30,9 @@ def create_app(settings: Settings | None = None, engine=None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = make_session_factory(engine)
-    app.state.fleet = None            # FleetPort — Task 8 이후 주입
+
+    from .fleet.port import InMemoryFleetPort
+    app.state.fleet = fleet if fleet is not None else InMemoryFleetPort(settings.offline_after_s)
 
     from .api import admin_routes, auth_routes
     app.include_router(auth_routes.router, prefix="/api/v1")
