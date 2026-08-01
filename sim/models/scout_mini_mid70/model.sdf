@@ -88,7 +88,7 @@
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
         <geometry><cylinder><radius>0.0875</radius><length>0.0852</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.0</mu><mu2>0.4</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>0.05</mu2><fdir1>1 0 0</fdir1></ode></friction></surface>
       </collision>
     </link>
     <!-- 앞 우 -->
@@ -120,7 +120,7 @@
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
         <geometry><cylinder><radius>0.0875</radius><length>0.0852</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.0</mu><mu2>0.4</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>0.05</mu2><fdir1>1 0 0</fdir1></ode></friction></surface>
       </collision>
     </link>
     <!-- 뒤 좌 -->
@@ -152,7 +152,7 @@
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
         <geometry><cylinder><radius>0.0875</radius><length>0.0852</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.0</mu><mu2>0.4</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>0.05</mu2><fdir1>1 0 0</fdir1></ode></friction></surface>
       </collision>
     </link>
     <!-- 뒤 우 -->
@@ -184,7 +184,7 @@
       <collision name="c">
         <pose>0 0 0 -1.5708 0 0</pose>
         <geometry><cylinder><radius>0.0875</radius><length>0.0852</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.0</mu><mu2>0.4</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>0.05</mu2><fdir1>1 0 0</fdir1></ode></friction></surface>
       </collision>
     </link>
 
