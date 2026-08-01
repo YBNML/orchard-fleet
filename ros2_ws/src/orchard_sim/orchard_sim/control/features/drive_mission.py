@@ -140,7 +140,14 @@ class DriveMission(Feature):
         if dist < self.tol:
             m["idx"] += 1
             return None
-        err = (math.atan2(dy, dx) - p[2] + math.pi) % (2 * math.pi) - math.pi
+        # 조준 성분은 4 m 룩어헤드로 자른다 — 45 m 앞 점을 그대로 조준하면
+        # 횡편차 1.5 m 에 2° 만 요구해서, 경사 횡활강을 못 이긴다 (실측:
+        # 통로 중심에서 1.6 m 밀려 계단 법면을 탔다, 08-02). 가까운 가상점을
+        # 조준해야 이탈에 비례한 복원 조향이 나온다.
+        L = 4.0
+        sdx = dx if abs(dx) <= L else math.copysign(L, dx)
+        sdy = dy if abs(dy) <= L else math.copysign(L, dy)
+        err = (math.atan2(sdy, sdx) - p[2] + math.pi) % (2 * math.pi) - math.pi
         # 헤드랜드 구간의 '벽 앞 도착' — 램프에서 궤도가 미끄러지면 오도메트리가
         # 실제보다 덜 세서, 추정으로는 '아직 못 왔는데' 몸은 둑 앞에 와 있다.
         # 사람이 운전하듯 벽이 코앞이면 그 웨이포인트는 온 것이다. 계속 밀면
