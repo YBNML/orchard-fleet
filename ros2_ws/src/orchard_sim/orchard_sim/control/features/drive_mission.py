@@ -140,13 +140,20 @@ class DriveMission(Feature):
         if dist < self.tol:
             m["idx"] += 1
             return None
-        # 조준 성분은 4 m 룩어헤드로 자른다 — 45 m 앞 점을 그대로 조준하면
-        # 횡편차 1.5 m 에 2° 만 요구해서, 경사 횡활강을 못 이긴다 (실측:
-        # 통로 중심에서 1.6 m 밀려 계단 법면을 탔다, 08-02). 가까운 가상점을
-        # 조준해야 이탈에 비례한 복원 조향이 나온다.
-        L = 4.0
-        sdx = dx if abs(dx) <= L else math.copysign(L, dx)
-        sdy = dy if abs(dy) <= L else math.copysign(L, dy)
+        # 축분리 조준 — 진행축은 3 m 룩어헤드로 자르고 횡축은 이득을 준다.
+        # 원거리 점 조준(횡편차 1.5 m → 조향 2°)도, 단순 룩어헤드(0.75 m →
+        # 10°)도 복원력이 모자라 통로 폭 2.0 m 를 지키지 못했다 (실측:
+        # 서쪽 모서리 → 과회전 → 동쪽 법면, 08-02). 편차 0.3 m 에 22°,
+        # 0.75 m 에 45° 를 요구해야 계단 통로에서 선을 지킨다.
+        L, G = 3.0, 4.0
+        if abs(dy) >= abs(dx):          # 남북 구간: 기준선 x = 목표 x
+            sdy = math.copysign(min(abs(dy), L), dy)
+            sdx = math.copysign(min(abs(dx) * G, L), dx)
+            cross = abs(dx)
+        else:                           # 동서 구간: 기준선 y = 목표 y
+            sdx = math.copysign(min(abs(dx), L), dx)
+            sdy = math.copysign(min(abs(dy) * G, L), dy)
+            cross = abs(dy)
         err = (math.atan2(sdy, sdx) - p[2] + math.pi) % (2 * math.pi) - math.pi
         # 헤드랜드 구간의 '벽 앞 도착' — 램프에서 궤도가 미끄러지면 오도메트리가
         # 실제보다 덜 세서, 추정으로는 '아직 못 왔는데' 몸은 둑 앞에 와 있다.
@@ -176,6 +183,8 @@ class DriveMission(Feature):
                                    priority=5, reason="mission:align")
         self._align_key = None
         v = self.speed_limit(p[1], dist)
+        if cross > 0.5:
+            v = min(v, self.speed * 0.4)    # 선을 벗어났으면 느리게 복귀한다
         return VelocityRequest(v * max(0.25, 1.0 - abs(err)), 1.4 * err,
                                priority=5, reason="mission:follow")
 
