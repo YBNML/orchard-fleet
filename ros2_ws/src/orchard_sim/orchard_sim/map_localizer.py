@@ -159,6 +159,7 @@ class MapLocalizer(Node):
         self._slip_anchor = None        # 슬립 시작 직전의 map 자세 — 여기 묶는다
         self._slip_ob_yaw0 = 0.0        # 동결 시작 시점의 추측항법 요
         self.slip_active = False
+        self._reacq_streak = 0          # 표류 게이트 교착 탈출용 일관성 카운트
 
         sqos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           history=HistoryPolicy.KEEP_LAST, depth=2)
@@ -396,6 +397,21 @@ class MapLocalizer(Node):
         # 슬립 중 오도메트리 변위는 허깨비다 — 표류로 세지 않는다
         drift = 0.0 if self.slip_active else self._drift_since_fix()
         ok, why = rl.gate(fix, drift, self.geom)
+        # 표류 게이트 교착 탈출 — 선회처럼 정당하게 무보정인 구간이 길면
+        # 표류가 한계를 넘고, 그 뒤로는 "보정이 없어서 보정을 거부"하는
+        # 순환에 빠진다 (실측: 품질 0.84·dx −0.009 를 표류 10 m 사유로 무한
+        # 거부, 08-02). 앵커와 자이로가 실제 오차를 한계 아래로 묶어 주므로,
+        # 고품질·소보정이 4회 연속 일관되면 재획득으로 받는다.
+        if (not ok and why.startswith("보정 간 표류") and fix.quality >= 0.6
+                and abs(fix.dx) <= 0.5 and abs(math.degrees(fix.dyaw)) < 3.0):
+            self._reacq_streak += 1
+            if self._reacq_streak >= 4:
+                ok, why = True, ""
+                self.get_logger().info(
+                    f"표류 재획득 — 연속 {self._reacq_streak}회 일관 "
+                    f"(dx {fix.dx:+.2f}, 품질 {fix.quality:.2f})")
+        else:
+            self._reacq_streak = 0
         self.stat.update(quality=round(fix.quality, 3), n_struct=fix.n_struct,
                          gate="" if ok else why,
                          dx=round(fix.dx, 3), dy=round(fix.dy, 3),
