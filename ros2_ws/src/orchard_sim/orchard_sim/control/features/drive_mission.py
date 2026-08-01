@@ -167,19 +167,23 @@ class DriveMission(Feature):
                            f"전방 {clearance:.1f} m 벽 — {wp['kind']} 도착 처리")
             return None
         if abs(err) > 0.6:
-            # 회전 슬립 감시 — 자이로 요가 정직해진 대신, 경사에서 회전이
-            # 물리적으로 안 되면 여기서 영원히 돈다. 30초면 정상 회전(90°,
-            # 0.5 rad/s ≈ 3초)의 열 배다: 세우고 사람을 부른다.
+            # 방향 전환은 제자리 회전이 아니라 **호**로 돈다 — 램프에서
+            # 제자리 회전은 궤도가 통째로 미끄러져 물리적으로 안 된다
+            # (실측: 30초 명령에 회전 3° 미만, 08-02). 바퀴가 굴러가며
+            # 돌면 접지력이 산다. 반경 = v/wz = 0.15/0.5 = 0.3 m.
+            if self.ctx.safety.paused:
+                self._align_key = None      # 정지 중엔 시간을 세지 않는다
+                return None
             if self._align_key is None or self._align_key[0] != m["idx"]:
                 self._align_key = (m["idx"], now)
             elif now - self._align_key[1] > 30.0:
                 self._align_key = None
                 self.ctx.safety.set_paused(True)
                 self.ctx.event("assistance",
-                               "제자리 회전 30초째 미완 — 경사 회전 슬립",
+                               "방향 전환 30초째 미완 — 경사 회전 슬립",
                                level="critical", code="TRACTION_LOSS")
                 return None
-            return VelocityRequest(0.0, self.turn_speed * (1 if err > 0 else -1),
+            return VelocityRequest(0.15, self.turn_speed * (1 if err > 0 else -1),
                                    priority=5, reason="mission:align")
         self._align_key = None
         v = self.speed_limit(p[1], dist)

@@ -174,6 +174,19 @@ class MapLocalizer(Node):
 
     # ── 입력 ────────────────────────────────────────────────────────────────
     def _on_imu(self, msg: Imu):
+        """요는 IMU orientation(AHRS)에서 꺼낸다.
+
+        각속도 z 적분은 평지에서만 맞다 — 램프에서 몸이 기울면 바디 z축이
+        월드 연직에서 벗어나 월드 요 변화를 덜 본다 (실측: 램프에서 16°
+        누락). orientation 쿼터니언에서 요를 뽑으면 기울기가 온전히
+        분해된다. 실기의 AHRS 요 표류는 블록 안 위상 보정이 흡수한다.
+        """
+        q = msg.orientation
+        n2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+        if n2 > 0.5:                    # orientation 이 채워져 있다
+            R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
+            self._imu_yaw = math.atan2(R[1, 0], R[0, 0])
+            return
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self._imu_t is not None:
             dt = t - self._imu_t
