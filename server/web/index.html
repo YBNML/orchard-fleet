@@ -244,6 +244,29 @@ input,select{width:100%}
 kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
   border-radius:4px; padding:1px 5px; font-size:11px; font-family:inherit}
 
+/* 개입 큐 — 큐에 건이 있으면 탭 배지가 뜨고, 목록은 오래된 순으로 쌓인다 */
+.qbadge{display:none; background:var(--danger-btn); color:#fff; border-radius:999px;
+  padding:1px 6px; font-size:10.5px; font-weight:700; margin-left:4px;
+  vertical-align:1px}
+.qbadge.on{display:inline-block}
+.qcard{border:1px solid var(--line); border-radius:10px; padding:10px 11px;
+  margin-bottom:8px; background:var(--bg)}
+.qcard.open{border-color:var(--danger); background:var(--danger-soft)}
+.qcard.acked{border-color:var(--gold); background:var(--gold-soft)}
+.qcard .top{display:flex; align-items:baseline; gap:7px}
+.qcard .ttl{font-weight:600; font-size:13.5px}
+.qcard .cat{font-size:11px; color:var(--dim); border:1px solid var(--line);
+  border-radius:999px; padding:1px 7px}
+.qcard .visit{font-size:11px; color:var(--danger); font-weight:600}
+.qcard .meta{font-size:11.5px; color:var(--dim); margin-top:4px}
+.qcard .acts{display:flex; gap:6px; margin-top:9px}
+.qcard .acts button{flex:1; padding:7px; font-size:12px}
+.mgrid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+.mcell{border:1px solid var(--line-soft); border-radius:9px; padding:9px 10px;
+  background:var(--bg)}
+.mcell .v{font-size:19px; font-weight:600; font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+.mcell .k{font-size:11px; color:var(--dim); margin-top:1px}
 #featList > div{padding:6px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px}
 #hist-missions{height:132px; padding:6px}
 #hist-events{list-style:none; margin:9px 0 0; padding:0; font-size:12px;
@@ -415,6 +438,8 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
     </div>
 
     <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="queue" aria-selected="false">
+        개입 <span class="qbadge" id="qBadge">0</span></button>
       <button class="tab" role="tab" data-tab="mission" aria-selected="true">임무</button>
       <button class="tab" role="tab" data-tab="drive" aria-selected="false">조종</button>
       <button class="tab" role="tab" data-tab="history" aria-selected="false">이력</button>
@@ -422,6 +447,14 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
     </div>
 
     <div class="panes">
+      <!-- 개입 큐 — 로봇이 스스로 못 풀어 사람을 부른 건들 -->
+      <div class="pane" id="pane-queue">
+        <h3>처리할 개입</h3>
+        <div id="qList"></div>
+        <h3>운영 지표 <span class="dim" id="mDays">최근 7일</span></h3>
+        <div id="mBox"></div>
+      </div>
+
       <!-- 임무 -->
       <div class="pane on" id="pane-mission" data-needs="drive_mission" data-min-role="operator">
         <h3>오늘 돌 통로</h3>
@@ -590,7 +623,7 @@ async function boot() {
     ME = me.user; CSRF = me.csrf;
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
-    refreshHistory(); refreshUsers();
+    refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
   } catch (e) { /* 로그인 대기 */ }
 }
 
@@ -605,7 +638,7 @@ $("login-form").addEventListener("submit", async ev => {
     const d = await r.json(); ME = d.user; CSRF = d.csrf;
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
-    refreshHistory(); refreshUsers();
+    refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
   } catch (e) { $("login-err").textContent = e.message; }
 });
 
@@ -1195,6 +1228,85 @@ setInterval(() => {
   $("latPill").style.color = age > 3000 ? "var(--danger)" : (age > 1200 ? "var(--gold)" : "");
 }, 300);
 
+/* ── 개입 큐 ───────────────────────────────────────────────────────────
+   상시 감시형 화면은 1인당 2~5대가 상한이다. 로봇이 막혔을 때만 부르고
+   사람이 큐에서 꺼내 처리하는 구조라야 그 상한을 넘는다 — 그래서 큐가
+   지도보다 먼저다. 건이 생기면 탭 배지가 뜨고 자동으로 큐 탭이 열린다. */
+let QUEUE = [], qSeenTop = null;
+
+async function refreshQueue(){
+  let rows;
+  try { rows = await api("/interventions?state=active"); } catch (e) { return; }
+  QUEUE = rows;
+  const badge = $("qBadge");
+  badge.textContent = rows.length;
+  badge.classList.toggle("on", rows.length > 0);
+
+  // 새 건이 올라오면 큐로 데려간다 — 지도만 보고 있다가 놓치지 않게
+  const top = rows.length ? rows[0].id : null;
+  if (top && top !== qSeenTop && rows.some(r => r.state === "OPEN")){
+    qSeenTop = top; setTab("queue");
+  }
+  if (!rows.length) qSeenTop = null;
+
+  const box = $("qList");
+  if (!rows.length){
+    box.innerHTML = '<div class="dim" style="font-size:12.5px">' +
+                    '처리할 개입이 없습니다. 로봇이 스스로 진행 중입니다.</div>';
+    return;
+  }
+  const canAct = ME && ROLE_RANK[ME.role] >= ROLE_RANK.operator;
+  box.innerHTML = rows.map(r => {
+    const age = Math.max(0, (Date.now() - Date.parse(r.opened_at)) / 1000);
+    return `<div class="qcard ${r.state.toLowerCase()}" data-id="${r.id}">
+      <div class="top"><span class="ttl">${esc(r.label)}</span>
+        <span class="cat">${esc(r.category)}</span>
+        ${r.needs_site_visit ? '<span class="visit">현장 출동</span>' : ""}</div>
+      <div class="meta">${esc(r.robot_id)} · ${hms(age)} 경과` +
+        (r.repeat ? ` · ${r.repeat}회 반복` : "") +
+        (r.msg ? ` · ${esc(r.msg)}` : "") + `</div>` +
+      (canAct ? `<div class="acts">
+        ${r.state === "OPEN" ? '<button data-act="ack">확인</button>' : ""}
+        <button data-act="resolve" class="primary">해결</button>
+        <button data-act="escalate">현장 출동</button></div>` : "") +
+      `</div>`;
+  }).join("");
+  box.querySelectorAll("button[data-act]").forEach(b => {
+    b.onclick = async () => {
+      const id = b.closest(".qcard").dataset.id;
+      try { await api(`/interventions/${id}/${b.dataset.act}`,
+                      {method: "POST", body: {note: ""}}); }
+      catch (e) { alert("처리하지 못했습니다: " + e.message); }
+      refreshQueue(); refreshMetrics();
+    };
+  });
+}
+
+/* ── 운영 지표 ─────────────────────────────────────────────────────────
+   가동률을 헤드라인에서 내렸다. 관제가 관리할 수 있는 것은 개입 쪽이다. */
+async function refreshMetrics(){
+  let s;
+  try { s = await api("/metrics?days=7"); } catch (e) { return; }
+  const n = (v, u = "") => v == null ? "—" : `${v}${u}`;
+  const cells = [
+    [n(s.interventions), "개입 건수"],
+    [n(s.per_alley), "통로당 개입"],
+    [n(s.mtbi_min, "분"), "평균 개입 간격"],
+    [n(s.resolve_p50_s, "초"), "해결 p50"],
+    [n(s.resolve_p95_s, "초"), "해결 p95"],
+    [n(s.site_visits), "현장 출동"],
+    [n(s.work_days, "일"), "실가동일수"],
+    [n(s.active_min, "분"), "능동 운용"],
+  ];
+  $("mBox").innerHTML = '<div class="mgrid">' + cells.map(([v, k]) =>
+    `<div class="mcell"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`
+  ).join("") + "</div>" +
+    (s.by_category?.length
+      ? '<div class="meta dim" style="font-size:11.5px;margin-top:8px">사유: ' +
+        s.by_category.map(c => `${esc(c.category)} ${c.count}`).join(" · ") + "</div>"
+      : "");
+}
+
 /* ── 이력 ──────────────────────────────────────────────────────────── */
 async function refreshHistory() {
   const list = await api("/missions");
@@ -1276,6 +1388,8 @@ $("u-create").addEventListener("click", async () => {
   refreshUsers();
 });
 
+// 큐는 화면이 살아 있는 동안 계속 본다 — 놓치면 로봇이 멈춰 서 있게 된다
+setInterval(() => { if (ME) { refreshQueue(); refreshMetrics(); } }, 8000);
 setTheme(document.documentElement.dataset.theme || "light");
 setTab("mission");
 resize(); updateSec();

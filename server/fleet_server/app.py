@@ -61,9 +61,10 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     app.include_router(auth_routes.router, prefix="/api/v1")
     app.include_router(admin_routes.router, prefix="/api/v1")
 
-    from .api import history_routes, mission_routes
+    from .api import history_routes, mission_routes, ops_routes
     app.include_router(mission_routes.router, prefix="/api/v1")
     app.include_router(history_routes.router, prefix="/api/v1")
+    app.include_router(ops_routes.router, prefix="/api/v1")
 
     from . import ws as ws_module
     app.include_router(ws_module.router)

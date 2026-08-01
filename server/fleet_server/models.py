@@ -111,6 +111,33 @@ class Event(Base):
     __table_args__ = (UniqueConstraint("robot_id", "channel", "seq", name="uq_event_seq"),)
 
 
+class Intervention(Base):
+    """개입 큐 — 로봇이 스스로 못 풀어 사람을 부른 사건.
+
+    '여러 대를 나란히 감시하는 화면'은 상시 감시라 1인당 2~5대가 상한이지만,
+    로봇이 막혔을 때만 부르고 사람이 큐에서 꺼내 처리하는 구조는 그 상한을
+    넘는다. 큐가 곧 관제의 작업 단위다.
+    """
+    __tablename__ = "interventions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    robot_id: Mapped[str] = mapped_column(ForeignKey("robots.id"))
+    farm_id: Mapped[int] = mapped_column(ForeignKey("farms.id"))
+    code: Mapped[str] = mapped_column(String(40))
+    category: Mapped[str] = mapped_column(String(16), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="warn")
+    needs_site_visit: Mapped[bool] = mapped_column(default=False)
+    state: Mapped[str] = mapped_column(String(16), default="OPEN")  # OPEN|ACKED|RESOLVED|ESCALATED
+    msg: Mapped[str] = mapped_column(String(256), default="")
+    context_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    opened_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    acked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    acked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
+    note: Mapped[str] = mapped_column(String(256), default="")
+    __table_args__ = (Index("ix_interv_robot_state", "robot_id", "state"),)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(primary_key=True)
