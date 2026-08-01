@@ -33,25 +33,36 @@ def list_farms(db=Depends(get_db), user: User = Depends(current_user)):
             for f in q.order_by(Farm.id)]
 
 
-@router.post("/farms", dependencies=[_admin, _csrf])
-def create_farm(body: FarmBody, db=Depends(get_db)):
+@router.post("/farms", dependencies=[_csrf])
+def create_farm(body: FarmBody, db=Depends(get_db),
+                user: User = Depends(require_min_role("admin"))):
     f = Farm(name=body.name)
     db.add(f); db.commit()
     audit.record(db, action="farm_create", result="accepted",
-                 target=str(f.id), detail=f.name)
+                 user_id=user.id, role=user.role, target=str(f.id), detail=f.name)
     return {"id": f.id, "name": f.name}
 
 
-@router.patch("/farms/{farm_id}", dependencies=[_admin, _csrf])
-def patch_farm(farm_id: int, body: FarmPatch, db=Depends(get_db)):
+@router.patch("/farms/{farm_id}", dependencies=[_csrf])
+def patch_farm(farm_id: int, body: FarmPatch, db=Depends(get_db),
+               user: User = Depends(require_min_role("admin"))):
     f = db.get(Farm, farm_id)
     if f is None:
+        audit.record(db, action="farm_patch", result="rejected",
+                     user_id=user.id, role=user.role, target=str(farm_id),
+                     detail="대상 없음")
         raise HTTPException(404, "농장이 없습니다")
+    changed = []
     if body.map_bundle_ref is not None:
         f.map_bundle_ref = body.map_bundle_ref
+        changed.append("map_bundle_ref")
     if body.config_json is not None:
         f.config_json = body.config_json
+        changed.append("config_json")
     db.commit()
+    audit.record(db, action="farm_patch", result="accepted",
+                 user_id=user.id, role=user.role, target=str(f.id),
+                 detail=",".join(changed))
     return {"ok": True}
 
 
@@ -89,26 +100,37 @@ def list_robots(farm_id: int | None = None, db=Depends(get_db),
     return [_robot_out(r, admin) for r in q.order_by(Robot.id)]
 
 
-@router.post("/robots", dependencies=[_admin, _csrf])
-def create_robot(body: RobotBody, db=Depends(get_db)):
+@router.post("/robots", dependencies=[_csrf])
+def create_robot(body: RobotBody, db=Depends(get_db),
+                 user: User = Depends(require_min_role("admin"))):
     if db.get(Farm, body.farm_id) is None:
+        audit.record(db, action="robot_create", result="rejected",
+                     user_id=user.id, role=user.role, target=body.id,
+                     detail="농장 없음")
         raise HTTPException(404, "농장이 없습니다")
     r = Robot(**body.model_dump())
     db.add(r); db.commit()
     audit.record(db, action="robot_create", result="accepted",
-                 target=str(r.id), detail=r.name)
+                 user_id=user.id, role=user.role, target=str(r.id), detail=r.name)
     return _robot_out(r, admin=True)
 
 
-@router.patch("/robots/{robot_id}", dependencies=[_admin, _csrf])
-def patch_robot(robot_id: str, body: dict, db=Depends(get_db)):
+@router.patch("/robots/{robot_id}", dependencies=[_csrf])
+def patch_robot(robot_id: str, body: dict, db=Depends(get_db),
+                user: User = Depends(require_min_role("admin"))):
     r = db.get(Robot, robot_id)
     if r is None:
+        audit.record(db, action="robot_patch", result="rejected",
+                     user_id=user.id, role=user.role, target=robot_id,
+                     detail="대상 없음")
         raise HTTPException(404, "로봇이 없습니다")
     for k in ("name", "kind", "conn_kind", "config_json", "farm_id"):
         if k in body:
             setattr(r, k, body[k])
     db.commit()
+    audit.record(db, action="robot_patch", result="accepted",
+                 user_id=user.id, role=user.role, target=robot_id,
+                 detail=",".join(sorted(body.keys())))
     return {"ok": True}
 
 
@@ -128,8 +150,9 @@ def list_users(db=Depends(get_db)):
             for u in db.query(User).order_by(User.id)]
 
 
-@router.post("/users", dependencies=[_admin, _csrf])
-def create_user(body: UserBody, db=Depends(get_db)):
+@router.post("/users", dependencies=[_csrf])
+def create_user(body: UserBody, db=Depends(get_db),
+                user: User = Depends(require_min_role("admin"))):
     u = User(login=body.login, pw_hash=auth.hash_password(body.password),
              role=auth.normalize_role(body.role), display_name=body.display_name)
     db.add(u); db.flush()
@@ -137,14 +160,18 @@ def create_user(body: UserBody, db=Depends(get_db)):
         db.add(UserFarm(user_id=u.id, farm_id=fid))
     db.commit()
     audit.record(db, action="user_create", result="accepted",
-                 target=str(u.id), detail=u.login)
+                 user_id=user.id, role=user.role, target=str(u.id), detail=u.login)
     return {"id": u.id, "login": u.login, "role": u.role}
 
 
-@router.patch("/users/{user_id}", dependencies=[_admin, _csrf])
-def patch_user(user_id: int, body: dict, db=Depends(get_db)):
+@router.patch("/users/{user_id}", dependencies=[_csrf])
+def patch_user(user_id: int, body: dict, db=Depends(get_db),
+               user: User = Depends(require_min_role("admin"))):
     u = db.get(User, user_id)
     if u is None:
+        audit.record(db, action="user_patch", result="rejected",
+                     user_id=user.id, role=user.role, target=str(user_id),
+                     detail="대상 없음")
         raise HTTPException(404, "사용자가 없습니다")
     if "disabled" in body:
         u.disabled = bool(body["disabled"])
@@ -158,5 +185,6 @@ def patch_user(user_id: int, body: dict, db=Depends(get_db)):
             db.add(UserFarm(user_id=u.id, farm_id=fid))
     db.commit()
     audit.record(db, action="user_patch", result="accepted",
-                 target=str(u.id), detail=",".join(sorted(body.keys())))
+                 user_id=user.id, role=user.role, target=str(u.id),
+                 detail=",".join(sorted(body.keys())))
     return {"ok": True}

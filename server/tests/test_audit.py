@@ -1,5 +1,5 @@
 from fleet_server import audit
-from fleet_server.models import AuditLog
+from fleet_server.models import AuditLog, User
 from tests.conftest import do_login
 
 
@@ -26,3 +26,34 @@ def test_farm_create_recorded(client, app):
     with app.state.session_factory() as db:
         row = db.query(AuditLog).filter(AuditLog.action == "farm_create").one()
         assert row.result == "accepted" and "감사농장" in row.detail
+
+
+def test_masking_multiword_secret(db):
+    audit.record(db, action="cmd", result="rejected",
+                 detail='{"password": "hello world", "token": "a b c"}')
+    row = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    assert "hello" not in row.detail and "world" not in row.detail
+    assert "a b c" not in row.detail
+
+
+def test_farm_patch_records_actor(client, app):
+    csrf = do_login(client)
+    r = client.post("/api/v1/farms", json={"name": "행위자농장"}, headers={"X-CSRF": csrf})
+    farm_id = r.json()["id"]
+    client.patch(f"/api/v1/farms/{farm_id}", json={"map_bundle_ref": "ref1"},
+                 headers={"X-CSRF": csrf})
+    with app.state.session_factory() as db:
+        admin_id = db.query(User).filter(User.login == "admin").one().id
+        row = db.query(AuditLog).filter(AuditLog.action == "farm_patch").one()
+        assert row.result == "accepted"
+        assert row.user_id == admin_id and row.role == "admin"
+
+
+def test_create_robot_rejected_recorded(client, app):
+    csrf = do_login(client)
+    client.post("/api/v1/robots",
+                json={"id": "r1", "farm_id": 9999, "name": "없는농장로봇"},
+                headers={"X-CSRF": csrf})
+    with app.state.session_factory() as db:
+        row = db.query(AuditLog).filter(AuditLog.action == "robot_create").one()
+        assert row.result == "rejected"

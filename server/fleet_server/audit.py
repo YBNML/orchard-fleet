@@ -8,7 +8,9 @@ import re
 
 from .models import AuditLog
 
-_MASK = re.compile(r'("?(?:token|password|pw|secret)"?\s*[:=]\s*"?)[^",}\s]+', re.I)
+_MASK = re.compile(
+    r'("?(?:token|password|pw|secret)"?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^",}\s]+)',
+    re.I)
 _CLIP = 160
 
 
