@@ -131,6 +131,7 @@ class MapLocalizer(Node):
         self._imu_yaw = 0.0
         self._imu_t = None
         self._odom_prev = None          # 직전 odom 원자세 (x, y, yaw)
+        self._odom_raw = (0.0, 0.0, 0.0)  # 바퀴 오도메트리 원값 — TF 발행 보정용
 
         # map → odom. 초기값은 '초기 자세를 안다'는 전제에서 만든다
         # (설계: 대시보드에서 지정하거나 지정 주차 지점에서 기동)
@@ -192,6 +193,7 @@ class MapLocalizer(Node):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
         raw = (p.x, p.y, math.atan2(R[1, 0], R[0, 0]))
+        self._odom_raw = raw
         if not self._have_odom:
             self._odom_prev = raw
             self._imu_yaw0 = self._imu_yaw
@@ -444,14 +446,20 @@ class MapLocalizer(Node):
                        f"{now - self.last_ok_t:.0f}초째 위치 상실 — 정지 필요",
                        severity="critical")
 
+        # TF 소비자는 map→base 를 (여기서 낸 map→odom) ∘ (바퀴 odom→base) 로
+        # 합성한다. 내부 추측항법은 자이로 요를 쓰므로 T_mo 를 그대로 내면
+        # 바퀴 요가 자이로와 갈라진 만큼 합성 결과가 틀어진다 — 실제로 제어기가
+        # 허구의 자세로 조향해 열을 넘어갔다(08-02). 발행값은 반드시
+        # 융합자세 ∘ (바퀴 원값)⁻¹ 로 계산해야 합성이 융합 추정과 일치한다.
+        pub = compose(self.pose(), inverse(self._odom_raw))
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = self.map_frame
         t.child_frame_id = self.odom_frame
-        t.transform.translation.x = float(self.T_mo[0])
-        t.transform.translation.y = float(self.T_mo[1])
-        t.transform.rotation.z = math.sin(self.T_mo[2] / 2.0)
-        t.transform.rotation.w = math.cos(self.T_mo[2] / 2.0)
+        t.transform.translation.x = float(pub[0])
+        t.transform.translation.y = float(pub[1])
+        t.transform.rotation.z = math.sin(pub[2] / 2.0)
+        t.transform.rotation.w = math.cos(pub[2] / 2.0)
         self.tfb.sendTransform(t)
 
 
