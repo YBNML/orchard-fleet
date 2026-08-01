@@ -42,7 +42,17 @@ def test_history_routes(client, app):
     assert evs and evs[0]["kind"] == "estop"
     trs = client.get("/api/v1/tracks?robot_id=scout01").json()
     assert trs and trs[0]["x"] == 1.5
-    assert client.get("/api/v1/audit").status_code == 200      # admin 은 가능
+    audit_resp = client.get("/api/v1/audit")
+    assert audit_resp.status_code == 200      # admin 은 가능
+
+    # Critical 2 회귀 — 새 세션에서 재조회한 값(naive 로 돌아옴)도 tz 접미사가
+    # 있어야 한다. 없으면 대시보드의 Date.parse() 가 KST 로 오해석해 9시간 어긋난다.
+    def _has_tz(ts: str) -> bool:
+        return ts.endswith("Z") or ts[-6] in "+-"
+
+    assert _has_tz(evs[0]["ts"])
+    assert _has_tz(trs[0]["ts"])
+    assert audit_resp.json() and all(_has_tz(a["ts"]) for a in audit_resp.json())
 
 
 def test_audit_admin_only(client):

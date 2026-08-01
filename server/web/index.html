@@ -215,6 +215,15 @@ kbd{background:#21262d;border:1px solid var(--line);border-bottom-width:2px;
 "use strict";
 const $ = id => document.getElementById(id);
 
+// 로봇(레거시 WS 평문 링크)이 보낸 문자열은 절대 신뢰하지 않는다 — innerHTML 에
+// 넣기 전에 반드시 이 함수로 이스케이프한다. 오염된 로봇이나 on-path 공격자가
+// 관제 화면에서 스크립트를 실행시키는 걸 막는다 (관제 페이지에는 CSRF 토큰이
+// 있어 계정 생성·clear_estop 까지 이어질 수 있다).
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
 /* ── 관제 v2: 세션·API ─────────────────────────────────────────────── */
 let ME = null, CSRF = "";
 const ROLE_RANK = {observer: 0, operator: 1, admin: 2};
@@ -389,8 +398,8 @@ function renderFleet(){
     const d = document.createElement("div");
     d.className = "rtab" + (k === selKey ? " sel" : "") +
                   (r.state?.estop ? " estop" : "");
-    d.innerHTML = `<span class="dot ${r.cls}"></span>${r.id}` +
-      (r.state ? ` <span class="muted">${modeName(r.state.mode)}</span>` : "");
+    d.innerHTML = `<span class="dot ${r.cls}"></span>${esc(r.id)}` +
+      (r.state ? ` <span class="muted">${esc(modeName(r.state.mode))}</span>` : "");
     d.onclick = () => { selKey = k; renderFleet(); buildAlleys(r); applyFeatures(r);
                         syncPanels(); syncHealth(r); updateSec(); draw(); };
     d.oncontextmenu = e => { e.preventDefault();
@@ -438,8 +447,8 @@ function applyFeatures(r){
   }
   $("featCount").textContent = `${r.features.length}개`;
   list.innerHTML = r.features.map(f =>
-    `<div><b>${f.name}</b> <span class="muted">v${f.version}</span>` +
-    (f.summary ? `<br><span class="muted" style="font-size:11px">${f.summary}</span>` : "") +
+    `<div><b>${esc(f.name)}</b> <span class="muted">v${esc(f.version)}</span>` +
+    (f.summary ? `<br><span class="muted" style="font-size:11px">${esc(f.summary)}</span>` : "") +
     `</div>`).join("");
 }
 
@@ -473,21 +482,24 @@ function syncPanels(){
 }
 function syncHealth(r){
   const p = r?.health;
+  // v(로봇이 보낸 lidar_hz 등)는 정상적으론 숫자지만, 로봇이 거짓으로 문자열을
+  // 보내면 v < lim 비교가 NaN 이 되어 else 분기로 그대로 innerHTML 에 들어갈 수
+  // 있다 — esc() 로 감싼다.
   const f = (v,u,lim) => v == null ? "—" :
-    (v < lim ? `<span style="color:var(--bad)">${v} ${u}</span>` : `${v} ${u}`);
+    (v < lim ? `<span style="color:var(--bad)">${esc(v)} ${u}</span>` : `${esc(v)} ${u}`);
   $("hzL").innerHTML = f(p?.lidar_hz,"Hz",5);
   $("hzI").innerHTML = f(p?.imu_hz,"Hz",100);
   $("hzO").innerHTML = f(p?.lio_hz,"Hz",5);
   $("gap").textContent = p?.slam_gap == null ? "—" : p.slam_gap.toFixed(2)+" m";
   $("mcells").textContent = (p?.map_cells||0).toLocaleString();
   $("warns").innerHTML = (p?.warnings||[]).map(w =>
-    `<div style="color:var(--warn);font-size:12px">⚠ ${w}</div>`).join("");
+    `<div style="color:var(--warn);font-size:12px">⚠ ${esc(w)}</div>`).join("");
 }
 function logEvent(r, e){
   const d = document.createElement("div");
   d.className = e.level || "info";
   const t = new Date(e.t*1000).toLocaleTimeString("ko-KR",{hour12:false});
-  d.innerHTML = `<time>${t}</time><span class="rid">${r.id}</span>${e.msg}`;
+  d.innerHTML = `<time>${t}</time><span class="rid">${esc(r.id)}</span>${esc(e.msg)}`;
   const log = $("log"); log.prepend(d);
   while (log.children.length > 80) log.lastChild.remove();
 }

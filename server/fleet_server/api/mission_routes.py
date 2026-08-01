@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from .. import audit, missions
 from ..deps import csrf_protect, current_user, farm_scope, get_db, require_min_role
 from ..models import Mission, Robot, User
+from ..timeutil import iso_utc
 
 router = APIRouter(tags=["missions"])
 _operator = Depends(require_min_role("operator"))
@@ -34,15 +35,24 @@ def _scoped_robot(db, user, robot_id, *, action: str) -> Robot:
 def _mission_out(ms: Mission) -> dict:
     return {"id": ms.id, "robot_id": ms.robot_id, "farm_id": ms.farm_id,
             "state": ms.state, "spec": ms.spec_json,
-            "created_at": ms.created_at.isoformat(),
-            "started_at": ms.started_at.isoformat() if ms.started_at else None,
-            "ended_at": ms.ended_at.isoformat() if ms.ended_at else None}
+            "created_at": iso_utc(ms.created_at),
+            "started_at": iso_utc(ms.started_at),
+            "ended_at": iso_utc(ms.ended_at)}
 
 
 @router.post("/missions", dependencies=[_operator, _csrf])
 async def create_mission(body: MissionBody, request: Request, db=Depends(get_db),
                          user: User = Depends(current_user)):
     robot = _scoped_robot(db, user, body.robot_id, action="mission_start")
+    existing = (db.query(Mission)
+                .filter(Mission.robot_id == robot.id,
+                        Mission.state.in_(["QUEUED", "RUNNING", "PAUSED"]))
+                .first())
+    if existing is not None:                   # 로봇당 활성 임무는 1개만 (레이스·오귀속 방지)
+        audit.record(db, action="mission_start", result="rejected", user_id=user.id,
+                     role=user.role, target=robot.id,
+                     detail=f"활성 임무 이미 존재 mission={existing.id}")
+        raise HTTPException(409, "해당 로봇에 이미 활성 임무가 있습니다")
     fleet = request.app.state.fleet
     ms = missions.create(db, robot_id=robot.id, farm_id=robot.farm_id,
                          spec={"alleys": body.alleys}, created_by=user.id)

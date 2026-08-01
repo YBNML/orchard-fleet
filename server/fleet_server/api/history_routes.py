@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..deps import current_user, farm_scope, get_db, require_min_role
 from ..models import AuditLog, Event, Robot, Track, User
+from ..timeutil import iso_utc
 
 router = APIRouter(tags=["history"])
 
@@ -33,7 +34,7 @@ def tracks(robot_id: str | None = None, from_ts: float | None = None,
         q = q.filter(Track.ts >= dt.datetime.fromtimestamp(from_ts, dt.UTC))
     if to_ts is not None:
         q = q.filter(Track.ts <= dt.datetime.fromtimestamp(to_ts, dt.UTC))
-    return [{"robot_id": t.robot_id, "ts": t.ts.isoformat(), "x": t.x, "y": t.y,
+    return [{"robot_id": t.robot_id, "ts": iso_utc(t.ts), "x": t.x, "y": t.y,
              "yaw": t.yaw, "mode": t.mode}
             for t in q.order_by(Track.ts).limit(10000)]
 
@@ -44,13 +45,13 @@ def events(robot_id: str | None = None, limit: int = 200, db=Depends(get_db),
     ids = _scoped_robot_ids(db, user, robot_id)
     q = (db.query(Event).filter(Event.robot_id.in_(ids))
          .order_by(Event.id.desc()).limit(min(limit, 1000)))
-    return [{"robot_id": e.robot_id, "ts": e.ts.isoformat(), "kind": e.kind,
+    return [{"robot_id": e.robot_id, "ts": iso_utc(e.ts), "kind": e.kind,
              "severity": e.severity, "msg": e.msg} for e in q]
 
 
 @router.get("/audit", dependencies=[Depends(require_min_role("admin"))])
 def audit_rows(limit: int = 200, db=Depends(get_db)):
     q = db.query(AuditLog).order_by(AuditLog.id.desc()).limit(min(limit, 1000))
-    return [{"ts": a.ts.isoformat(), "user_id": a.user_id, "role": a.role,
+    return [{"ts": iso_utc(a.ts), "user_id": a.user_id, "role": a.role,
              "action": a.action, "target": a.target, "result": a.result,
              "detail": a.detail} for a in q]

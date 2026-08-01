@@ -61,6 +61,48 @@ def test_observer_cannot_create(client, app):
     assert r.status_code == 403
 
 
+def test_mission_timestamps_have_tz_suffix_after_fresh_query(client, app):
+    """POST 응답(같은 세션)이 아니라, 이후 GET(다른 세션 — SQLite 가 naive 로
+    돌려주는 상황)에서 시각 문자열에 tz 접미사가 있어야 한다 (Critical 2 회귀)."""
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    csrf = do_login(client, "op", "oppw")
+    h = {"X-CSRF": csrf}
+    client.post("/api/v1/missions", headers=h, json={"robot_id": "scout01", "alleys": [0]})
+
+    def _has_tz(ts: str) -> bool:
+        return ts.endswith("Z") or ts[-6] in "+-"
+
+    rows = client.get("/api/v1/missions").json()
+    assert rows
+    for m in rows:
+        assert _has_tz(m["created_at"])
+        if m["started_at"]:
+            assert _has_tz(m["started_at"])
+        if m["ended_at"]:
+            assert _has_tz(m["ended_at"])
+
+
+def test_duplicate_active_mission_409(client, app):
+    """로봇당 활성 임무(QUEUED/RUNNING/PAUSED)는 하나뿐이어야 한다 — 아니면
+    _sync_mission 의 "최신 활성 임무" 휴리스틱이 오귀속될 수 있다."""
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    csrf = do_login(client, "op", "oppw")
+    h = {"X-CSRF": csrf}
+    r1 = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout01", "alleys": [0]})
+    assert r1.status_code == 200, r1.text
+    r2 = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout01", "alleys": [1]})
+    assert r2.status_code == 409, r2.text
+    from fleet_server.models import Mission
+    with app.state.session_factory() as db:
+        active = db.query(Mission).filter(Mission.robot_id == "scout01",
+                                          Mission.state.in_(["QUEUED", "RUNNING", "PAUSED"])).all()
+        assert len(active) == 1                    # 두 번째 요청이 실제로 임무를 만들지 않음
+
+
 def test_verb_offline_409_state_unchanged(client, app):
     _seed_operator(client)
     app.state.fleet.feed("scout01", "tel/state", {})
