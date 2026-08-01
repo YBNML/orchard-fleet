@@ -233,7 +233,8 @@ class ControlAgent(Node):
             f"권한 판정 활성 — 명령·조종 모두 역할 검사를 거친다 "
             f"(조종 {P.required_role(P.ACT_TELEOP)}, "
             f"비상정지 {P.required_role(P.CMD_ESTOP)}, "
-            f"해제 {P.required_role(P.CMD_CLEAR_ESTOP)} 이상)")
+            f"해제 승인 {P.required_role(P.CMD_CLEAR_ESTOP_REQUEST)} 이상) "
+            f"— 해제는 2단계다: 관제 승인 + 현장 확인(~/local_reset)")
 
     def _auth_config(self, raw):
         """auth_token 파라미터를 ControlServer 가 받는 형태로 바꾼다.
