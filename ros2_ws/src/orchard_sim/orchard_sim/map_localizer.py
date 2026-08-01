@@ -412,8 +412,8 @@ class MapLocalizer(Node):
         # 순환에 빠진다 (실측: 품질 0.84·dx −0.009 를 표류 10 m 사유로 무한
         # 거부, 08-02). 앵커와 자이로가 실제 오차를 한계 아래로 묶어 주므로,
         # 고품질·소보정이 4회 연속 일관되면 재획득으로 받는다.
-        if (not ok and why.startswith("보정 간 표류") and fix.quality >= 0.6
-                and abs(fix.dx) <= 0.5 and abs(math.degrees(fix.dyaw)) < 10.0):
+        if (not ok and why.startswith("보정 간 표류") and fix.quality >= 0.7
+                and abs(fix.dx) <= 1.2 and abs(math.degrees(fix.dyaw)) < 15.0):
             self._reacq_streak += 1
             if self._reacq_streak >= 4:
                 ok, why = True, ""
@@ -435,10 +435,16 @@ class MapLocalizer(Node):
         #   새 자세 = (로봇 위치를 중심으로 dyaw 회전) + (dx, dy 평행이동)
         # 종방향(dy)은 위상 잠금이라 신뢰도가 낮다 — 절반만 반영해 흔들림을 줄인다.
         px, py, pyaw = est
-        # 블록 밖(헤드랜드) 보정은 dx 만 쓴다 — 그곳의 '열'은 열 끝을 비스듬히
-        # 본 것이라 요 추정이 편향된다. 실측: 선회 중 헤드랜드 보정의 dyaw 가
-        # 누적돼 추정 요가 7° 기울었다(08-02). 요는 자이로(AHRS)가 지킨다.
-        dyaw = fix.dyaw if fix.in_block else 0.0
+        # 요의 주인은 AHRS 다. 위상 요 측정은 추정이 이미 맞을 때만 정직해서,
+        # 선회 복구처럼 추정이 흔들릴 때 dyaw 를 그대로 적용하면 정확한 자이로
+        # 요를 편향된 측정이 덮어쓴다 (실측: AHRS 델타 오차 0.0° 인데 추정
+        # 요가 24° 이탈, 08-02). 보정 dyaw 는 AHRS 표류를 흡수하는 미세
+        # 트림으로만 쓴다 — 이득 0.2, 회당 ±0.5° 클램프, 블록 안에서만.
+        if fix.in_block:
+            dyaw = max(-math.radians(0.5),
+                       min(math.radians(0.5), fix.dyaw * 0.2))
+        else:
+            dyaw = 0.0
         dy_apply = fix.dy * 0.5 if fix.longitudinal_ok else 0.0
         new_pose = (px + fix.dx, py + dy_apply, wrap(pyaw + dyaw))
         self.T_mo = compose(new_pose, inverse(self.T_ob))
