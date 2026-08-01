@@ -47,7 +47,10 @@
 html,body{margin:0;height:100%}
 body{
   background:var(--bg); color:var(--ink);
-  font-family:"Noto Sans KR","Noto Sans CJK KR",system-ui,-apple-system,sans-serif;
+  /* Pretendard 는 국내 PC 에 흔히 깔려 있어 있으면 쓰고, 없으면 Noto 로 내려간다.
+     외부 폰트를 내려받지 않는다는 원칙은 그대로 지킨다(관제 PC 가 폐쇄망일 수 있다). */
+  font-family:"Pretendard","Pretendard Variable","Noto Sans KR","Noto Sans CJK KR",
+              system-ui,-apple-system,sans-serif;
   font-size:14px; line-height:1.5;
   display:grid; grid-template-rows:auto 1fr auto; overflow:hidden;
   -webkit-font-smoothing:antialiased;
@@ -975,7 +978,15 @@ function drawRobot(r, isSel, c){
 
 function draw(){
   const c = pal();
+  // 평평한 단색 대신 아주 옅은 비네트 — 밭이 놓인 자리에 시선이 모이고,
+  // 전체보기에서 남는 여백이 '빈 곳'이 아니라 '주변 땅'으로 읽힌다.
   ctx.fillStyle = c.canvas; ctx.fillRect(0,0,cv.width,cv.height);
+  const vg = ctx.createRadialGradient(cv.width/2, cv.height/2, Math.min(cv.width,cv.height)*0.18,
+                                      cv.width/2, cv.height/2, Math.max(cv.width,cv.height)*0.72);
+  vg.addColorStop(0, "rgba(0,0,0,0)");
+  vg.addColorStop(1, document.documentElement.dataset.theme === "dark"
+                     ? "rgba(0,0,0,0.30)" : "rgba(90,80,60,0.10)");
+  ctx.fillStyle = vg; ctx.fillRect(0,0,cv.width,cv.height);
   const g = sel()?.geom || [...robots.values()].find(r => r.geom)?.geom;
   if (!g) return;
   const s = view.scale;
