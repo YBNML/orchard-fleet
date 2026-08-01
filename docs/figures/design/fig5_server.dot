@@ -1,0 +1,33 @@
+
+digraph srv {
+
+  graph [fontname="Noto Sans CJK KR", fontsize=11, pad=0.25];
+  node  [fontname="Noto Sans CJK KR", fontsize=11, style="filled,rounded", shape=box,
+         penwidth=1.2, margin="0.18,0.09"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10, penwidth=1.1];
+
+  rankdir=LR; ranksep=0.8; nodesep=0.4;
+
+  subgraph cluster_edge {
+    label="입출력"; style="rounded,filled"; fillcolor="#f4f8fc"; color="#3a6ea5";
+    zd [label="zenohd\l  + MQTT 플러그인\l", fillcolor="#e4ecf7"];
+    wsg[label="WebSocket\l게이트웨이\l", fillcolor="#e4ecf7"];
+    rest[label="REST /api/v1\l  auth·farms·robots\l  missions·history·users\l", fillcolor="#e4ecf7"];
+    upl [label="업로드 수신\l", fillcolor="#e4ecf7"];
+  }
+
+  subgraph cluster_core {
+    label="관제 코어 (도메인)"; style="rounded,filled"; fillcolor="#f4f8fc"; color="#3a6ea5";
+    fp  [label="FleetPort (인터페이스)\l  로봇 등록·텔레메트리 수집\l  명령 라우팅·연결 상태\l  ← ORO 공개 시 대체 평가 지점\l", fillcolor="#f3e9f5", color="#8e5ba6"];
+    auth[label="AuthService\l  Argon2 해시·세션\l  역할×명령 (fail-closed)\l  농장 스코프\l", fillcolor="#e4ecf7"];
+    ms  [label="MissionService\l  RMF 호환 태스크 모델\l  task_id·phases·상태 전이\l", fillcolor="#e4ecf7"];
+    hs  [label="HistoryService\l  궤적 1 Hz·이벤트·감사\l", fillcolor="#e4ecf7"];
+  }
+
+  db [label="SQLite\l users·farms·robots\l missions·tracks·events·audit\l", shape=cylinder, fillcolor="white", color="#3a6ea5"];
+
+  zd -> fp [dir=both]; wsg -> auth; rest -> auth;
+  auth -> ms; auth -> hs; ms -> fp [dir=both]; upl -> hs;
+  fp -> hs [label="기록"]; ms -> db; hs -> db; auth -> db;
+  fp -> wsg [label="실시간 팬아웃"];
+}

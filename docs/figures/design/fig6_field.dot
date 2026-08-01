@@ -1,0 +1,41 @@
+
+digraph field {
+
+  graph [fontname="Noto Sans CJK KR", fontsize=11, pad=0.25];
+  node  [fontname="Noto Sans CJK KR", fontsize=11, style="filled,rounded", shape=box,
+         penwidth=1.2, margin="0.18,0.09"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10, penwidth=1.1];
+
+  rankdir=TB; ranksep=0.5; nodesep=0.4;
+
+  subgraph cluster_off {
+    label="오프라인 (맵핑 세션 후 1회)"; style="rounded,filled"; fillcolor="#fbf8f2"; color="#b8860b";
+    cloud [label="사전 맵 점군\n(맵핑 세션 산출물 — 별도 트랙)", fillcolor="white", color="#b8860b"];
+    trav  [label="주행가능도 분석\n(traversability — 검증 완료 모듈)", fillcolor="white", color="#b8860b"];
+    corr  [label="통로 추출·경로 그래프\n(row_structure + corridor — 115 mm 검증)", fillcolor="white", color="#b8860b"];
+    bundle[label="맵 번들 v1\ncloud.pcd · trav.npz · graph.json · meta.yaml", shape=folder, fillcolor="#fdf3dc", color="#b8860b"];
+    cloud -> trav -> corr -> bundle;
+  }
+
+  subgraph cluster_on {
+    label="온라인 (주행 중, 온보드)"; style="rounded,filled"; fillcolor="#f7faf5"; color="#4c7d43";
+    sens [label="센서: MID-70 점군 · IMU · 휠 엔코더", fillcolor="white", color="#4c7d43"];
+    ekf  [label="EKF 오도메트리 (고빈도)\n휠(회전 과대 보정) + IMU 자이로", fillcolor="#e8f1e4", color="#4c7d43"];
+    reg  [label="스캔↔사전맵 정합 (NDT, 1~2 Hz)\n절대 위치 보정 — 오차 비누적", fillcolor="#e8f1e4", color="#4c7d43"];
+    gate [label="퇴화 게이트\n구조점 비율·측방 분산 검사\n(MID-70 전방시야 대응 — 진단 모듈 재사용)", shape=diamond, fillcolor="white", color="#4c7d43"];
+    fuse [label="융합 포즈 (map→odom TF)\n보정 스킵 구간은 오도메트리 관성 항법\n+ 공분산 팽창", fillcolor="#e8f1e4", color="#4c7d43"];
+    plan [label="경로 생성\n임무(통로 목록) → 그래프 탐색 → 경로점", fillcolor="#e8f1e4", color="#4c7d43"];
+    ctrl [label="경로 추종\npure pursuit + 곡률 감속", fillcolor="#e8f1e4", color="#4c7d43"];
+    sa   [label="SafetyArbiter (최종 게이트)\n비상정지·데드맨·장애물\n주행경계·기울기 25°", fillcolor="#fbe3e0", color="#b0483d"];
+    out  [label="cmd_vel", shape=oval, fillcolor="white", color="#4c7d43"];
+
+    sens -> ekf; sens -> reg;
+    reg -> gate; gate -> fuse [label="정합 신뢰"];
+    gate -> fuse [label="퇴화 → 스킵", style=dashed, color="#b0483d", fontcolor="#b0483d"];
+    ekf -> fuse;
+    fuse -> ctrl; plan -> ctrl; ctrl -> sa -> out;
+  }
+
+  bundle -> reg [label="cloud.pcd"];
+  bundle -> plan [label="graph.json"];
+}

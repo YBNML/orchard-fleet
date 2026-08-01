@@ -1,0 +1,44 @@
+
+digraph arch {
+
+  graph [fontname="Noto Sans CJK KR", fontsize=11, pad=0.25];
+  node  [fontname="Noto Sans CJK KR", fontsize=11, style="filled,rounded", shape=box,
+         penwidth=1.2, margin="0.18,0.09"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10, penwidth=1.1];
+
+  rankdir=LR; ranksep=0.9; nodesep=0.45;
+  compound=true; newrank=true;
+
+  subgraph cluster_field {
+    label="노지 과수원 (현장)"; labeljust=l; fontsize=13;
+    style="rounded,filled"; fillcolor="#f7faf5"; color="#4c7d43";
+    subgraph cluster_robot {
+      label="무인이동체 (Scout Mini + MID-70)"; fillcolor="#e8f1e4"; color="#4c7d43";
+      nav   [label="자율주행 스택\l  사전맵 로컬리제이션\l  경로 생성·추종\l", fillcolor="white", color="#4c7d43"];
+      safety[label="SafetyArbiter\l  비상정지 래치·데드맨\l  장애물·주행경계·기울기\l  (온보드 완결)\l", fillcolor="#fbe3e0", color="#b0483d"];
+      agent [label="로봇 에이전트\l  Feature 플러그인\l  store-and-forward 버퍼\l", fillcolor="white", color="#4c7d43"];
+      rec   [label="로컬 기록\l  점군·주행 로그 청크\l", fillcolor="white", color="#4c7d43"];
+      nav -> safety [label="속도 요청"];
+      agent -> safety [label="원격 명령"];
+    }
+  }
+
+  subgraph cluster_srv {
+    label="회사 서버 (컨테이너, 이전 가능)"; labeljust=l; fontsize=13;
+    style="rounded,filled"; fillcolor="#f4f8fc"; color="#3a6ea5";
+    zenohd [label="zenohd 라우터 ≥1.8\l  TLS + 로봇별 mTLS + ACL\l  MQTT 플러그인 (이종 로봇)\l", fillcolor="#e4ecf7", color="#3a6ea5"];
+    core   [label="관제 코어\l  Zenoh↔내부 브리지\l  권한 1차 판정·감사\l  FleetPort (교체 가능)\l", fillcolor="#e4ecf7", color="#3a6ea5"];
+    api    [label="FastAPI\l  계정·로그인 / 농장·로봇\l  임무·이력 API\l  WebSocket 게이트웨이\l  배치 업로드 수신\l", fillcolor="#e4ecf7", color="#3a6ea5"];
+    db     [label="SQLite\l  (SQLAlchemy — PG 이전 가능)\l", shape=cylinder, fillcolor="white", color="#3a6ea5"];
+    oro    [label="외부 플랫폼 어댑터 포트\l  OpenRobOps·Open-RMF (향후)\l", style="filled,rounded,dashed", fillcolor="#f3e9f5", color="#8e5ba6"];
+    zenohd -> core; core -> api [dir=both]; api -> db; core -> oro [style=dashed];
+  }
+
+  browser [label="농민·관리자 브라우저\l  로그인 → 농장 선택 → 관제\l", fillcolor="#fdf3dc", color="#b8860b"];
+  future  [label="향후 추가 로봇\l  실내 AMR (VDA 5050/MQTT)\l  ORO agent 로봇\l", style="filled,rounded,dashed", fillcolor="#f3e9f5", color="#8e5ba6"];
+
+  agent -> zenohd [label="LTE · Zenoh client\n아웃바운드 접속", color="#4c7d43", fontcolor="#4c7d43", ltail=cluster_robot];
+  rec   -> api    [label="HTTP 배치 업로드\n(1분 청크·이어올리기)", style=dashed, color="#4c7d43", fontcolor="#4c7d43"];
+  future -> zenohd [label="MQTT(S)", style=dashed, color="#8e5ba6", fontcolor="#8e5ba6"];
+  api -> browser  [label="HTTPS + WebSocket", dir=both, color="#b8860b", fontcolor="#b8860b"];
+}

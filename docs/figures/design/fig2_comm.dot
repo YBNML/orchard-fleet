@@ -1,0 +1,34 @@
+
+digraph comm {
+
+  graph [fontname="Noto Sans CJK KR", fontsize=11, pad=0.25];
+  node  [fontname="Noto Sans CJK KR", fontsize=11, style="filled,rounded", shape=box,
+         penwidth=1.2, margin="0.18,0.09"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10, penwidth=1.1];
+
+  rankdir=LR; ranksep=1.0; nodesep=0.5;
+
+  subgraph cluster_r {
+    label="무인이동체"; style="rounded,filled"; fillcolor="#e8f1e4"; color="#4c7d43";
+    rt  [label="실시간 채널 (Zenoh)\l  tel/state ~2 Hz (최신값)\l  tel/health 1 Hz\l  tel/map 델타\l  evt·ack (신뢰 전달)\l  cmd·teleop 수신\l", fillcolor="white"];
+    sf  [label="store-and-forward\l  SQLite 큐 (evt·ack·상태 1 Hz)\l  단절 시 적재 → 재연결 시\l  seq 순 재전송\l", fillcolor="white"];
+    blk [label="벌크 경로 (Zenoh 밖)\l  점군·주행 로그\l  1분 청크 파일 기록\l", fillcolor="white"];
+  }
+
+  subgraph cluster_s {
+    label="회사 서버"; style="rounded,filled"; fillcolor="#e4ecf7"; color="#3a6ea5";
+    zd  [label="zenohd ≥1.8\l  TLS 7447 · mTLS 로봇 인증\l  ACL: 로봇은 자기 key만\l  liveliness → 연결 감시\l", fillcolor="white"];
+    mq  [label="MQTT 플러그인\l  1883/8883\l  토픽↔key 자동 매핑\l", style="filled,rounded,dashed", fillcolor="#f3e9f5", color="#8e5ba6"];
+    up  [label="업로드 수신기\l  PUT /api/v1/upload\l  이어올리기·무결성 검사\l", fillcolor="white"];
+    dedup [label="수집기\l  (robot, seq) 중복 제거\l  DB 기록·WS 팬아웃\l", fillcolor="white"];
+    zd -> dedup; up -> dedup [style=invis];
+  }
+
+  amr [label="실내 AMR·ORO agent (향후)", style="filled,rounded,dashed", fillcolor="#f3e9f5", color="#8e5ba6"];
+
+  rt -> zd  [label="Zenoh/TLS (LTE)\n아웃바운드 · 자동 재연결", dir=both, color="#4c7d43", fontcolor="#4c7d43"];
+  sf -> rt  [label="재연결 시 재생"];
+  blk -> up [label="HTTP PUT (기회적 업로드)", style=dashed, color="#4c7d43", fontcolor="#4c7d43"];
+  amr -> mq [label="MQTT(S)", style=dashed, color="#8e5ba6", fontcolor="#8e5ba6"];
+  mq -> zd [label="key 공간 합류", color="#8e5ba6", fontcolor="#8e5ba6"];
+}

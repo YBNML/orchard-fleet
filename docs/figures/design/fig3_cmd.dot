@@ -1,0 +1,30 @@
+
+digraph cmd {
+
+  graph [fontname="Noto Sans CJK KR", fontsize=11, pad=0.25];
+  node  [fontname="Noto Sans CJK KR", fontsize=11, style="filled,rounded", shape=box,
+         penwidth=1.2, margin="0.18,0.09"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10, penwidth=1.1];
+
+  rankdir=TB; ranksep=0.5;
+
+  u   [label="사용자 (브라우저)\n임무 시작 / 비상정지 / 텔레옵", fillcolor="#fdf3dc", color="#b8860b"];
+  ws  [label="WebSocket 게이트웨이\n세션 쿠키 → 사용자·역할 식별", fillcolor="#e4ecf7", color="#3a6ea5"];
+  a1  [label="서버 1차 권한 판정\n역할×명령 매트릭스 (fail-closed)\n+ 농장 스코프 확인", shape=diamond, fillcolor="#e4ecf7", color="#3a6ea5"];
+  aud [label="감사 기록 (DB)\n수락·거부 전부", shape=note, fillcolor="white", color="#3a6ea5"];
+  pub [label="Zenoh 발행\nfleet/v1/{농장}/{로봇}/cmd\ncmd_id·발행자·역할 포함", fillcolor="#e4ecf7", color="#3a6ea5"];
+  a2  [label="로봇 최종 판정\n동일 매트릭스 재검증 (fail-closed)\n+ SafetyArbiter 게이트", shape=diamond, fillcolor="#e8f1e4", color="#4c7d43"];
+  exe [label="실행\n(임무 시작 / 정지 래치 / 속도 중재)", fillcolor="#e8f1e4", color="#4c7d43"];
+  ack [label="ack 발행 (cmd_id 상관)\n→ 서버 기록 → 사용자 화면 반영", fillcolor="#e8f1e4", color="#4c7d43"];
+  rej1[label="거부 응답 + 감사\n(이벤트 억제: 주소·역할 키)", fillcolor="#fbe3e0", color="#b0483d"];
+  rej2[label="거부 ack + 이벤트", fillcolor="#fbe3e0", color="#b0483d"];
+
+  u -> ws -> a1;
+  a1 -> rej1 [label="권한 없음", color="#b0483d", fontcolor="#b0483d"];
+  a1 -> pub  [label="허용"];
+  a1 -> aud [style=dashed];
+  pub -> a2 [label="Zenoh (LTE)"];
+  a2 -> rej2 [label="권한 없음/안전 저지", color="#b0483d", fontcolor="#b0483d"];
+  a2 -> exe [label="허용"];
+  exe -> ack; rej2 -> ack [style=invis];
+}

@@ -1,0 +1,25 @@
+
+digraph ll {
+
+  graph [fontname="Noto Sans CJK KR", fontsize=11, pad=0.25];
+  node  [fontname="Noto Sans CJK KR", fontsize=11, style="filled,rounded", shape=box,
+         penwidth=1.2, margin="0.18,0.09"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10, penwidth=1.1];
+
+  rankdir=TB; ranksep=0.45;
+
+  det [label="링크 단절 감지\n(Zenoh 세션 상실 / liveliness 소멸)", fillcolor="#fbe3e0", color="#b0483d"];
+  mode[label="현재 모드?", shape=diamond, fillcolor="white", color="#4c7d43"];
+  tel [label="텔레옵 중\n데드맨 400 ms → 즉시 정지\n(기존 불변식 유지)", fillcolor="#e8f1e4", color="#4c7d43"];
+  mis [label="임무 중\n계속 주행 (온보드 안전 게이트 전제)\n단절 30분 초과: 통로 끝 일시정지\n(농장 설정으로 변경 가능)", fillcolor="#e8f1e4", color="#4c7d43"];
+  idle[label="대기 중\n정지 상태 유지", fillcolor="#e8f1e4", color="#4c7d43"];
+  buf [label="store-and-forward 적재\nevt·ack·상태 1 Hz → SQLite 큐\n(상한 도달 시 오래된 tel부터 순환)", fillcolor="white", color="#4c7d43"];
+  rec [label="재연결 (자동, 지수 백오프 1→30초)\n큐 재생 → 서버 (robot, seq) 중복 제거\n비상정지 래치 상태 보고", fillcolor="#e8f1e4", color="#4c7d43"];
+  srv [label="서버 측\nliveliness 소멸 → 대시보드 '연결 끊김'\n마지막 수신 시각 표시 (2차: 알림)", fillcolor="#e4ecf7", color="#3a6ea5"];
+
+  det -> mode;
+  mode -> tel [label="텔레옵"]; mode -> mis [label="임무"]; mode -> idle [label="대기"];
+  tel -> buf; mis -> buf; idle -> buf;
+  buf -> rec;
+  det -> srv [style=dashed];
+}
