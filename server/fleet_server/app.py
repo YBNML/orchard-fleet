@@ -65,6 +65,9 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     app.include_router(mission_routes.router, prefix="/api/v1")
     app.include_router(history_routes.router, prefix="/api/v1")
 
+    from . import ws as ws_module
+    app.include_router(ws_module.router)
+
     _bootstrap_admin(app)
 
     @app.get("/", include_in_schema=False)
