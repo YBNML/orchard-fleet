@@ -48,3 +48,23 @@ def normalize_role(v) -> str:
 def authorize(role, action) -> bool:
     need = ROLE_REQUIRED.get(action, ROLE_ADMIN)        # 미지 명령 → admin 요구
     return ROLE_RANK[normalize_role(role)] >= ROLE_RANK[need]
+
+
+import datetime as dt
+import secrets
+
+from .models import AuthSession, User
+
+
+def create_session(db, user: User, ttl_s: int) -> AuthSession:
+    row = AuthSession(id=secrets.token_urlsafe(32), user_id=user.id,
+                      csrf=secrets.token_urlsafe(16),
+                      expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(seconds=ttl_s))
+    db.add(row)
+    db.commit()
+    return row
+
+
+def delete_session(db, token: str) -> None:
+    db.query(AuthSession).filter(AuthSession.id == token).delete()
+    db.commit()
