@@ -94,6 +94,10 @@ class MapLocalizer(Node):
         d("slip_ratio", 0.35)           # 스캔변위/오도변위 가 이 밑이면 슬립
         d("reacquire_after_s", 5.0)     # 이만큼 못 잡으면 요 탐색을 넓혀 재획득
         d("reacquire_yaw_deg", 30.0)
+        d("anchor_max_range_m", 12.0)   # 둑 앵커 — 이 거리 안의 벽만 믿는다
+        d("anchor_gain", 0.5)
+        d("sensor_fwd_m", 0.275)        # 라이다 광학 원점의 base_link 전방 오프셋
+        d("lost_critical_s", 90.0)      # 이만큼 못 잡으면 격상 — 로봇을 세워야 한다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
 
         self.bundle = mapbundle.Bundle(str(g("bundle")))
@@ -110,6 +114,11 @@ class MapLocalizer(Node):
         self.slip_ratio = float(g("slip_ratio"))
         self.reacquire_after = float(g("reacquire_after_s"))
         self.reacquire_yaw = float(g("reacquire_yaw_deg"))
+        self.anchor_max_range = float(g("anchor_max_range_m"))
+        self.anchor_gain = float(g("anchor_gain"))
+        self.sensor_fwd = float(g("sensor_fwd_m"))
+        self.lost_critical = float(g("lost_critical_s"))
+        self._lost_critical_reported = False
 
         # map → odom. 초기값은 '초기 자세를 안다'는 전제에서 만든다
         # (설계: 대시보드에서 지정하거나 지정 주차 지점에서 기동)
@@ -179,7 +188,27 @@ class MapLocalizer(Node):
         return math.hypot(dx, dy)
 
     # ── 슬립 감시 ───────────────────────────────────────────────────────────
-    def _check_slip(self, sp):
+    def _slip_points(self, sp, pts):
+        """슬립 대조에 쓸 점을 고른다 — 나무가 없으면 지형 기복으로.
+
+        줄기 구조만 쓰면 헤드랜드(나무 없는 곳)에서 감시가 꺼진다 — 로봇이
+        박히는 곳이 정확히 거기다(08-02 실측: 둑에 코 박힌 채 구조점 0).
+        생구름 폴백은 단, 세로 기복이 있는 장면(둑·계단 법면)에서만 믿는다.
+        평평한 맨땅의 히스토그램은 센서를 따라다녀서(장면이 아니라 스캔 패턴)
+        이동 중에도 '안 움직였다'고 답하기 때문이다 — 오탐으로 로봇을 세운다.
+        """
+        if len(sp) >= 150:
+            return sp
+        r = np.hypot(pts[:, 0], pts[:, 1])
+        near = pts[(r > 0.8) & (r <= 20.0)]
+        if len(near) < 600:
+            return None                 # 코앞이 막혔거나 장면이 없다
+        z = near[:, 2]
+        if float(np.percentile(z, 95) - np.percentile(z, 5)) < 0.5:
+            return None                 # 평평한 맨땅 — 판단 불가
+        return near
+
+    def _check_slip(self, sp, pts):
         """오도메트리 변위와 스캔 변위를 대조한다.
 
         오도메트리가 slip_check 만큼 갔다고 할 때마다 기준 스캔과 상관을
@@ -187,8 +216,9 @@ class MapLocalizer(Node):
         직전 앵커에 묶고(오도메트리 무시) 개입을 요청한다. 회전 중에는
         1차원 상관이 성립하지 않으므로 기준만 갱신하고 판단하지 않는다.
         """
-        if len(sp) < 150:
-            self._slip_ref = None       # 구조가 없으면 판단 불가
+        sp = self._slip_points(sp, pts)
+        if sp is None:
+            self._slip_ref = None       # 판단 불가 — 기준도 버린다
             return
         if self._slip_ref is None:
             self._slip_ref = (sp, self.T_ob, self.pose())
@@ -224,12 +254,57 @@ class MapLocalizer(Node):
                 f"슬립 감지 — 오도 {odo_d:.2f} m vs 스캔 {travel:.2f} m "
                 f"(상관 {conf:.2f}) · 자세를 앵커에 고정")
 
+    # ── 열 끝 앵커 ──────────────────────────────────────────────────────────
+    def _try_anchor(self, pts):
+        """헤드랜드 접근 중 전방 둑까지의 거리로 종방향을 절대 보정한다.
+
+        통로 안 종방향은 오도메트리뿐이다(설계 §2 — 위상은 주기 모호, 절대
+        기준은 열 끝에서). 램프에서 궤도가 미끄러지면 오도메트리가 실제보다
+        덜 세고, 제어기는 '아직 못 왔다'며 둑까지 밀어붙인다 — 실제로 출구
+        웨이포인트를 4.3 m 지나쳐 박혔다(08-02). 전방의 둑은 맵에 있는 절대
+        기준이다: 잰 거리와 맵이 기대하는 거리의 차가 곧 종방향 오차다.
+        """
+        est = self.pose()
+        half = float(self.geom["col_len"]) / 2.0
+        hx, hy = math.cos(est[2]), math.sin(est[2])
+        # 통로 안이거나 열 방향으로 달리는 중이 아니면(횡단 등) 볼 것이 없다
+        if abs(est[1]) < half - 2.0 or abs(hy) < 0.7:
+            return
+        r = np.hypot(pts[:, 0], pts[:, 1])
+        ang = np.abs(np.arctan2(pts[:, 1], pts[:, 0]))
+        cone = (ang < math.radians(8.0)) & (r > 0.3) & (pts[:, 2] > -0.35)
+        if cone.sum() < 40:
+            return
+        measured = float(np.percentile(r[cone], 10)) + self.sensor_fwd
+        if measured > self.anchor_max_range:
+            return
+        # 맵이 기대하는 둑까지 거리 — 주행가능 격자를 전방으로 긁는다
+        expected = None
+        for s in np.arange(0.3, self.anchor_max_range + 3.0, 0.1):
+            if not self.bundle.is_drivable(est[0] + hx * s, est[1] + hy * s):
+                expected = float(s)
+                break
+        if expected is None:
+            return
+        err = expected - measured       # >0: 실제가 추정보다 둑에 가깝다
+        if abs(err) > 4.0:
+            return                      # 상식 밖 — 벽이 아닌 것을 봤다
+        corr = err * self.anchor_gain
+        new_pose = (est[0] + hx * corr, est[1] + hy * corr, est[2])
+        self.T_mo = compose(new_pose, inverse(self.T_ob))
+        if self.slip_active:
+            self._slip_anchor = new_pose
+        self.drift_ref = self.T_ob
+        self.stat["n_anchor"] = self.stat.get("n_anchor", 0) + 1
+        self.stat["anchor_err"] = round(err, 2)
+
     # ── 보정 ────────────────────────────────────────────────────────────────
     def _try_fix(self):
         pts = self.last_cloud
         if pts is None or len(pts) == 0:
             return
-        self._check_slip(rl.structure_points(pts))
+        self._check_slip(rl.structure_points(pts), pts)
+        self._try_anchor(pts)
         est = self.pose()
         # 오래 못 잡았으면 요 탐색을 넓혀 재획득 — 선회 직후에는 오도메트리
         # 요 오차가 ±12° 를 넘을 수 있다 (실측 19.5°)
@@ -267,6 +342,7 @@ class MapLocalizer(Node):
         self.stat["n_fix"] += 1
         if self._lost_reported:
             self._lost_reported = False
+            self._lost_critical_reported = False
             self._emit("resolved", "LOCALIZATION_LOST", "위치를 다시 잡았습니다")
 
     def _log_stat(self):
@@ -278,12 +354,14 @@ class MapLocalizer(Node):
             f"구조점 {self.stat['n_struct']} · 집중도 {self.stat['quality']:.2f} · "
             f"점군 {n} · dx {self.stat.get('dx')} dy {self.stat.get('dy')} "
             f"dyaw {self.stat.get('dyaw_deg')}° 종보정 {self.stat.get('lon_ok')}"
+            + (f" · 앵커 {self.stat['n_anchor']}회(잔차 {self.stat.get('anchor_err')})"
+               if self.stat.get("n_anchor") else "")
             + (" · 슬립 동결 중" if self.slip_active else "")
             + (f" · 거부사유: {self.stat['gate']}" if self.stat["gate"] else ""))
 
-    def _emit(self, kind, code, msg):
+    def _emit(self, kind, code, msg, severity="warn"):
         self.diag.publish(String(data=json.dumps(
-            dict(kind=kind, code=code, msg=msg, severity="warn",
+            dict(kind=kind, code=code, msg=msg, severity=severity,
                  t=time.time()), ensure_ascii=False)))
 
     # ── 주기 ────────────────────────────────────────────────────────────────
@@ -301,6 +379,17 @@ class MapLocalizer(Node):
             self._emit("assistance", "LOCALIZATION_LOST",
                        f"{now - self.last_ok_t:.0f}초째 위치 보정 실패 "
                        f"({self.stat.get('gate') or '구조 부족'})")
+
+        # 아주 오래 못 잡으면 격상 — 이 상태로 임무를 계속하면 추정은 순수
+        # 오도메트리 환상이 된다 (실측: 5분간 환상 속에서 통로 하나를 '완주',
+        # 실제 로봇은 둑에 박혀 정지). 선회의 정상 무보정 구간(30~45초)보다
+        # 훨씬 길게 잡아, 진짜 상실만 세운다.
+        if ((now - self.last_ok_t) > self.lost_critical
+                and not self._lost_critical_reported):
+            self._lost_critical_reported = True
+            self._emit("assistance", "LOCALIZATION_LOST",
+                       f"{now - self.last_ok_t:.0f}초째 위치 상실 — 정지 필요",
+                       severity="critical")
 
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()

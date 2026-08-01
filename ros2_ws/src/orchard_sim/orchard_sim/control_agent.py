@@ -36,6 +36,7 @@ import queue
 import threading
 import time
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -160,9 +161,10 @@ class ControlAgent(Node):
         self.pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
         sqos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           history=HistoryPolicy.KEEP_LAST, depth=5)
+        self._cloud_n = 0
+        self._blocked_since = None
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
-                                 lambda _m: self.rate["lidar"].tick(time.monotonic()),
-                                 sqos)
+                                 self._on_cloud, sqos)
         self.create_subscription(Imu, "/imu",
                                  lambda _m: self.rate["imu"].tick(time.monotonic()),
                                  sqos)
@@ -323,6 +325,47 @@ class ControlAgent(Node):
             self.audit.command("local_reset", role="현장", addr="robot",
                                result=("수락" if ok else "거부"))
 
+    def _on_cloud(self, msg):
+        """점군에서 두 가지를 읽는다 — 전방 여유거리와 코앞 밀착률.
+
+        여유거리(중앙 ±8° 원뿔의 하위 10% 거리)는 헤드랜드에서 둑까지의
+        거리다 — 임무 기능이 '벽 앞 도착' 판정에 쓴다. 밀착률(0.8 m 안
+        점 비율)이 높으면 코가 무언가에 박힌 것이다: 라이다가 흙만 보므로
+        로컬리제이션도 슬립 감지도 눈이 먼다(08-02 실측). 여기서만 잡을
+        수 있으니 여기서 세운다.
+        """
+        self.rate["lidar"].tick(time.monotonic())
+        self._cloud_n += 1
+        if self._cloud_n % 3:           # 10 Hz 입력을 3.3 Hz 로 솎는다
+            return
+        from orchard_sim.map_localizer import read_xyz
+        p = read_xyz(msg)
+        if len(p) < 200:
+            return
+        r = np.hypot(p[:, 0], p[:, 1])
+        near_frac = float((r < 0.8).mean())
+        ang = np.abs(np.arctan2(p[:, 1], p[:, 0]))
+        cone = (ang < math.radians(8.0)) & (r > 0.25) & (p[:, 2] > -0.35)
+        clearance = (float(np.percentile(r[cone], 10))
+                     if int(cone.sum()) >= 30 else float("inf"))
+        self.bb.set(clearance=clearance, near_frac=near_frac)
+
+        # 밀착 정지 — 임무 중 2초 넘게 코앞이 막혀 있으면 박힌 것이다
+        now = time.monotonic()
+        in_mission = self.bb.extra.get("mode") == P.MODE_MISSION
+        if near_frac > 0.6 and in_mission and not self.safety.paused:
+            if self._blocked_since is None:
+                self._blocked_since = now
+            elif now - self._blocked_since > 2.0:
+                self._blocked_since = None
+                self.safety.set_paused(True)
+                self._write_cmd(0.0, 0.0)
+                self.event("assistance",
+                           f"전방 밀착 {near_frac:.0%} — 장애물 접촉으로 정지",
+                           level="critical", code="OBSTACLE_FRONT")
+        else:
+            self._blocked_since = None
+
     def _on_loc_diag(self, msg):
         """로컬라이저 진단을 관제 이벤트로 올린다 (code 가 개입 큐 라우팅 키).
 
@@ -337,10 +380,14 @@ class ControlAgent(Node):
         kind, code = d.get("kind"), d.get("code", "")
         text = d.get("msg", "")
         if kind == "assistance":
-            if code == "TRACTION_LOSS" and not self.safety.paused:
+            # 슬립, 또는 장기 위치상실 격상(critical) — 계속 달리면 추정은
+            # 오도메트리 환상이 된다. 세우고 사람을 부른다.
+            must_stop = (code == "TRACTION_LOSS"
+                         or d.get("severity") == "critical")
+            if must_stop and not self.safety.paused:
                 self.safety.set_paused(True)
                 self._write_cmd(0.0, 0.0)
-                self.event("paused", f"슬립 감지로 자동 정지 — {text}",
+                self.event("paused", f"로컬라이저 경보로 자동 정지 — {text}",
                            level="warn")
             self.event("assistance", text, level="warn", code=code)
         elif kind == "resolved":

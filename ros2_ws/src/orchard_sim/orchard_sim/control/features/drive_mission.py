@@ -140,6 +140,17 @@ class DriveMission(Feature):
             m["idx"] += 1
             return None
         err = (math.atan2(dy, dx) - p[2] + math.pi) % (2 * math.pi) - math.pi
+        # 헤드랜드 구간의 '벽 앞 도착' — 램프에서 궤도가 미끄러지면 오도메트리가
+        # 실제보다 덜 세서, 추정으로는 '아직 못 왔는데' 몸은 둑 앞에 와 있다.
+        # 사람이 운전하듯 벽이 코앞이면 그 웨이포인트는 온 것이다. 계속 밀면
+        # 둑을 파고든다 — 실제로 4.3 m 지나쳐 박혔다(08-02).
+        clearance = getattr(self.ctx.bb, "clearance", None)
+        if (wp["kind"] in ("exit", "enter") and clearance is not None
+                and clearance < 1.8 and abs(err) < 0.5):
+            m["idx"] += 1
+            self.ctx.event("mission",
+                           f"전방 {clearance:.1f} m 벽 — {wp['kind']} 도착 처리")
+            return None
         if abs(err) > 0.6:
             return VelocityRequest(0.0, self.turn_speed * (1 if err > 0 else -1),
                                    priority=5, reason="mission:align")
