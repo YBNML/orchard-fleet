@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from .. import auth
+from .. import audit, auth
 from ..deps import SESSION_COOKIE, csrf_protect, current_session, current_user, get_db
 from ..models import User
 
@@ -26,11 +26,15 @@ def login(body: LoginBody, request: Request, response: Response, db=Depends(get_
     settings = request.app.state.settings
     user = db.query(User).filter(User.login == body.login, ~User.disabled).first()
     if user is None or not auth.verify_password(body.password, user.pw_hash):
+        audit.record(db, action="login", result="rejected", target=body.login,
+                     detail="비밀번호 불일치 또는 없는 계정")
         time.sleep(settings.login_delay_s)              # 실패 지연 (스펙 §5)
         raise HTTPException(401, "아이디 또는 비밀번호가 틀립니다")
     row = auth.create_session(db, user, settings.session_ttl_s)
     response.set_cookie(SESSION_COOKIE, row.id, httponly=True, samesite="strict",
                         max_age=settings.session_ttl_s)
+    audit.record(db, action="login", result="accepted", user_id=user.id,
+                 role=user.role, target=user.login)
     return {"csrf": row.csrf, "user": _user_out(user)}
 
 

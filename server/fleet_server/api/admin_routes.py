@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import auth
+from .. import audit, auth
 from ..deps import (csrf_protect, current_user, farm_scope, get_db,
                     require_min_role)
 from ..models import Farm, Robot, User, UserFarm
@@ -37,6 +37,8 @@ def list_farms(db=Depends(get_db), user: User = Depends(current_user)):
 def create_farm(body: FarmBody, db=Depends(get_db)):
     f = Farm(name=body.name)
     db.add(f); db.commit()
+    audit.record(db, action="farm_create", result="accepted",
+                 target=str(f.id), detail=f.name)
     return {"id": f.id, "name": f.name}
 
 
@@ -93,6 +95,8 @@ def create_robot(body: RobotBody, db=Depends(get_db)):
         raise HTTPException(404, "농장이 없습니다")
     r = Robot(**body.model_dump())
     db.add(r); db.commit()
+    audit.record(db, action="robot_create", result="accepted",
+                 target=str(r.id), detail=r.name)
     return _robot_out(r, admin=True)
 
 
@@ -132,6 +136,8 @@ def create_user(body: UserBody, db=Depends(get_db)):
     for fid in body.farm_ids:
         db.add(UserFarm(user_id=u.id, farm_id=fid))
     db.commit()
+    audit.record(db, action="user_create", result="accepted",
+                 target=str(u.id), detail=u.login)
     return {"id": u.id, "login": u.login, "role": u.role}
 
 
@@ -151,4 +157,6 @@ def patch_user(user_id: int, body: dict, db=Depends(get_db)):
         for fid in body["farm_ids"]:
             db.add(UserFarm(user_id=u.id, farm_id=fid))
     db.commit()
+    audit.record(db, action="user_patch", result="accepted",
+                 target=str(u.id), detail=",".join(sorted(body.keys())))
     return {"ok": True}
