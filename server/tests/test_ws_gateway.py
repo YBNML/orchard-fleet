@@ -1,7 +1,10 @@
 import pytest
+from starlette.testclient import TestClient
 
+from fleet_server.app import create_app
+from fleet_server.fleet.port import InMemoryFleetPort
 from fleet_server.models import AuditLog
-from tests.conftest import do_login
+from tests.conftest import _test_settings, do_login
 
 ORIGIN = {"origin": "http://testserver"}
 
@@ -56,7 +59,8 @@ def test_observer_estop_allowed_teleop_denied(client, app):
     app.state.fleet.feed("r1", "tel/state", {})
     do_login(client, "obs", "obspw")
     with client.websocket_connect("/ws", headers=ORIGIN) as ws:
-        ws.receive_json()
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 접속 전 feed() 의 초기 스냅샷(r1)
         ws.send_json({"type": "cmd", "action": "estop", "robot": "r1", "cmd_id": "c1"})
         r = ws.receive_json()
         assert r == {"type": "cmd_result", "robot": "r1", "cmd_id": "c1", "result": "sent"}
@@ -73,10 +77,14 @@ def test_mission_via_ws_denied(client, app):
     app.state.fleet.feed("r1", "tel/state", {})
     do_login(client, "op", "oppw")
     with client.websocket_connect("/ws", headers=ORIGIN) as ws:
-        ws.receive_json()
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 접속 전 feed() 의 초기 스냅샷(r1)
         ws.send_json({"type": "cmd", "action": "mission_start", "robot": "r1", "cmd_id": "c2"})
         r = ws.receive_json()
         assert r["type"] == "denied" and "REST" in r["reason"]
+    with app.state.session_factory() as db:                     # mission_* 거부도 감사에 남는다
+        rows = db.query(AuditLog).filter(AuditLog.action == "mission_start").all()
+        assert len(rows) == 1 and rows[0].result == "rejected"
 
 
 def test_stop_all_partial(client, app):
@@ -84,7 +92,8 @@ def test_stop_all_partial(client, app):
     app.state.fleet.feed("r1", "tel/state", {})               # r1 만 온라인
     do_login(client, "obs", "obspw")
     with client.websocket_connect("/ws", headers=ORIGIN) as ws:
-        ws.receive_json()
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 접속 전 feed() 의 초기 스냅샷(r1)
         ws.send_json({"type": "cmd", "action": "stop_all", "cmd_id": "c3"})
         r = ws.receive_json()
         assert r["type"] == "stop_all_result"
@@ -96,13 +105,36 @@ def test_teleop_session_audit_once(client, app):
     app.state.fleet.feed("r1", "tel/state", {})
     do_login(client, "op", "oppw")
     with client.websocket_connect("/ws", headers=ORIGIN) as ws:
-        ws.receive_json()
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 접속 전 feed() 의 초기 스냅샷(r1)
         for _ in range(3):
             ws.send_json({"type": "teleop", "robot": "r1", "payload": {"vx": 0.2, "wz": 0}})
         ws.send_json({"type": "cmd", "action": "ping", "robot": "r1", "cmd_id": "p"})
-        ws.receive_json()                                      # ping 응답까지 대기(순서 보장)
+        r = ws.receive_json()                                  # ping 응답까지 대기(순서 보장)
+        assert r == {"type": "cmd_result", "robot": "r1", "cmd_id": "p", "result": "sent"}
     teleops = [s for s in app.state.fleet.sent if s[2] == "teleop"]
     assert len(teleops) == 3                                   # 지령은 전부 전달
     with app.state.session_factory() as db:
         rows = db.query(AuditLog).filter(AuditLog.action == "teleop_session").all()
         assert len(rows) == 1                                  # 감사는 세션 단위 (S7)
+
+
+def test_snapshot_on_connect(client, app):
+    """접속 전에 있던 최신값(캐시)은 ready 직후 스냅샷으로 즉시 전달된다."""
+    _seed(client)
+    app.state.fleet.feed("r1", "tel/state", {"x": 7})
+    do_login(client, "obs", "obspw")
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        assert ws.receive_json()["type"] == "ready"
+        snap = ws.receive_json()
+        assert snap["topic"].endswith("/r1/tel/state") and snap["payload"]["x"] == 7
+
+
+def test_origin_allowlist_fail_closed_when_unset():
+    """FLEET_ALLOWED_ORIGINS 미설정(빈 목록)이면 유효한 세션이어도 전면 차단한다(fail-closed)."""
+    unset_app = create_app(_test_settings(allowed_origins=[]), fleet=InMemoryFleetPort())
+    unset_client = TestClient(unset_app)
+    do_login(unset_client, "admin", "admpw")
+    with pytest.raises(Exception):
+        with unset_client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.receive_json()
