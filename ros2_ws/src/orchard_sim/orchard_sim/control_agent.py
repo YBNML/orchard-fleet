@@ -165,9 +165,8 @@ class ControlAgent(Node):
         self._blocked_since = None
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
                                  self._on_cloud, sqos)
-        self.create_subscription(Imu, "/imu",
-                                 lambda _m: self.rate["imu"].tick(time.monotonic()),
-                                 sqos)
+        self._imu_R = None              # 기체 자세 (월드←바디) — 점군 수평화용
+        self.create_subscription(Imu, "/imu", self._on_imu, sqos)
         self.create_subscription(Odometry, str(g("lio_odom_topic")), self._on_lio, 10)
 
         # ── 안전 (코어) ─────────────────────────────────────────────────────
@@ -325,6 +324,28 @@ class ControlAgent(Node):
             self.audit.command("local_reset", role="현장", addr="robot",
                                result=("수락" if ok else "거부"))
 
+    def _on_imu(self, msg):
+        self.rate["imu"].tick(time.monotonic())
+        q = msg.orientation
+        if q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w > 0.5:
+            self._imu_R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
+
+    def _level_points(self, p):
+        """점군을 기울기 보정한다 (요 제외 — 롤·피치만 편다).
+
+        경사에서 코가 숙으면 라이다가 지면을 '벽'으로 읽는다 — 실측: 남단
+        내리막(피치 −16°)에서 여유거리 0.25 m 로 읽혀 출구 도착이 3.5 m
+        조기 발동, 로봇이 열 끝 모서리에 쐐기로 박혔다(08-02). z 필터와
+        여유거리는 수평화된 점에서 재야 한다.
+        """
+        R = self._imu_R
+        if R is None:
+            return p
+        yaw = math.atan2(R[1, 0], R[0, 0])
+        c, s = math.cos(-yaw), math.sin(-yaw)
+        Rz = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        return p @ (Rz @ R).T           # (요 제거한 기울기)로 점을 편다
+
     def _on_cloud(self, msg):
         """점군에서 두 가지를 읽는다 — 전방 여유거리와 코앞 밀착률.
 
@@ -342,6 +363,7 @@ class ControlAgent(Node):
         p = read_xyz(msg)
         if len(p) < 200:
             return
+        p = self._level_points(p)
         r = np.hypot(p[:, 0], p[:, 1])
         near_frac = float((r < 0.8).mean())
         ang = np.abs(np.arctan2(p[:, 1], p[:, 0]))

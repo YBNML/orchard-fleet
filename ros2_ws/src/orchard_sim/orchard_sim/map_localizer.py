@@ -130,6 +130,7 @@ class MapLocalizer(Node):
         # 방향으로 다시 적분한다 (표준 추측항법 재구성).
         self._imu_yaw = 0.0
         self._imu_t = None
+        self._imu_R = None              # 기체 자세 — 점군 수평화용
         self._odom_prev = None          # 직전 odom 원자세 (x, y, yaw)
         self._odom_raw = (0.0, 0.0, 0.0)  # 바퀴 오도메트리 원값 — TF 발행 보정용
 
@@ -189,6 +190,7 @@ class MapLocalizer(Node):
         if n2 > 0.5:                    # orientation 이 채워져 있다
             R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
             self._imu_yaw = math.atan2(R[1, 0], R[0, 0])
+            self._imu_R = R             # 점군 수평화용 (롤·피치)
             return
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self._imu_t is not None:
@@ -332,6 +334,14 @@ class MapLocalizer(Node):
         est = self.pose()
         half = float(self.geom["col_len"]) / 2.0
         hx, hy = math.cos(est[2]), math.sin(est[2])
+        # 경사에서 코가 숙으면 지면이 '벽'으로 읽힌다 (실측: 피치 −16° 에서
+        # 여유 0.25 m 오독) — 원뿔 계산 전에 롤·피치를 편다.
+        if self._imu_R is not None:
+            R = self._imu_R
+            yaw_b = math.atan2(R[1, 0], R[0, 0])
+            c, s_ = math.cos(-yaw_b), math.sin(-yaw_b)
+            Rz = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
+            pts = pts @ (Rz @ R).T
         # 가까운 끝의 둑을 **향해** 달릴 때만 잰다. 남단에서 북향 출발처럼
         # 둑을 등지고 있으면 전방에 벽이 없다 — 그때 잰 것은 벽이 아니라
         # 딴것이고, 실제로 기운 레이가 나무 열을 '벽'으로 오인해 추정을
