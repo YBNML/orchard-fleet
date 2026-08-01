@@ -47,6 +47,8 @@ class RowFix:
     longitudinal_ok: bool = False   # 종 위상을 믿어도 되는가 (아래 상수 참조)
     lon_quality: float = 0.0   # 종 위상 집중도 (진단용)
     at_row_end: bool = False   # 열 끝(절대 기준을 잡을 수 있는 자리)
+    yaw_saturated: bool = False   # 요 해가 탐색 범위 경계에 붙었다 = 범위 밖일 가능성
+    in_block: bool = True      # 나무 구역 안인가 (선회 구역이면 False)
 
 
 # 종 위상을 채택할 최소 집중도. 실측상 이 값에 도달하는 대역이 없어서 사실상
@@ -154,6 +156,10 @@ def estimate(points_base, pose, geom, *,
 
     fix.quality = float(conc)
     fix.dyaw = float(dyaw)
+    # 해가 탐색 경계에 붙었다면 진짜 해는 범위 밖일 수 있다. 그 값을 그대로
+    # 쓰면 자세가 엉뚱한 쪽으로 끌려간다 — 실제로 선회 중에 요 오차 19.5°,
+    # 종방향 21 m 발산을 겪었다. 경계 해는 채택하지 않는다.
+    fix.yaw_saturated = abs(dyaw) > 0.85 * rad
     fix.dx = -_wrap(off, S)              # 관측이 +δ 로 밀려 있으면 자세를 -δ 로 당긴다
     fix.lateral_ok = (fix.quality >= min_quality and fix.n_struct >= min_struct)
 
@@ -185,19 +191,34 @@ def estimate(points_base, pose, geom, *,
     half = float(geom.get("col_len", 0.0)) / 2.0
     if half > 0 and len(wy):
         fix.at_row_end = bool(wy.max() < half - 1.0 or wy.min() > -half + 1.0)
+        # 선회 구역에서는 열이 시야에서 사라진다 — 여기서 잡히는 '열'은 대개
+        # 다른 각도에서 본 같은 나무들이라 위상이 엉뚱하게 맞는다.
+        fix.in_block = bool(abs(y) <= half + 1.0)
     return fix
 
 
-def gate(fix: RowFix, drift_since_fix_m: float, geom) -> tuple[bool, str]:
+def gate(fix: RowFix, drift_since_fix_m: float, geom, *, max_jump_m=0.8):
     """이 보정을 써도 되는가.
 
-    위상 보정은 ±(간격/2) 안에서만 뜻이 있다. 마지막 보정 이후 오도메트리가
-    그보다 많이 밀렸다면 엉뚱한 열에 붙을 수 있으므로 **쓰지 않는다** —
-    틀린 보정은 보정을 안 하느니만 못하다.
+    보정을 채택하는 조건은 넷이다. 하나라도 어기면 **보정하지 않고** 오도메트리로
+    간다 — 틀린 보정은 보정을 안 하느니만 못하다. 실제로 이 넷 중 둘이 없을 때
+    선회 구간에서 요 19.5° · 종방향 21 m 로 발산했다(2026-08-02 실측).
+
+      1. 구조가 충분한가          집중도·구조점
+      2. 요 해가 범위 안인가      경계에 붙은 해는 진짜 해가 밖에 있다는 신호
+      3. 나무 구역 안인가         선회 구역의 '열'은 다른 각도에서 본 같은 나무다
+      4. 표류가 위상 한계 안인가  ±(열 간격/2) 을 넘으면 엉뚱한 열에 붙는다
+      5. 보정량이 상식적인가      갑자기 크게 튀는 보정은 잘못 붙은 것이다
     """
     if not fix.lateral_ok:
         return False, f"구조 부족 (점 {fix.n_struct}, 집중도 {fix.quality:.2f})"
+    if fix.yaw_saturated:
+        return False, f"요 해가 탐색 경계 ({math.degrees(fix.dyaw):+.1f}°)"
+    if not fix.in_block:
+        return False, "선회 구역 (나무 구역 밖)"
     limit = float(geom["row_spacing"]) / 2.0
     if drift_since_fix_m > limit:
         return False, f"보정 간 표류 {drift_since_fix_m:.2f} m > 한계 {limit:.2f} m"
+    if abs(fix.dx) > max_jump_m:
+        return False, f"보정량 과다 (dx {fix.dx:+.2f} m)"
     return True, ""
