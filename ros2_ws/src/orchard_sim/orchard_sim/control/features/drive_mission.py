@@ -42,6 +42,7 @@ class DriveMission(Feature):
         self.x0 = -((self.R - 1) * self.S) / 2.0
         self.col_l = (self.T - 1) * self.tsp
         self.mission = None
+        self._align_key = None          # 회전 슬립 감시 — (wp idx, 시작 시각)
 
     # ── 경로 ────────────────────────────────────────────────────────────────
     def cross_y(self, sign):
@@ -152,8 +153,21 @@ class DriveMission(Feature):
                            f"전방 {clearance:.1f} m 벽 — {wp['kind']} 도착 처리")
             return None
         if abs(err) > 0.6:
+            # 회전 슬립 감시 — 자이로 요가 정직해진 대신, 경사에서 회전이
+            # 물리적으로 안 되면 여기서 영원히 돈다. 30초면 정상 회전(90°,
+            # 0.5 rad/s ≈ 3초)의 열 배다: 세우고 사람을 부른다.
+            if self._align_key is None or self._align_key[0] != m["idx"]:
+                self._align_key = (m["idx"], now)
+            elif now - self._align_key[1] > 30.0:
+                self._align_key = None
+                self.ctx.safety.set_paused(True)
+                self.ctx.event("assistance",
+                               "제자리 회전 30초째 미완 — 경사 회전 슬립",
+                               level="critical", code="TRACTION_LOSS")
+                return None
             return VelocityRequest(0.0, self.turn_speed * (1 if err > 0 else -1),
                                    priority=5, reason="mission:align")
+        self._align_key = None
         v = self.speed_limit(p[1], dist)
         return VelocityRequest(v * max(0.25, 1.0 - abs(err)), 1.4 * err,
                                priority=5, reason="mission:follow")

@@ -128,8 +128,9 @@ class Context:
         """텔레메트리 발행. topic_kind 는 'state' / 'health' 같은 마지막 구간."""
         self._emit(topic_kind, payload)
 
-    def event(self, kind: str, msg: str, level: str = "info"):
-        self._event(kind, msg, level)
+    def event(self, kind: str, msg: str, level: str = "info", **extra):
+        # extra 는 정지 사유 코드(code=...) 등 — 관제 개입 큐 라우팅 키
+        self._event(kind, msg, level, **extra)
 
     def param(self, name, default=None):
         return self._params(name, default)

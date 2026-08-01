@@ -36,7 +36,7 @@ from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
@@ -96,8 +96,11 @@ class MapLocalizer(Node):
         d("reacquire_yaw_deg", 30.0)
         d("anchor_max_range_m", 12.0)   # 둑 앵커 — 이 거리 안의 벽만 믿는다
         d("anchor_gain", 0.5)
+        d("anchor_wall_offset_m", 0.7)  # 주행불가 경계(둑 발치)와 라이다가 보는
+                                        # 면(0.3 m 높이) 사이 법면 후퇴량 (08-02 실측)
         d("sensor_fwd_m", 0.275)        # 라이다 광학 원점의 base_link 전방 오프셋
         d("lost_critical_s", 90.0)      # 이만큼 못 잡으면 격상 — 로봇을 세워야 한다
+        d("imu_topic", "/imu")          # 요는 자이로 적분 — 바퀴는 회전을 속인다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
 
         self.bundle = mapbundle.Bundle(str(g("bundle")))
@@ -116,9 +119,18 @@ class MapLocalizer(Node):
         self.reacquire_yaw = float(g("reacquire_yaw_deg"))
         self.anchor_max_range = float(g("anchor_max_range_m"))
         self.anchor_gain = float(g("anchor_gain"))
+        self.anchor_wall_off = float(g("anchor_wall_offset_m"))
         self.sensor_fwd = float(g("sensor_fwd_m"))
         self.lost_critical = float(g("lost_critical_s"))
         self._lost_critical_reported = False
+
+        # 자이로 요 적분 — 램프에서 궤도가 헛돌면 바퀴는 "회전했다"고 속이지만
+        # (실측: 선회 명령 두 번에 실제 회전 3°) 자이로는 몸체의 실제 회전을
+        # 잰다. 요만 자이로에서 받고, 병진은 휠 오도메트리 변위 크기를 그 요
+        # 방향으로 다시 적분한다 (표준 추측항법 재구성).
+        self._imu_yaw = 0.0
+        self._imu_t = None
+        self._odom_prev = None          # 직전 odom 원자세 (x, y, yaw)
 
         # map → odom. 초기값은 '초기 자세를 안다'는 전제에서 만든다
         # (설계: 대시보드에서 지정하거나 지정 주차 지점에서 기동)
@@ -150,6 +162,7 @@ class MapLocalizer(Node):
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
                                  self._on_cloud, sqos)
         self.create_subscription(Odometry, str(g("odom_topic")), self._on_odom, 20)
+        self.create_subscription(Imu, str(g("imu_topic")), self._on_imu, sqos)
         self.tfb = TransformBroadcaster(self)
         self.diag = self.create_publisher(String, "~/diagnostics", 10)
         self.create_timer(1.0 / max(float(g("publish_rate_hz")), 1.0), self._tick)
@@ -159,16 +172,44 @@ class MapLocalizer(Node):
             f"{math.degrees(self.T_mo[2]):.1f}°)")
 
     # ── 입력 ────────────────────────────────────────────────────────────────
+    def _on_imu(self, msg: Imu):
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self._imu_t is not None:
+            dt = t - self._imu_t
+            if 0.0 < dt < 0.5:
+                self._imu_yaw += msg.angular_velocity.z * dt
+        self._imu_t = t
+
     def _on_odom(self, msg: Odometry):
+        """휠 오도메트리 + 자이로 요를 자체 추측항법 프레임으로 재적분한다.
+
+        휠 오도메트리의 요를 그대로 쓰면 안 된다 — 램프에서 궤도가 헛돌면
+        바퀴는 "회전했다"고 보고하는데 몸은 안 돌았다(08-02 실측: 선회 두 번
+        명령에 실제 회전 ~3°). 그 순간 추정 방위가 열린 루프로 달아나고,
+        앵커·슬립 감시는 방향 기준을 잃는다. 자이로는 몸의 실제 회전을 재므로
+        요는 자이로 적분에서, 병진은 휠 변위 크기를 그 요 방향으로 적분한다.
+        """
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
-        self.T_ob = (p.x, p.y, math.atan2(R[1, 0], R[0, 0]))
+        raw = (p.x, p.y, math.atan2(R[1, 0], R[0, 0]))
         if not self._have_odom:
-            self.T_mo = compose(self.init_pose, inverse(self.T_ob))
-            self.get_logger().info(
-                f"오도메트리 기준점 정렬 — odom→base ({self.T_ob[0]:+.2f}, "
-                f"{self.T_ob[1]:+.2f}) 를 상쇄")
-        self._have_odom = True
+            self._odom_prev = raw
+            self._imu_yaw0 = self._imu_yaw
+            self.T_ob = (0.0, 0.0, 0.0)          # 자체 프레임의 원점
+            self.T_mo = self.init_pose
+            self._have_odom = True
+            self.get_logger().info("추측항법 기준점 설정 (자이로 요 융합)")
+            return
+        dx, dy = raw[0] - self._odom_prev[0], raw[1] - self._odom_prev[1]
+        dd = math.hypot(dx, dy)
+        if dd > 0.0:
+            fwd = math.cos(self._odom_prev[2]) * dx + math.sin(self._odom_prev[2]) * dy
+            if fwd < 0.0:
+                dd = -dd                          # 후진
+        self._odom_prev = raw
+        yaw = wrap(self._imu_yaw - self._imu_yaw0)
+        X, Y, _ = self.T_ob
+        self.T_ob = (X + dd * math.cos(yaw), Y + dd * math.sin(yaw), yaw)
         if self.slip_active:
             # 헛도는 오도메트리는 자세에 반영하지 않는다 — 앵커에 묶는다
             self.T_mo = compose(self._slip_anchor, inverse(self.T_ob))
@@ -278,11 +319,14 @@ class MapLocalizer(Node):
         measured = float(np.percentile(r[cone], 10)) + self.sensor_fwd
         if measured > self.anchor_max_range:
             return
-        # 맵이 기대하는 둑까지 거리 — 주행가능 격자를 전방으로 긁는다
+        # 맵이 기대하는 둑까지 거리 — 주행가능 격자를 전방으로 긁는다.
+        # 격자 경계는 둑 '발치'고 라이다 원뿔(0.3 m 높이)이 보는 것은 법면
+        # 위쪽 면이라, 법면 후퇴량만큼 더 멀다 (보정 없이는 그만큼 편향된
+        # 고정점에 수렴한다 — 08-02 실측 0.7 m).
         expected = None
         for s in np.arange(0.3, self.anchor_max_range + 3.0, 0.1):
             if not self.bundle.is_drivable(est[0] + hx * s, est[1] + hy * s):
-                expected = float(s)
+                expected = float(s) + self.anchor_wall_off
                 break
         if expected is None:
             return
