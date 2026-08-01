@@ -153,6 +153,15 @@ kbd{background:#21262d;border:1px solid var(--line);border-bottom-width:2px;
       <div class="row"><span class="muted">현재</span><span id="mPhase">—</span></div>
     </section>
 
+    <section id="panel-history">
+      <h2>이력</h2>
+      <select id="hist-missions" size="5" style="width:100%"></select>
+      <div class="btnrow" style="margin-top:6px">
+        <button id="hist-load">불러오기</button> <button id="hist-clear">지도에서 지우기</button>
+      </div>
+      <ul id="hist-events" style="max-height:140px;overflow:auto;font-size:12px"></ul>
+    </section>
+
     <section data-needs="drive_teleop">
       <h2>원격 조종</h2>
       <button id="teleopBtn" class="wide">조종 모드 켜기</button>
@@ -187,6 +196,17 @@ kbd{background:#21262d;border:1px solid var(--line);border-bottom-width:2px;
     <section>
       <h2>이벤트 <span class="muted">전체 로봇</span></h2>
       <div id="log"></div>
+    </section>
+
+    <section id="panel-users" data-min-role="admin">
+      <h2>사용자 관리</h2>
+      <div id="users-list" style="font-size:12px;line-height:1.7;margin-bottom:8px"></div>
+      <input id="u-login" placeholder="아이디">
+      <input id="u-pw" type="password" placeholder="비밀번호" style="margin-top:6px">
+      <select id="u-role" style="margin-top:6px">
+        <option>observer</option><option>operator</option><option>admin</option>
+      </select>
+      <button id="u-create" class="wide" style="margin-top:6px">계정 생성</button>
     </section>
   </aside>
 </main>
@@ -230,6 +250,7 @@ async function boot() {
     ME = me.user; CSRF = me.csrf;
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
+    refreshHistory(); refreshUsers();
   } catch (e) { /* 로그인 대기 */ }
 }
 
@@ -244,6 +265,7 @@ $("login-form").addEventListener("submit", async ev => {
     const d = await r.json(); ME = d.user; CSRF = d.csrf;
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
+    refreshHistory(); refreshUsers();
   } catch (e) { $("login-err").textContent = e.message; }
 });
 
@@ -269,7 +291,7 @@ async function loadRobots() {
     if (!robots.has(it.id)) {
       const r = {id: it.id, farm_id: it.farm_id, name: it.name,
                  geom: null, features: null, state: null, health: null,
-                 mapCell: 0.25, mapIJ: [], track: [], lastMsg: 0,
+                 mapCell: 0.25, mapIJ: [], track: [], histTrack: null, lastMsg: 0,
                  status: "대기", cls: ""};
       robots.set(it.id, r);
       if (!selKey) selKey = it.id;
@@ -563,14 +585,24 @@ function draw(){
 
   // 궤적
   for (const [k,r] of robots){
-    if (r.track.length < 2) continue;
-    ctx.strokeStyle = k === selKey ? "#2f81f7" : "#3fb950";
-    ctx.lineWidth = Math.max(1, s*0.05);
-    ctx.globalAlpha = k === selKey ? .55 : .32;
-    ctx.beginPath();
-    r.track.forEach((p,i) => { const [a,b] = W2S(p[0],p[1]);
-      i ? ctx.lineTo(a,b) : ctx.moveTo(a,b); });
-    ctx.stroke(); ctx.globalAlpha = 1;
+    if (r.track.length >= 2){
+      ctx.strokeStyle = k === selKey ? "#2f81f7" : "#3fb950";
+      ctx.lineWidth = Math.max(1, s*0.05);
+      ctx.globalAlpha = k === selKey ? .55 : .32;
+      ctx.beginPath();
+      r.track.forEach((p,i) => { const [a,b] = W2S(p[0],p[1]);
+        i ? ctx.lineTo(a,b) : ctx.moveTo(a,b); });
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    // 이력 궤적 (보라 점선) — 선택한 임무 재생, robot_id 스코프 그대로 (§history)
+    if (r.histTrack && r.histTrack.length > 1){
+      ctx.save(); ctx.strokeStyle = "#a371f7"; ctx.setLineDash([6, 4]);
+      ctx.lineWidth = Math.max(1, s*0.05);
+      ctx.beginPath();
+      r.histTrack.forEach(([x,y],i) => { const [px,py] = W2S(x,y);
+        i ? ctx.lineTo(px,py) : ctx.moveTo(px,py); });
+      ctx.stroke(); ctx.restore();
+    }
   }
   for (const [k,r] of robots) if (k !== selKey) drawRobot(r, false);
   if (srv) drawRobot(srv, true);
@@ -654,6 +686,73 @@ setInterval(() => {
   $("latPill").textContent = age > 3000 ? "무응답" : `갱신 ${age.toFixed(0)} ms 전`;
   $("latPill").style.color = age > 3000 ? "var(--bad)" : (age > 1200 ? "var(--warn)" : "");
 }, 300);
+
+/* ── 관제 v2: 이력 ─────────────────────────────────────────────────── */
+async function refreshHistory() {
+  const list = await api("/missions");
+  const sel = $("hist-missions");
+  sel.innerHTML = "";
+  for (const m of list) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = `#${m.id} ${m.robot_id} ${m.state} ` +
+                    (m.started_at ? m.started_at.slice(0, 19) : "(미시작)");
+    o.dataset.robot = m.robot_id;
+    o.dataset.from = m.started_at ? Date.parse(m.started_at) / 1000 : "";
+    o.dataset.to = m.ended_at ? Date.parse(m.ended_at) / 1000 : "";
+    sel.appendChild(o);
+  }
+}
+
+$("hist-load").addEventListener("click", async () => {
+  const o = $("hist-missions").selectedOptions[0];
+  if (!o) return;
+  let q = "/tracks?robot_id=" + encodeURIComponent(o.dataset.robot);
+  if (o.dataset.from) q += "&from_ts=" + o.dataset.from;
+  if (o.dataset.to) q += "&to_ts=" + o.dataset.to;
+  const trs = await api(q);
+  const r = robots.get(o.dataset.robot);          // robot_id 스코프 그대로 — 선택 로봇에만 반영
+  if (r) { r.histTrack = trs.map(t => [t.x, t.y]); draw(); }
+  const evs = await api("/events?robot_id=" + encodeURIComponent(o.dataset.robot));
+  const ul = $("hist-events");
+  ul.innerHTML = "";
+  for (const e of evs) {
+    const li = document.createElement("li");
+    li.textContent = `${e.ts.slice(11, 19)} [${e.severity}] ${e.kind} ${e.msg}`;
+    ul.appendChild(li);
+  }
+});
+$("hist-clear").addEventListener("click", () => {
+  for (const r of robots.values()) r.histTrack = null;
+  draw();
+});
+
+/* ── 관제 v2: 사용자 관리 (admin) ──────────────────────────────────── */
+async function refreshUsers() {
+  if (!ME || ME.role !== "admin") return;
+  const list = await api("/users");
+  const div = $("users-list");
+  div.innerHTML = "";
+  for (const u of list) {
+    const row = document.createElement("div");
+    row.textContent = `${u.login} (${u.role})` + (u.disabled ? " [정지]" : "") + " ";
+    const btn = document.createElement("button");
+    btn.textContent = u.disabled ? "복구" : "정지";
+    btn.onclick = async () => {
+      await api("/users/" + u.id, {method: "PATCH", body: {disabled: !u.disabled}});
+      refreshUsers();
+    };
+    row.appendChild(btn);
+    div.appendChild(row);
+  }
+}
+$("u-create").addEventListener("click", async () => {
+  await api("/users", {method: "POST", body: {
+    login: $("u-login").value,
+    password: $("u-pw").value,
+    role: $("u-role").value, farm_ids: []}});
+  refreshUsers();
+});
 
 resize(); updateSec();
 boot();
