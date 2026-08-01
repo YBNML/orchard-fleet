@@ -101,8 +101,8 @@ def list_robots(farm_id: int | None = None, db=Depends(get_db),
 
 
 @router.post("/robots", dependencies=[_csrf])
-def create_robot(body: RobotBody, db=Depends(get_db),
-                 user: User = Depends(require_min_role("admin"))):
+async def create_robot(body: RobotBody, request: Request, db=Depends(get_db),
+                       user: User = Depends(require_min_role("admin"))):
     if db.get(Farm, body.farm_id) is None:
         audit.record(db, action="robot_create", result="rejected",
                      user_id=user.id, role=user.role, target=body.id,
@@ -112,6 +112,7 @@ def create_robot(body: RobotBody, db=Depends(get_db),
     db.add(r); db.commit()
     audit.record(db, action="robot_create", result="accepted",
                  user_id=user.id, role=user.role, target=str(r.id), detail=r.name)
+    request.app.state.fleet.register_robot(r.id, r.farm_id, r.conn_kind, r.config_json)
     return _robot_out(r, admin=True)
 
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from . import auth
 from .config import Settings, load_settings
 from .db import Base, make_engine, make_session_factory
+from .fleet.port import InMemoryFleetPort
+from .fleet.service import FleetService
 from .models import User
 
 
@@ -25,14 +29,33 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     settings = settings or load_settings()
     engine = engine or make_engine(settings.db_url)
     Base.metadata.create_all(engine)
+    session_factory = make_session_factory(engine)
 
-    app = FastAPI(title="과수원 통합관제 서버")
+    use_legacy = fleet is None                  # 운영: lifespan 에서 레거시 기동
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if use_legacy:
+            from .fleet.legacy_ws import LegacyFleetPort
+            from .models import Robot
+            lp = LegacyFleetPort(settings.offline_after_s)
+            app.state.fleet = lp
+            app.state.fleet_service.attach(lp)
+            with session_factory() as db:
+                for r in db.query(Robot).filter(Robot.conn_kind == "legacy_ws"):
+                    lp.register_robot(r.id, r.farm_id, r.conn_kind, r.config_json)
+        yield
+        if use_legacy and hasattr(app.state.fleet, "shutdown"):
+            await app.state.fleet.shutdown()
+
+    app = FastAPI(title="과수원 통합관제 서버", lifespan=lifespan)
     app.state.settings = settings
     app.state.engine = engine
-    app.state.session_factory = make_session_factory(engine)
-
-    from .fleet.port import InMemoryFleetPort
+    app.state.session_factory = session_factory
     app.state.fleet = fleet if fleet is not None else InMemoryFleetPort(settings.offline_after_s)
+    app.state.fleet_service = FleetService(session_factory)
+    if fleet is not None:
+        app.state.fleet_service.attach(fleet)
 
     from .api import admin_routes, auth_routes
     app.include_router(auth_routes.router, prefix="/api/v1")

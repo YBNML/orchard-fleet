@@ -1,0 +1,126 @@
+"""레거시 로봇 어댑터 — M1 한시, M2 에서 Zenoh 로 교체(스펙 §9 M1).
+
+서버가 로봇의 기존 WebSocket 서버(ws://로봇:8080/ws?token=...)에 클라이언트로
+접속한다. 기존 봉투 {v, topic:"orchard/{robot}/{suffix}", ts_ns, seq, payload}
+를 fleet 채널로 매핑한다.
+
+한계: 레거시 로봇에는 ack 채널이 없다 → send_command 는 소켓 기록 성공을
+"sent" 로 간주한다 (cmd_id 상관 응답은 M2).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+
+import websockets
+
+from .port import FleetPort, RobotStatus, TelemetryHandler
+from .presence import PresenceRegistry
+
+SUFFIX_TO_CHANNEL = {
+    "state": "tel/state", "health": "tel/health", "map": "tel/map",
+    "event": "evt", "mission": "mission", "hello": "hello",
+}
+
+
+class LegacyRobotLink:
+    def __init__(self, robot_id: str, ws_url: str, token: str,
+                 on_message, on_touch):
+        self.robot_id = robot_id
+        self.ws_url = ws_url
+        self.token = token
+        self.on_message = on_message          # (robot_id, channel, payload, seq)
+        self.on_touch = on_touch              # (robot_id)
+        self._ws = None
+        self._stop = False
+        self._seq = 0
+
+    async def run(self) -> None:
+        backoff = 1.0
+        url = self.ws_url + (f"?token={self.token}" if self.token else "")
+        while not self._stop:
+            try:
+                async with websockets.connect(url, open_timeout=5) as ws:
+                    self._ws = ws
+                    backoff = 1.0
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                        except (ValueError, TypeError):
+                            continue
+                        self.on_touch(self.robot_id)
+                        parts = str(msg.get("topic", "")).split("/", 2)
+                        if len(parts) < 3:
+                            continue
+                        ch = SUFFIX_TO_CHANNEL.get(parts[2])
+                        if ch:
+                            self.on_message(self.robot_id, ch,
+                                            msg.get("payload", {}), msg.get("seq"))
+            except Exception:
+                pass
+            self._ws = None
+            if self._stop:
+                break
+            await asyncio.sleep(backoff)          # 재연결 지수 백오프 (스펙 §3.1)
+            backoff = min(backoff * 2, 30.0)
+
+    async def send_command(self, action: str, payload: dict) -> bool:
+        ws = self._ws
+        if ws is None:
+            return False
+        self._seq += 1
+        suffix = "teleop" if action == "teleop" else "cmd"
+        body = payload if action == "teleop" else {"cmd": action, **payload}
+        env = {"v": 1, "topic": f"orchard/{self.robot_id}/{suffix}",
+               "ts_ns": time.time_ns(), "seq": self._seq, "payload": body}
+        try:
+            await ws.send(json.dumps(env))
+            return True
+        except Exception:
+            return False
+
+    def stop(self) -> None:
+        self._stop = True
+
+
+class LegacyFleetPort(FleetPort):
+    def __init__(self, offline_after_s: float = 15.0):
+        self.presence = PresenceRegistry(offline_after_s)
+        self._links: dict[str, LegacyRobotLink] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._handler: TelemetryHandler | None = None
+
+    def register_robot(self, robot_id, farm_id, conn_kind, config):
+        if robot_id in self._links or conn_kind != "legacy_ws":
+            return
+        link = LegacyRobotLink(robot_id, config.get("ws_url", ""),
+                               config.get("token", ""),
+                               on_message=self._on_message,
+                               on_touch=self.presence.touch)
+        self._links[robot_id] = link
+        self._tasks[robot_id] = asyncio.get_running_loop().create_task(link.run())
+
+    def _on_message(self, robot_id, channel, payload, seq):
+        if self._handler:
+            self._handler(robot_id, channel, payload, seq)
+
+    async def send_command(self, robot_id, cmd_id, action, payload):
+        link = self._links.get(robot_id)
+        if link is None or not self.presence.online(robot_id):
+            return "offline"                    # 즉시 실패 — 서버측 큐 금지
+        ok = await link.send_command(action, {**payload, "cmd_id": cmd_id})
+        return "sent" if ok else "offline"
+
+    def robot_status(self, robot_id):
+        return RobotStatus(online=self.presence.online(robot_id),
+                           last_seen=self.presence.last_seen(robot_id))
+
+    def set_telemetry_handler(self, cb):
+        self._handler = cb
+
+    async def shutdown(self):
+        for link in self._links.values():
+            link.stop()
+        for task in self._tasks.values():
+            task.cancel()
