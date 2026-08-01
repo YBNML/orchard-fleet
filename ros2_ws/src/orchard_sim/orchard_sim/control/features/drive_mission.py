@@ -183,16 +183,12 @@ class DriveMission(Feature):
                                "방향 전환 30초째 미완 — 경사 회전 슬립",
                                level="critical", code="TRACTION_LOSS")
                 return None
-            # 헤드랜드(블록 밖)나 벽 앞에서는 **후진 호**로 돈다 — 전진 호는
-            # 선회 전반부가 필연적으로 둑을 향하고, 경사 슬립이 호를 부풀려
-            # 둑까지 밀어 올린다 (실측: 반경 0.3 m 명령에 2.5 m 표류, 08-02).
-            # 후진이면 코가 돌아가는 동안 몸은 밭 안쪽으로 빠지고, 내리막
-            # 후진이라 접지력도 산다 (농기계의 back-and-fill).
-            v_arc = 0.15
-            cl = getattr(self.ctx.bb, "clearance", None)
-            if abs(p[1]) > self.col_l / 2.0 or (cl is not None and cl < 1.5):
-                v_arc = -0.15
-            return VelocityRequest(v_arc, self.turn_speed * (1 if err > 0 else -1),
+            # 순수 피벗으로 돈다. 호(전진·후진) 선회는 바퀴 횡마찰이 과대해
+            # 제자리 회전이 안 되던 시절의 보정책이었는데, 회전이 느린 만큼
+            # 병진이 계속 쌓여 헤드랜드에서 2.5 m 를 흘러내렸다 (08-02).
+            # 마찰 모델을 실차에 맞춘 지금은 피벗이 전 지형에서 된다 —
+            # 안 되면 30초 감시가 세우고 사람을 부른다.
+            return VelocityRequest(0.0, self.turn_speed * (1 if err > 0 else -1),
                                    priority=5, reason="mission:align")
         self._align_key = None
         v = self.speed_limit(p[1], dist)

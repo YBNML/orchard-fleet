@@ -157,6 +157,7 @@ class MapLocalizer(Node):
         self._slip_ref = None           # (구조점, 그때 odom, 그때 map 자세)
         self._slip_count = 0
         self._slip_anchor = None        # 슬립 시작 직전의 map 자세 — 여기 묶는다
+        self._slip_ob_yaw0 = 0.0        # 동결 시작 시점의 추측항법 요
         self.slip_active = False
 
         sqos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -227,8 +228,13 @@ class MapLocalizer(Node):
         X, Y, _ = self.T_ob
         self.T_ob = (X + dd * math.cos(yaw), Y + dd * math.sin(yaw), yaw)
         if self.slip_active:
-            # 헛도는 오도메트리는 자세에 반영하지 않는다 — 앵커에 묶는다
-            self.T_mo = compose(self._slip_anchor, inverse(self.T_ob))
+            # 헛도는 오도메트리의 **병진**만 무시한다 — 위치는 앵커에 묶되
+            # 요는 살린다. 자이로는 몸의 실제 회전을 재므로, 슬립 중에도
+            # 몸이 돌면(부분 견인) 그 회전은 참이다. 요까지 얼리면 추정
+            # 방위가 참에서 떨어져 나간다 (실측 53° 이탈, 08-02).
+            ax, ay, ayaw = self._slip_anchor
+            cur = (ax, ay, wrap(ayaw + (self.T_ob[2] - self._slip_ob_yaw0)))
+            self.T_mo = compose(cur, inverse(self.T_ob))
 
     def _on_cloud(self, msg: PointCloud2):
         self.last_cloud = read_xyz(msg)
@@ -303,6 +309,7 @@ class MapLocalizer(Node):
                 self.get_logger().info("슬립 해제 — 스캔 변위가 오도메트리와 일치")
         if self._slip_count >= 2 and not self.slip_active:
             self.slip_active = True
+            self._slip_ob_yaw0 = self.T_ob[2]
             self.T_mo = compose(self._slip_anchor, inverse(self.T_ob))
             self._emit("assistance", "TRACTION_LOSS",
                        f"오도메트리는 {odo_d:.2f} m 전진을 보고하는데 "
@@ -363,6 +370,7 @@ class MapLocalizer(Node):
         self.T_mo = compose(new_pose, inverse(self.T_ob))
         if self.slip_active:
             self._slip_anchor = new_pose
+            self._slip_ob_yaw0 = self.T_ob[2]
         self.drift_ref = self.T_ob
         self.last_anchor_t = time.monotonic()
         self.stat["n_anchor"] = self.stat.get("n_anchor", 0) + 1
@@ -408,6 +416,7 @@ class MapLocalizer(Node):
         self.drift_ref = self.T_ob
         if self.slip_active:
             self._slip_anchor = new_pose    # 동결 중에도 횡·요는 계속 다듬는다
+            self._slip_ob_yaw0 = self.T_ob[2]
         self.last_ok_t = time.monotonic()
         self.stat["n_fix"] += 1
         if self._lost_reported:
