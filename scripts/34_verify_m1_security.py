@@ -244,14 +244,14 @@ async def main():
         got_estop = await poll_until(lambda: robot.estop is True, timeout=5)
         check("5 가짜 로봇이 estop 을 수신", bool(got_estop))
 
-        # ── 6. operator 의 clear_estop → denied (admin 전용) ────────────────
+        # ── 6. operator 의 해제 승인 → denied (admin 전용) ────────────────
         ws_op1 = await ws_raw_connect({"Cookie": f"fleet_session={cop1.cookies['fleet_session']}",
                                        "Origin": BASE})
         ws_conns.append(ws_op1)
         await wait_frame(ws_op1, lambda o: True, timeout=5)           # ready
-        await ws_send(ws_op1, {"type": "cmd", "action": "clear_estop", "robot": "scout01", "cmd_id": "c6"})
+        await ws_send(ws_op1, {"type": "cmd", "action": "clear_estop_request", "robot": "scout01", "cmd_id": "c6"})
         r6 = await wait_frame(ws_op1, lambda o: o.get("type") in ("denied", "cmd_result"), timeout=5)
-        check("6 operator 의 clear_estop → denied(admin 전용)",
+        check("6 operator 의 해제 승인 → denied(admin 전용)",
               bool(r6) and r6.get("type") == "denied", r6)
         check("6 estop 래치 유지(무효화 안 됨)", robot.estop is True, str(robot.estop))
 
@@ -280,7 +280,7 @@ async def main():
             return False
 
         check("9-1 텔레옵 거부가 감사에 존재", has("teleop", "rejected", target_sub="scout01"))
-        check("9-2 clear_estop 거부가 감사에 존재", has("clear_estop", "rejected"))
+        check("9-2 해제 승인 거부가 감사에 존재", has("clear_estop_request", "rejected"))
         check("9-3 교차농장 임무거부가 감사에 존재",
               has("mission_start", "rejected", detail_sub="농장 권한 없음"))
         check("9-4 정지계정 로그인거부가 감사에 존재", has("login", "rejected", target_sub="dis1"))

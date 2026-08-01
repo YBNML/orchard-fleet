@@ -15,11 +15,43 @@ class FakeRobot:
         self.robot_id, self.port, self.token = robot_id, port, token
         self.seq = 0
         self.estop = False
+        # 2단계 해제 — 관제 승인과 현장 확인이 모두 있어야 풀린다 (ISO 13849-1 §5.2.2)
+        self.remote_ok = False
+        self.local_ok = False
         self.mission = None            # None | "running" | "paused" | "done"
         self.received: list[dict] = []  # 수신한 cmd/teleop 봉투 전부
         self.teleop_count = 0
         self._x = 0.0
         self._ws = None                # 접속 중인 연결 — send_event() 가 직접 쓴다
+
+    def _stage(self):
+        if not self.estop:
+            return "clear"
+        if self.remote_ok and not self.local_ok:
+            return "awaiting_local"
+        if self.local_ok and not self.remote_ok:
+            return "awaiting_remote"
+        return "latched"
+
+    async def _maybe_clear(self, ws, who):
+        if not (self.estop and self.remote_ok and self.local_ok):
+            await ws.send(self.env("event", {
+                "kind": "estop_clear", "severity": "warn",
+                "msg": f"{who} — 남은 단계 있음 ({self._stage()})", "ts": time.time()}))
+            return False
+        self.estop = False
+        self.remote_ok = self.local_ok = False
+        await ws.send(self.env("event", {"kind": "estop_cleared", "severity": "info",
+                                         "msg": "해제 (승인 + 현장 확인)",
+                                         "ts": time.time()}))
+        return True
+
+    def local_reset(self):
+        """현장 확인 — 실기의 물리 리셋 버튼. 시험이 '사람이 걸어갔다'를 흉내낼 때 쓴다."""
+        if not self.estop:
+            return False
+        self.local_ok = True
+        return True
 
     def env(self, suffix, payload):
         self.seq += 1
@@ -38,7 +70,14 @@ class FakeRobot:
                 await ws.send(self.env("state", {
                     "x": round(self._x, 2), "y": -28.0, "yaw": 0.0,
                     "mode": "mission" if self.mission == "running" else "idle",
-                    "estop": self.estop, "ts": time.time()}))
+                    "estop": self.estop,
+                    "estop_stage": self._stage(),
+                    "needs_remote_ok": self.estop and not self.remote_ok,
+                    "needs_local_ok": self.estop and not self.local_ok,
+                    "ts": time.time()}))
+                # 두 단계가 다 모이면 여기서 최종 해제된다 (현장 리셋은 링크 밖에서 온다)
+                if self.estop and self.remote_ok and self.local_ok:
+                    await self._maybe_clear(ws, "현장 확인")
                 if self.mission == "running" and self._x >= 1.0 and self.mission != "done":
                     self.mission = "done"
                     await ws.send(self.env("mission", {"state": "done"}))
@@ -58,16 +97,18 @@ class FakeRobot:
                 cmd = pl.get("cmd", "")
                 if cmd == "estop":
                     self.estop = True
+                    self.remote_ok = self.local_ok = False
                     if self.mission == "running":
                         self.mission = "paused"
                         await ws.send(self.env("mission", {"state": "paused"}))
                     await ws.send(self.env("event", {"kind": "estop", "severity": "warn",
                                                      "msg": "비상정지", "ts": time.time()}))
-                elif cmd == "clear_estop":
-                    self.estop = False
-                    await ws.send(self.env("event", {"kind": "estop_cleared",
-                                                     "severity": "info", "msg": "해제",
-                                                     "ts": time.time()}))
+                elif cmd == "clear_estop_request":
+                    # 승인만으로는 절대 풀지 않는다 — 현장 확인이 있어야 한다
+                    self.remote_ok = True
+                    await self._maybe_clear(ws, "관제 승인")
+                elif cmd == "clear_estop_cancel":
+                    self.remote_ok = self.local_ok = False
                 elif cmd == "mission_start":
                     self.mission = "running"
                     self._x = 0.0

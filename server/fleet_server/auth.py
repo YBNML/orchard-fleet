@@ -25,7 +25,13 @@ ROLE_REQUIRED = {
     "mission_resume": ROLE_OPERATOR,
     "mission_cancel": ROLE_OPERATOR,
     "teleop": ROLE_OPERATOR,
-    "clear_estop": ROLE_ADMIN,
+    # 해제는 2단계다 — 이 승인만으로는 로봇이 풀리지 않는다. 현장 확인(로봇의
+    # 로컬 리셋)이 따로 있어야 한다. ISO 13849-1 §5.2.2 의 특별 리셋 절차.
+    # 옛 이름 clear_estop 은 의도적으로 없앴다 — 남겨두면 '원격 단독 해제'가
+    # 가능하다는 오해를 계약이 계속 광고하게 된다. 미지 명령은 fail-closed 로
+    # admin 요구 + WS 허용 목록 밖이라 거부된다.
+    "clear_estop_request": ROLE_ADMIN,
+    "clear_estop_cancel": ROLE_ADMIN,
     "set_mode": ROLE_ADMIN,
 }
 

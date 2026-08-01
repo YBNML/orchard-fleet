@@ -18,11 +18,13 @@ def test_password_roundtrip():
     ("observer", "ping", True),
     ("observer", "mission_start", False),
     ("observer", "teleop", False),
-    ("observer", "clear_estop", False),
+    ("observer", "clear_estop_request", False),
     ("operator", "mission_start", True),
     ("operator", "teleop", True),
-    ("operator", "clear_estop", False),
-    ("admin", "clear_estop", True),
+    ("operator", "clear_estop_request", False),
+    ("admin", "clear_estop_request", True),
+    ("admin", "clear_estop_cancel", True),
+    ("operator", "clear_estop_cancel", False),
     ("admin", "set_mode", True),
 ])
 def test_matrix(role, action, ok):

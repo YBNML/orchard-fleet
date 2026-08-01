@@ -7,7 +7,7 @@ mission_* 는 REST 정본이므로 WS 에서 거부한다.
 안 된다 — 정지(disabled)된 계정의 열린 WS 가 무기한 유효하거나, stop_all 이
 접속 이후 등록된 로봇을 누락하는 사고로 이어진다. 그래서 cmd·teleop 을 실제로
 처리하기 직전마다 세션·사용자·robot_farm 을 DB 기준으로 재검사한다(`revalidate`).
-매 프레임 DB 조회를 피하려고 짧은 캐시를 두되, stop_all·clear_estop·set_mode 처럼
+매 프레임 DB 조회를 피하려고 짧은 캐시를 두되, stop_all·clear_estop_*·set_mode 처럼
 저빈도·고위험 명령은 캐시를 무시하고 항상 재검사한다.
 
 송신은 큐 하나 + sender() 태스크 하나로 직렬화한다 — ready·스냅샷·명령응답·
@@ -28,9 +28,11 @@ from .models import Robot
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_WS_ACTIONS = {"estop", "clear_estop", "stop_all", "set_mode", "ping"}
+_WS_ACTIONS = {"estop", "clear_estop_request", "clear_estop_cancel",
+               "stop_all", "set_mode", "ping"}
 # 저빈도·고위험 명령 — 캐시를 무시하고 매번 DB 로 세션·권한·로봇목록을 다시 본다.
-_ALWAYS_REVALIDATE = {"stop_all", "clear_estop", "set_mode"}
+_ALWAYS_REVALIDATE = {"stop_all", "clear_estop_request", "clear_estop_cancel",
+                      "set_mode"}
 _REVALIDATE_INTERVAL_S = 5.0
 
 

@@ -189,6 +189,18 @@ aside{
 #estop:hover{filter:brightness(1.08)}
 #estop:active{transform:translateY(1px)}
 #clearEstop{width:100%; margin-top:8px; padding:9px}
+#resetStep{margin-top:9px; font-size:12px; line-height:1.6; display:none}
+#resetStep.on{display:block}
+#resetStep .steps{display:grid; gap:5px; margin-top:6px}
+#resetStep .st{display:flex; align-items:center; gap:8px; padding:7px 9px;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg)}
+#resetStep .st .mark{width:18px; height:18px; border-radius:50%; flex:none;
+  display:grid; place-items:center; font-size:11px; font-weight:700;
+  background:var(--sunk); color:var(--dim); border:1px solid var(--line)}
+#resetStep .st.done{border-color:var(--leaf); background:var(--leaf-soft)}
+#resetStep .st.done .mark{background:var(--leaf); color:#fff; border-color:var(--leaf)}
+#resetStep .st.wait{border-color:var(--gold); background:var(--gold-soft)}
+#resetStep .st.wait .mark{background:var(--gold); color:#fff; border-color:var(--gold)}
 
 /* 탭 — 한 번에 한 가지 일만 화면에 둔다 (8패널 스택이 스크롤에 묻히던 문제) */
 .tabs{display:flex; gap:2px; padding:10px 12px 0; border-bottom:1px solid var(--line)}
@@ -395,7 +407,11 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 
     <div class="estopwrap">
       <button id="estop">■ 비상정지</button>
-      <button id="clearEstop" disabled data-min-role="admin">래치 해제</button>
+      <!-- 해제는 2단계다: 관제 승인(이 버튼) + 현장 확인(로봇의 물리 리셋).
+           ISO 13849-1 §5.2.2 — 리셋은 위험구역이 보이는 위치에서 해야 하고,
+           시야가 없으면 특별 절차를 써야 한다. 관제실에는 시야가 없다. -->
+      <button id="clearEstop" disabled data-min-role="admin">해제 승인</button>
+      <div id="resetStep"></div>
     </div>
 
     <div class="tabs" role="tablist">
@@ -807,7 +823,7 @@ function syncPanels(){
   if (!p){
     big.textContent = "연결 대기"; big.className = "serif";
     sub.textContent = "로봇 응답을 기다리는 중";
-    $("clearEstop").disabled = true;
+    syncResetSteps(null);
     $("hPos").textContent = $("hYaw").textContent = $("hTilt").textContent = "—";
     $("mProg").textContent = $("mPhase").textContent = "—";
     return;
@@ -823,7 +839,7 @@ function syncPanels(){
   else { big.textContent = "대기"; big.className = "serif";
          sub.textContent = "임무를 지시하면 출발합니다"; }
 
-  $("clearEstop").disabled = !p.estop;
+  syncResetSteps(p);
   if (p.pose){
     $("hPos").textContent = `${p.pose.x.toFixed(2)}, ${p.pose.y.toFixed(2)} m`;
     $("hYaw").textContent = (p.pose.yaw*180/Math.PI).toFixed(0)+"°";
@@ -835,6 +851,31 @@ function syncPanels(){
     $("mPhase").textContent = `통로 ${m.alley ?? "—"} · ${phaseName(m.phase)}`;
   } else { $("mProg").textContent = $("mPhase").textContent = "—"; }
 }
+// 해제 절차를 화면이 그대로 설명한다 — "왜 안 풀리지?" 를 묻지 않게 한다.
+// 관제 승인만으로는 절대 풀리지 않고, 누군가 기체까지 가야 한다는 것이 요점이다.
+function syncResetSteps(p){
+  const box = $("resetStep"), btn = $("clearEstop");
+  if (!p || !p.estop){
+    box.classList.remove("on"); box.innerHTML = "";
+    btn.disabled = true; btn.textContent = "해제 승인";
+    return;
+  }
+  const remoteDone = p.needs_remote_ok === false;
+  const localDone  = p.needs_local_ok === false;
+  btn.disabled = remoteDone;
+  btn.textContent = remoteDone ? "관제 승인 완료" : "해제 승인";
+  const st = (done, n, title, desc) =>
+    `<div class="st ${done ? "done" : "wait"}"><span class="mark">${done ? "✓" : n}</span>` +
+    `<span><b>${title}</b><br><span class="dim">${desc}</span></span></div>`;
+  box.classList.add("on");
+  box.innerHTML =
+    `<div class="dim">해제하려면 두 가지가 모두 필요합니다.</div><div class="steps">` +
+    st(remoteDone, "1", "관제 승인", remoteDone ? "완료" : "이 버튼을 누르세요") +
+    st(localDone, "2", "현장 확인",
+       localDone ? "완료" : "로봇 옆에서 주변을 확인하고 기체의 리셋을 누르세요") +
+    `</div>`;
+}
+
 function syncHealth(r){
   const p = r?.health;
   // v(로봇이 보낸 lidar_hz 등)는 정상적으론 숫자지만, 로봇이 거짓으로 문자열을
@@ -1084,8 +1125,10 @@ $("allstop").onclick = () => {
 $("estop").onclick = () => { const r = sel(); r && sendCmd(r.id, "estop", {reason:"관제 버튼"}); };
 $("clearEstop").onclick = () => {
   const r = sel(); if (!r) return;
-  if (confirm(`${r.id} 의 비상정지를 해제합니다. 로봇 주변이 안전한지 확인하셨습니까?`))
-    sendCmd(r.id, "clear_estop");
+  if (confirm(`${r.id} 의 비상정지 해제를 승인합니다.\n\n` +
+              `이 승인만으로는 풀리지 않습니다 — 로봇 옆에 있는 사람이 주변을 ` +
+              `확인하고 기체의 리셋을 눌러야 최종 해제됩니다.\n\n승인하시겠습니까?`))
+    sendCmd(r.id, "clear_estop_request");
 };
 $("mStart").onclick = async () => {
   const r = sel(); if (!r) return;

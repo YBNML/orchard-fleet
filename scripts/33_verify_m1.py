@@ -271,13 +271,25 @@ async def main():
         paused2 = await poll_until(lambda: mission_state(cop, ms2["id"]) == "PAUSED", timeout=5)
         check("8-4 estop 중 임무 PAUSED", bool(paused2))
 
-        await ws_send(ws_admin, {"type": "cmd", "action": "clear_estop", "robot": "scout01", "cmd_id": "ce8"})
+        await ws_send(ws_admin, {"type": "cmd", "action": "clear_estop_request", "robot": "scout01", "cmd_id": "ce8"})
         r_ce = await wait_frame(ws_admin, lambda o: o.get("type") == "cmd_result" and o.get("cmd_id") == "ce8")
-        check("8-5 admin clear_estop 전달", bool(r_ce) and r_ce.get("result") == "sent", r_ce)
+        check("8-5 admin 해제 승인 전달", bool(r_ce) and r_ce.get("result") == "sent", r_ce)
+
+        # 규격 요구의 핵심 — 관제 승인만으로는 절대 풀리지 않아야 한다.
+        # (ISO 13849-1 §5.2.2: 리셋은 위험구역이 보이는 위치에서. 관제실엔 시야가 없다)
+        await asyncio.sleep(1.0)
+        check("8-5a 승인만으로는 래치 유지 (원격 단독 해제 불가)",
+              robot.estop is True and robot._stage() == "awaiting_local",
+              f"estop={robot.estop} stage={robot._stage()}")
+
+        robot.local_reset()                         # 사람이 기체까지 걸어가 눌렀다
+        cleared = await poll_until(lambda: robot.estop is False, timeout=5)
+        check("8-5b 현장 확인이 더해지자 해제됨", bool(cleared),
+              f"estop={robot.estop} stage={robot._stage()}")
 
         await asyncio.sleep(1.5)                    # 자동 재개가 없는지 관찰할 시간
         still_paused = mission_state(cop, ms2["id"])
-        check("8-6 clear_estop 후에도 PAUSED 유지 (자동 재개 없음)",
+        check("8-6 해제 승인 후에도 PAUSED 유지 (자동 재개 없음)",
               still_paused == "PAUSED", still_paused)
 
         r = cop.post(f"/api/v1/missions/{ms2['id']}/resume", headers={"X-CSRF": op1_csrf})
@@ -295,7 +307,7 @@ async def main():
 
         audit_rows = c.get("/api/v1/audit", headers=h_admin).json()
         check("9-3 GET /audit 에 명령 기록",
-              any(a.get("action") in ("mission_start", "estop", "clear_estop") for a in audit_rows),
+              any(a.get("action") in ("mission_start", "estop", "clear_estop_request") for a in audit_rows),
               f"{len(audit_rows)}건")
 
         # ── 9-4~9-7. 시각 문자열에 tz 접미사(+00:00/Z) — Critical 2 회귀 ─────────
