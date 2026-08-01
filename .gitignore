@@ -27,3 +27,4 @@ server/fleet.db
 server/data/
 server/*.egg-info/
 __pycache__/
+maps/
