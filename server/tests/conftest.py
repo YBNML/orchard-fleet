@@ -6,6 +6,12 @@ from fleet_server.config import Settings
 from fleet_server.db import Base, make_engine, make_session_factory
 
 
+@pytest.fixture(autouse=True)
+def _reset_ingest_state():
+    from fleet_server import ingest
+    ingest._last_track_ts.clear()
+
+
 @pytest.fixture()
 def db():
     engine = make_engine("sqlite://")          # in-memory
