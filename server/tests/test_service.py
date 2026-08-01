@@ -25,7 +25,18 @@ def _seed_mission(factory, robot_id: str = "scout01") -> int:
         return ms.id
 
 
+def _seed_robot(factory, robot_id: str = "scout01") -> None:
+    """실제로는 텔레메트리가 오는 로봇은 항상 robots 테이블에 먼저 등록돼 있다
+    (register_robot 이전에 admin API 가 Robot 행을 만든다) — FK 강제(foreign_keys=ON)
+    아래에서 tracks/events 가 존재하지 않는 robot_id 를 참조하지 않도록 맞춘다."""
+    with factory() as db:
+        farm = m.Farm(name="농장A"); db.add(farm); db.flush()
+        db.add(m.Robot(id=robot_id, farm_id=farm.id, name="r"))
+        db.commit()
+
+
 def test_tel_state_feed_creates_track(factory):
+    _seed_robot(factory)
     fp = InMemoryFleetPort()
     svc = FleetService(factory)
     svc.attach(fp)
@@ -38,6 +49,7 @@ def test_tel_state_feed_creates_track(factory):
 
 
 def test_evt_feed_dedups_by_seq(factory):
+    _seed_robot(factory)
     fp = InMemoryFleetPort()
     svc = FleetService(factory)
     svc.attach(fp)

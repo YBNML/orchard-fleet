@@ -7,6 +7,7 @@ from .. import audit, auth
 from ..deps import (csrf_protect, current_user, farm_scope, get_db,
                     require_min_role)
 from ..models import Farm, Robot, User, UserFarm
+from ..timeutil import iso_utc
 
 router = APIRouter(tags=["admin"])
 _admin = Depends(require_min_role("admin"))
@@ -78,8 +79,7 @@ class RobotBody(BaseModel):
 
 def _robot_out(r: Robot, admin: bool) -> dict:
     out = {"id": r.id, "farm_id": r.farm_id, "name": r.name, "kind": r.kind,
-           "conn_kind": r.conn_kind,
-           "last_seen": r.last_seen.isoformat() if r.last_seen else None}
+           "conn_kind": r.conn_kind, "last_seen": iso_utc(r.last_seen)}
     if admin:
         out["config_json"] = r.config_json      # 접속 정보는 admin 에게만
     return out
@@ -116,19 +116,35 @@ async def create_robot(body: RobotBody, request: Request, db=Depends(get_db),
     return _robot_out(r, admin=True)
 
 
+_REWIRE_KEYS = ("conn_kind", "config_json", "farm_id")   # 바뀌면 실행 중 링크를 재배선
+
+
 @router.patch("/robots/{robot_id}", dependencies=[_csrf])
-def patch_robot(robot_id: str, body: dict, db=Depends(get_db),
-                user: User = Depends(require_min_role("admin"))):
+async def patch_robot(robot_id: str, body: dict, request: Request, db=Depends(get_db),
+                      user: User = Depends(require_min_role("admin"))):
     r = db.get(Robot, robot_id)
     if r is None:
         audit.record(db, action="robot_patch", result="rejected",
                      user_id=user.id, role=user.role, target=robot_id,
                      detail="대상 없음")
         raise HTTPException(404, "로봇이 없습니다")
+    if "farm_id" in body and db.get(Farm, body["farm_id"]) is None:
+        audit.record(db, action="robot_patch", result="rejected",
+                     user_id=user.id, role=user.role, target=robot_id,
+                     detail="없는 농장")
+        raise HTTPException(404, "농장이 없습니다")
+    # 링크 재배선 여부는 값이 바뀌기 전에 판단한다 (아래 setattr 이 원본을 덮어쓴다)
+    needs_rewire = any(k in body and body[k] != getattr(r, k) for k in _REWIRE_KEYS)
     for k in ("name", "kind", "conn_kind", "config_json", "farm_id"):
         if k in body:
             setattr(r, k, body[k])
     db.commit()
+    if needs_rewire:
+        # register_robot(기존 id) 은 이미 등록돼 있으면 조기 반환하므로, 먼저
+        # 해제해야 새 conn_kind/config_json/farm_id 로 실제 연결이 재배선된다.
+        fleet = request.app.state.fleet
+        fleet.unregister_robot(r.id)
+        fleet.register_robot(r.id, r.farm_id, r.conn_kind, r.config_json)
     audit.record(db, action="robot_patch", result="accepted",
                  user_id=user.id, role=user.role, target=robot_id,
                  detail=",".join(sorted(body.keys())))
@@ -164,9 +180,19 @@ def list_users(db=Depends(get_db)):
             for u in db.query(User).order_by(User.id)]
 
 
+def _missing_farm_ids(db, farm_ids: list[int]) -> list[int]:
+    return [fid for fid in farm_ids if db.get(Farm, fid) is None]
+
+
 @router.post("/users", dependencies=[_csrf])
 def create_user(body: UserBody, db=Depends(get_db),
                 user: User = Depends(require_min_role("admin"))):
+    missing = _missing_farm_ids(db, body.farm_ids)
+    if missing:
+        audit.record(db, action="user_create", result="rejected",
+                     user_id=user.id, role=user.role, target=body.login,
+                     detail=f"없는 farm_id={missing}")
+        raise HTTPException(404, f"존재하지 않는 농장: {missing}")
     u = User(login=body.login, pw_hash=auth.hash_password(body.password),
              role=auth.normalize_role(body.role), display_name=body.display_name)
     db.add(u); db.flush()
@@ -187,6 +213,16 @@ def patch_user(user_id: int, body: dict, db=Depends(get_db),
                      user_id=user.id, role=user.role, target=str(user_id),
                      detail="대상 없음")
         raise HTTPException(404, "사용자가 없습니다")
+    # farm_ids 검증은 다른 필드를 건드리기 전에 한다 — audit.record() 자체가
+    # db.commit() 을 하므로, 이 검증을 뒤에 두면 실패 시에도 그 전에 대입해 둔
+    # role/disabled/password 변경이 감사 커밋에 묻어 나가 버린다(부분 반영).
+    if "farm_ids" in body:
+        missing = _missing_farm_ids(db, body["farm_ids"])
+        if missing:
+            audit.record(db, action="user_patch", result="rejected",
+                         user_id=user.id, role=user.role, target=str(user_id),
+                         detail=f"없는 farm_id={missing}")
+            raise HTTPException(404, f"존재하지 않는 농장: {missing}")
     if "disabled" in body:
         u.disabled = bool(body["disabled"])
     if "role" in body:

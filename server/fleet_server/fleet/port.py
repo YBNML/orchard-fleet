@@ -23,6 +23,11 @@ class FleetPort(ABC):
                        config: dict) -> None: ...
 
     @abstractmethod
+    def unregister_robot(self, robot_id: str) -> None:
+        """등록 해제 — 링크/태스크를 정리하고 목록에서 제거한다. 접속 정보가
+        바뀐 로봇을 재배선(unregister→register)할 때 쓴다."""
+
+    @abstractmethod
     async def send_command(self, robot_id: str, cmd_id: str, action: str,
                            payload: dict) -> str:
         """'sent' | 'offline' — 오프라인이면 즉시 실패, 서버측 큐 금지(스펙 §3.2)."""
@@ -46,6 +51,9 @@ class InMemoryFleetPort(FleetPort):
     def register_robot(self, robot_id, farm_id, conn_kind, config):
         self.robots[robot_id] = {"farm_id": farm_id, "conn_kind": conn_kind,
                                  "config": config}
+
+    def unregister_robot(self, robot_id):
+        self.robots.pop(robot_id, None)
 
     async def send_command(self, robot_id, cmd_id, action, payload):
         if not self.presence.online(robot_id):

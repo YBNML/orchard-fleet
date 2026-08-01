@@ -97,6 +97,38 @@ async def test_teleop_payload_stays_pure():
 
 
 @pytest.mark.asyncio
+async def test_unregister_robot_stops_link_and_allows_rewire():
+    """register_robot 은 이미 등록된 id 면 조기 반환한다 — PATCH /robots 로 접속
+    정보가 바뀌었을 때 실행 중인 링크를 재배선하려면 반드시 먼저 unregister 해야
+    한다. unregister 후 register 하면 새 설정으로 실제 새 링크가 만들어진다."""
+    fp = LegacyFleetPort(offline_after_s=15.0)
+    fp.register_robot("scout01", 1, "legacy_ws",
+                      {"ws_url": "ws://127.0.0.1:1/ws", "token": "OLD"})
+    link1 = fp._links["scout01"]
+    task1 = fp._tasks["scout01"]
+
+    fp.unregister_robot("scout01")
+    assert "scout01" not in fp._links and "scout01" not in fp._tasks
+    assert link1._stop is True                      # 링크 stop 호출됨
+    assert task1.cancelled() or not task1.done()     # 태스크 취소 요청됨(즉시 반영 여부는 스케줄러 몫)
+
+    # 조기 반환 버그가 없다면, 재등록 시 새 설정을 반영한 새 링크가 생긴다.
+    fp.register_robot("scout01", 1, "legacy_ws",
+                      {"ws_url": "ws://127.0.0.1:2/ws", "token": "NEW"})
+    link2 = fp._links["scout01"]
+    assert link2 is not link1
+    assert link2.ws_url == "ws://127.0.0.1:2/ws" and link2.token == "NEW"
+
+    await fp.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unregister_robot_missing_id_is_noop():
+    fp = LegacyFleetPort(offline_after_s=15.0)
+    fp.unregister_robot("없는로봇")            # 예외 없이 조용히 무시
+
+
+@pytest.mark.asyncio
 async def test_port_register_robot_uses_running_loop():
     # register_robot 은 asyncio.get_running_loop() 에 의존한다. create_robot 라우터가
     # 다시 동기 def 로 돌아가면(=스레드풀에서 실행) 그 안에서 이 호출이

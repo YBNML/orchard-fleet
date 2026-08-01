@@ -112,6 +112,14 @@ class LegacyFleetPort(FleetPort):
         self._links[robot_id] = link
         self._tasks[robot_id] = asyncio.get_running_loop().create_task(link.run())
 
+    def unregister_robot(self, robot_id):
+        link = self._links.pop(robot_id, None)
+        if link is not None:
+            link.stop()
+        task = self._tasks.pop(robot_id, None)
+        if task is not None:
+            task.cancel()
+
     def _on_message(self, robot_id, channel, payload, seq):
         if self._handler:
             self._handler(robot_id, channel, payload, seq)
