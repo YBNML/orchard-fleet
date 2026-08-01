@@ -41,3 +41,18 @@ def test_status_route(client, app):
     assert r.status_code == 200 and r.json()["online"] is False
     app.state.fleet.feed("scout01", "tel/state", {})
     assert client.get("/api/v1/robots/scout01/status").json()["online"] is True
+
+
+def test_status_route_scope_403_and_404(client, app):
+    csrf = do_login(client)
+    h = {"X-CSRF": csrf}
+    fa = client.post("/api/v1/farms", json={"name": "농장A"}, headers=h).json()
+    fb = client.post("/api/v1/farms", json={"name": "농장B"}, headers=h).json()
+    client.post("/api/v1/robots", headers=h,
+                json={"id": "rb", "farm_id": fb["id"], "name": "타농장"})
+    client.post("/api/v1/users", headers=h, json={
+        "login": "obs8", "password": "obspw", "role": "observer",
+        "farm_ids": [fa["id"]]})
+    do_login(client, "obs8", "obspw")
+    assert client.get("/api/v1/robots/rb/status").status_code == 403      # 스코프 밖
+    assert client.get("/api/v1/robots/ghost/status").status_code == 404   # 없는 로봇
