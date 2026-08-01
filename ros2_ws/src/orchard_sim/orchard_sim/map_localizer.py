@@ -147,6 +147,7 @@ class MapLocalizer(Node):
         self.last_cloud = None
         self.last_fix_t = 0.0
         self.last_ok_t = time.monotonic()
+        self.last_anchor_t = time.monotonic()
         self.drift_ref = None           # 마지막 채택 보정 시점의 odom 자세
         self.stat = dict(n_fix=0, n_reject=0, quality=0.0, n_struct=0, gate="")
         self._lost_reported = False
@@ -363,6 +364,7 @@ class MapLocalizer(Node):
         if self.slip_active:
             self._slip_anchor = new_pose
         self.drift_ref = self.T_ob
+        self.last_anchor_t = time.monotonic()
         self.stat["n_anchor"] = self.stat.get("n_anchor", 0) + 1
         self.stat["anchor_err"] = round(err, 2)
 
@@ -450,9 +452,12 @@ class MapLocalizer(Node):
 
         # 아주 오래 못 잡으면 격상 — 이 상태로 임무를 계속하면 추정은 순수
         # 오도메트리 환상이 된다 (실측: 5분간 환상 속에서 통로 하나를 '완주',
-        # 실제 로봇은 둑에 박혀 정지). 선회의 정상 무보정 구간(30~45초)보다
-        # 훨씬 길게 잡아, 진짜 상실만 세운다.
+        # 실제 로봇은 둑에 박혀 정지). 단, **앵커가 잡히는 동안은 상실이
+        # 아니다** — 헤드랜드에는 열이 없어 열 보정이 원래 없고, 그때의
+        # 절대 기준이 바로 둑 앵커다 (헤드랜드 출발 85초 만에 오발로 임무를
+        # 세운 실측이 있다, 08-02).
         if ((now - self.last_ok_t) > self.lost_critical
+                and (now - self.last_anchor_t) > self.lost_critical
                 and not self._lost_critical_reported):
             self._lost_critical_reported = True
             self._emit("assistance", "LOCALIZATION_LOST",
