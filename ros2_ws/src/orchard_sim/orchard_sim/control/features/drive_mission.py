@@ -60,7 +60,10 @@ class DriveMission(Feature):
             if i > 0:
                 yc = self.cross_y(-1.0 if up else 1.0)
                 wps.append(dict(x=None, y=yc, kind="exit", alley=k))
-                wps.append(dict(x=cx, y=yc, kind="cross", alley=k))
+                # 횡단은 x 만 가면 된다 — y 까지 고정하면 출구에서 조금만
+                # 밀려 있어도 둑 모서리로 대각 진입해 램프에서 낀다 (실측:
+                # 남동 대각 클라임 정체, 08-02). y 는 현재 위치를 따른다.
+                wps.append(dict(x=cx, y=None, kind="cross", alley=k))
                 wps.append(dict(x=cx, y=y_start, kind="enter", alley=k))
             wps.append(dict(x=cx, y=y_end, kind="traverse", alley=k))
         return wps
@@ -135,7 +138,8 @@ class DriveMission(Feature):
             return None
         wp = m["wps"][m["idx"]]
         tx = p[0] if wp["x"] is None else wp["x"]
-        dx, dy = tx - p[0], wp["y"] - p[1]
+        ty = p[1] if wp.get("y") is None else wp["y"]
+        dx, dy = tx - p[0], ty - p[1]
         dist = math.hypot(dx, dy)
         if dist < self.tol:
             m["idx"] += 1
