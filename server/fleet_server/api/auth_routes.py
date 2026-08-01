@@ -40,7 +40,9 @@ def login(body: LoginBody, request: Request, response: Response, db=Depends(get_
 
 @router.post("/logout", dependencies=[Depends(csrf_protect)])
 def logout(request: Request, response: Response, db=Depends(get_db),
-           sess=Depends(current_session)):
+           user: User = Depends(current_user), sess=Depends(current_session)):
+    audit.record(db, action="logout", result="accepted", user_id=user.id,
+                 role=user.role, target=user.login)
     auth.delete_session(db, sess.id)
     response.delete_cookie(SESSION_COOKIE)
     return {"ok": True}

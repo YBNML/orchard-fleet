@@ -3,7 +3,7 @@ from starlette.testclient import TestClient
 
 from fleet_server.app import create_app
 from fleet_server.fleet.port import InMemoryFleetPort
-from fleet_server.models import AuditLog
+from fleet_server.models import AuditLog, User
 from tests.conftest import _test_settings, do_login
 
 ORIGIN = {"origin": "http://testserver"}
@@ -128,6 +128,71 @@ def test_snapshot_on_connect(client, app):
         assert ws.receive_json()["type"] == "ready"
         snap = ws.receive_json()
         assert snap["topic"].endswith("/r1/tel/state") and snap["payload"]["x"] == 7
+
+
+def test_disabled_mid_session_revokes_estop_and_closes(client, app):
+    """접속 유지 중 admin 이 계정을 disabled 로 PATCH 하면, 다음 estop 명령이
+    거부되고 연결이 닫힌다 (접속 시점 스냅샷이 살아있는 권한처럼 동작하면 안 됨)."""
+    _seed(client)
+    app.state.fleet.feed("r1", "tel/state", {})
+    do_login(client, "obs", "obspw")
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 초기 스냅샷(r1)
+
+        # 서버 DB 에 직접 반영 — "다른 admin 브라우저가 PATCH 로 계정을 정지시켰다"
+        # 를 흉내낸다. 열린 WS 는 이 사실을 아직 모른다.
+        with app.state.session_factory() as db:
+            u = db.query(User).filter_by(login="obs").one()
+            u.disabled = True
+            db.commit()
+
+        ws.send_json({"type": "cmd", "action": "estop", "robot": "r1", "cmd_id": "d1"})
+        r = ws.receive_json()
+        assert r["type"] == "denied"
+        with pytest.raises(Exception):          # 서버가 4401 로 연결을 닫는다
+            ws.receive_json()
+    with app.state.session_factory() as db:
+        rows = db.query(AuditLog).filter(AuditLog.action == "estop",
+                                         AuditLog.result == "rejected").all()
+        assert rows
+
+
+def test_stop_all_includes_robot_registered_after_connect(client, app):
+    """접속 후 새 로봇이 등록되면, stop_all 결과에 그 로봇도 포함된다
+    (접속 시점 robot_farm 스냅샷을 고정해 두면 신규 로봇이 누락된다)."""
+    fa, _ = _seed(client)
+    app.state.fleet.feed("r1", "tel/state", {})
+    do_login(client, "obs", "obspw")
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 초기 스냅샷(r1)
+
+        admin_csrf = do_login(client)                           # 같은 client — 쿠키가 admin 으로 바뀜
+        client.post("/api/v1/robots", headers={"X-CSRF": admin_csrf}, json={
+            "id": "r3", "farm_id": fa["id"], "name": "r3"})
+        app.state.fleet.feed("r3", "tel/state", {})
+        do_login(client, "obs", "obspw")                        # obs 로 다시 로그인(WS 는 그대로 유지)
+
+        ws.send_json({"type": "cmd", "action": "stop_all", "cmd_id": "sa1"})
+        r = ws.receive_json()
+        assert r["type"] == "stop_all_result"
+        assert "r3" in r["results"] and r["results"]["r3"] == "sent"
+
+
+def test_ws_survives_malformed_frame(client, app):
+    """비-JSON·비-dict 프레임을 받아도 연결이 트레이스백으로 죽지 않고 계속 처리한다."""
+    _seed(client)
+    app.state.fleet.feed("r1", "tel/state", {})
+    do_login(client, "obs", "obspw")
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.receive_json()                                      # ready
+        ws.receive_json()                                      # 초기 스냅샷(r1)
+        ws.send_text("이건 json 이 아님{{{")                     # 깨진 JSON
+        ws.send_text("[1, 2, 3]")                               # 유효 JSON 이지만 dict 아님
+        ws.send_json({"type": "cmd", "action": "ping", "robot": "r1", "cmd_id": "p1"})
+        r = ws.receive_json()
+        assert r == {"type": "cmd_result", "robot": "r1", "cmd_id": "p1", "result": "sent"}
 
 
 def test_origin_allowlist_fail_closed_when_unset():

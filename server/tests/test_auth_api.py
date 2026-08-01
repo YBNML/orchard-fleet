@@ -41,6 +41,17 @@ def test_logout_requires_csrf(client):
     assert client.get("/api/v1/auth/me").status_code == 401               # 세션 소멸
 
 
+def test_logout_recorded_in_audit(client, app):
+    from fleet_server.models import AuditLog
+
+    csrf = do_login(client)
+    r = client.post("/api/v1/auth/logout", headers={"X-CSRF": csrf})
+    assert r.status_code == 200
+    with app.state.session_factory() as db:
+        rows = db.query(AuditLog).filter(AuditLog.action == "logout").all()
+        assert rows and rows[-1].result == "accepted" and rows[-1].target == "admin"
+
+
 def test_expired_session_rejected_and_deleted(client, app):
     import datetime as dt
 

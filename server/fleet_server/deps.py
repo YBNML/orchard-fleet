@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import secrets
 
 from fastapi import Depends, HTTPException, Request
 
@@ -60,7 +61,8 @@ def require_min_role(min_role: str):
 
 
 def csrf_protect(request: Request, sess: AuthSession = Depends(current_session)) -> None:
-    if request.headers.get("X-CSRF") != sess.csrf:
+    header = request.headers.get("X-CSRF") or ""
+    if not secrets.compare_digest(header, sess.csrf):
         raise HTTPException(403, "CSRF 토큰 불일치")
 
 
