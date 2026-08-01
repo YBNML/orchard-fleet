@@ -25,4 +25,5 @@ sim/models/scout_mini_mid70/meshes/*.dae
 server/.venv/
 server/fleet.db
 server/data/
+server/*.egg-info/
 __pycache__/
