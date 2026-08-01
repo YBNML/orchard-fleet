@@ -61,3 +61,50 @@ async def test_port_offline_immediate():
     fp.register_robot("ghost", 1, "legacy_ws",
                       {"ws_url": "ws://127.0.0.1:1/ws", "token": ""})
     assert await fp.send_command("ghost", "c1", "estop", {}) == "offline"
+
+
+@pytest.mark.asyncio
+async def test_teleop_payload_stays_pure():
+    """teleop 은 cmd_id 가 섞이지 않은 순수 payload 로, cmd 가 아닌 teleop 토픽에 나가야 한다."""
+    received_by_robot = []
+
+    async def fake_robot(ws):
+        async for raw in ws:
+            received_by_robot.append(json.loads(raw))
+
+    async with websockets.serve(fake_robot, "127.0.0.1", 18100):
+        link = LegacyRobotLink(
+            "scout01", "ws://127.0.0.1:18100/ws", "",
+            on_message=lambda r, ch, pl, seq: None, on_touch=lambda r: None)
+        task = asyncio.create_task(link.run())
+        for _ in range(100):                       # 연결 수립 대기
+            if link._ws is not None:
+                break
+            await asyncio.sleep(0.05)
+        fp = LegacyFleetPort(offline_after_s=15.0)
+        fp._links["scout01"] = link
+        fp.presence.touch("scout01")
+        ok = await fp.send_command("scout01", "c1", "teleop", {"vx": 0.3, "wz": 0.0})
+        assert ok == "sent"
+        for _ in range(100):
+            if received_by_robot:
+                break
+            await asyncio.sleep(0.05)
+        env = received_by_robot[0]
+        assert env["topic"] == "orchard/scout01/teleop"
+        assert env["payload"] == {"vx": 0.3, "wz": 0.0}     # cmd_id 없음, "cmd" 키 없음
+        link.stop(); task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_port_register_robot_uses_running_loop():
+    # register_robot 은 asyncio.get_running_loop() 에 의존한다. create_robot 라우터가
+    # 다시 동기 def 로 돌아가면(=스레드풀에서 실행) 그 안에서 이 호출이
+    # RuntimeError("no running event loop") 를 던진다 — 이 테스트는 최소한 러닝 루프
+    # 안에서는 태스크 생성·조회·정리가 예외 없이 도는지 CI 에 고정해 둔다.
+    fp = LegacyFleetPort(offline_after_s=15.0)
+    fp.register_robot("ghost2", 1, "legacy_ws",
+                      {"ws_url": "ws://127.0.0.1:1/ws", "token": ""})
+    assert "ghost2" in fp._tasks
+    assert fp.robot_status("ghost2").online is False
+    await fp.shutdown()

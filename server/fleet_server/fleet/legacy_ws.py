@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 
 import websockets
 
 from .port import FleetPort, RobotStatus, TelemetryHandler
 from .presence import PresenceRegistry
+
+log = logging.getLogger("fleet.legacy_ws")
 
 SUFFIX_TO_CHANNEL = {
     "state": "tel/state", "health": "tel/health", "map": "tel/map",
@@ -55,10 +58,17 @@ class LegacyRobotLink:
                             continue
                         ch = SUFFIX_TO_CHANNEL.get(parts[2])
                         if ch:
-                            self.on_message(self.robot_id, ch,
-                                            msg.get("payload", {}), msg.get("seq"))
-            except Exception:
-                pass
+                            try:
+                                self.on_message(self.robot_id, ch,
+                                                msg.get("payload", {}), msg.get("seq"))
+                            except Exception:
+                                # 다운스트림(핸들러) 예외는 링크 재연결로 위장하지 않는다 —
+                                # 연결은 살아 있으니 다음 메시지를 계속 받는다.
+                                log.exception("로봇 %s 텔레메트리 처리 중 예외 (channel=%s)",
+                                             self.robot_id, ch)
+            except Exception as e:
+                log.warning("로봇 %s 링크 오류: %s — %.1fs 후 재연결",
+                           self.robot_id, e, backoff)
             self._ws = None
             if self._stop:
                 break
@@ -77,7 +87,8 @@ class LegacyRobotLink:
         try:
             await ws.send(json.dumps(env))
             return True
-        except Exception:
+        except Exception as e:
+            log.warning("로봇 %s 명령 전송 실패 (action=%s): %s", self.robot_id, action, e)
             return False
 
     def stop(self) -> None:
@@ -109,7 +120,10 @@ class LegacyFleetPort(FleetPort):
         link = self._links.get(robot_id)
         if link is None or not self.presence.online(robot_id):
             return "offline"                    # 즉시 실패 — 서버측 큐 금지
-        ok = await link.send_command(action, {**payload, "cmd_id": cmd_id})
+        # teleop 은 순수 조향 payload({"vx":..,"wz":..}) 그대로 보낸다 — cmd_id 를
+        # 섞으면 로봇의 teleop 파서가 알 수 없는 키로 거부할 수 있다.
+        body = payload if action == "teleop" else {**payload, "cmd_id": cmd_id}
+        ok = await link.send_command(action, body)
         return "sent" if ok else "offline"
 
     def robot_status(self, robot_id):
