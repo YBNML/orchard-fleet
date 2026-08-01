@@ -170,7 +170,11 @@ class DriveMission(Feature):
             self.ctx.event("mission",
                            f"전방 {clearance:.1f} m 벽 — {wp['kind']} 도착 처리")
             return None
-        if abs(err) > 0.6:
+        # 횡단은 피벗을 거의 끝내고 출발한다 — 34° 남긴 채 전진하면 대각
+        # 성분이 열 끝 모서리 경사로 파고든다 (실측: 남단에서 3회 모두
+        # x≈-8.9 지점 밀착, 08-02). 직진 구간은 0.6 rad 로 충분하다.
+        align_th = 0.15 if wp["kind"] == "cross" else 0.6
+        if abs(err) > align_th:
             # 방향 전환은 제자리 회전이 아니라 **호**로 돈다 — 램프에서
             # 제자리 회전은 궤도가 통째로 미끄러져 물리적으로 안 된다
             # (실측: 30초 명령에 회전 3° 미만, 08-02). 바퀴가 굴러가며
