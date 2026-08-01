@@ -90,6 +90,10 @@ class MapLocalizer(Node):
         d("fix_period_s", 0.5)          # 보정 주기 (2 Hz)
         d("init_x", 0.0); d("init_y", 0.0); d("init_yaw", 0.0)
         d("lost_timeout_s", 8.0)        # 이 시간 넘게 못 잡으면 개입 요청
+        d("slip_check_m", 0.5)          # 오도메트리가 이만큼 갈 때마다 스캔과 대조
+        d("slip_ratio", 0.35)           # 스캔변위/오도변위 가 이 밑이면 슬립
+        d("reacquire_after_s", 5.0)     # 이만큼 못 잡으면 요 탐색을 넓혀 재획득
+        d("reacquire_yaw_deg", 30.0)
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
 
         self.bundle = mapbundle.Bundle(str(g("bundle")))
@@ -102,6 +106,10 @@ class MapLocalizer(Node):
         self.odom_frame = str(g("odom_frame"))
         self.fix_period = float(g("fix_period_s"))
         self.lost_timeout = float(g("lost_timeout_s"))
+        self.slip_check = float(g("slip_check_m"))
+        self.slip_ratio = float(g("slip_ratio"))
+        self.reacquire_after = float(g("reacquire_after_s"))
+        self.reacquire_yaw = float(g("reacquire_yaw_deg"))
 
         # map → odom. 초기값은 '초기 자세를 안다'는 전제에서 만든다
         # (설계: 대시보드에서 지정하거나 지정 주차 지점에서 기동)
@@ -120,6 +128,13 @@ class MapLocalizer(Node):
         self.drift_ref = None           # 마지막 채택 보정 시점의 odom 자세
         self.stat = dict(n_fix=0, n_reject=0, quality=0.0, n_struct=0, gate="")
         self._lost_reported = False
+
+        # 슬립 감시 — 오도메트리가 간다는데 스캔이 안 간다면 바퀴가 헛도는 것.
+        # 나무에 박힌 채 오도메트리만 35 m 달아난 사고(08-02)의 재발 방지다.
+        self._slip_ref = None           # (구조점, 그때 odom, 그때 map 자세)
+        self._slip_count = 0
+        self._slip_anchor = None        # 슬립 시작 직전의 map 자세 — 여기 묶는다
+        self.slip_active = False
 
         sqos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           history=HistoryPolicy.KEEP_LAST, depth=2)
@@ -145,6 +160,9 @@ class MapLocalizer(Node):
                 f"오도메트리 기준점 정렬 — odom→base ({self.T_ob[0]:+.2f}, "
                 f"{self.T_ob[1]:+.2f}) 를 상쇄")
         self._have_odom = True
+        if self.slip_active:
+            # 헛도는 오도메트리는 자세에 반영하지 않는다 — 앵커에 묶는다
+            self.T_mo = compose(self._slip_anchor, inverse(self.T_ob))
 
     def _on_cloud(self, msg: PointCloud2):
         self.last_cloud = read_xyz(msg)
@@ -160,14 +178,71 @@ class MapLocalizer(Node):
         dy = self.T_ob[1] - self.drift_ref[1]
         return math.hypot(dx, dy)
 
+    # ── 슬립 감시 ───────────────────────────────────────────────────────────
+    def _check_slip(self, sp):
+        """오도메트리 변위와 스캔 변위를 대조한다.
+
+        오도메트리가 slip_check 만큼 갔다고 할 때마다 기준 스캔과 상관을
+        구한다. 스캔이 "안 갔다"고 두 번 연속 답하면 슬립 확정 — 자세를
+        직전 앵커에 묶고(오도메트리 무시) 개입을 요청한다. 회전 중에는
+        1차원 상관이 성립하지 않으므로 기준만 갱신하고 판단하지 않는다.
+        """
+        if len(sp) < 150:
+            self._slip_ref = None       # 구조가 없으면 판단 불가
+            return
+        if self._slip_ref is None:
+            self._slip_ref = (sp, self.T_ob, self.pose())
+            return
+        ref_sp, ref_ob, ref_pose = self._slip_ref
+        odo_d = math.hypot(self.T_ob[0] - ref_ob[0], self.T_ob[1] - ref_ob[1])
+        if abs(wrap(self.T_ob[2] - ref_ob[2])) > math.radians(6.0):
+            self._slip_ref = (sp, self.T_ob, self.pose())
+            return
+        if odo_d < self.slip_check:
+            return
+        travel, conf = rl.scan_travel(ref_sp, sp)
+        self._slip_ref = (sp, self.T_ob, self.pose())
+        if conf < 0.3:
+            return                      # 상관이 흐리면 판단 유보
+        if abs(travel) / odo_d < self.slip_ratio:
+            if self._slip_count == 0:
+                self._slip_anchor = ref_pose    # 헛돌기 시작 전 자세
+            self._slip_count += 1
+        else:
+            self._slip_count = 0
+            if self.slip_active:
+                self.slip_active = False
+                self._emit("resolved", "TRACTION_LOSS", "구동이 회복되었습니다")
+                self.get_logger().info("슬립 해제 — 스캔 변위가 오도메트리와 일치")
+        if self._slip_count >= 2 and not self.slip_active:
+            self.slip_active = True
+            self.T_mo = compose(self._slip_anchor, inverse(self.T_ob))
+            self._emit("assistance", "TRACTION_LOSS",
+                       f"오도메트리는 {odo_d:.2f} m 전진을 보고하는데 "
+                       f"스캔 변위는 {travel:.2f} m — 바퀴 헛돎")
+            self.get_logger().warning(
+                f"슬립 감지 — 오도 {odo_d:.2f} m vs 스캔 {travel:.2f} m "
+                f"(상관 {conf:.2f}) · 자세를 앵커에 고정")
+
     # ── 보정 ────────────────────────────────────────────────────────────────
     def _try_fix(self):
         pts = self.last_cloud
         if pts is None or len(pts) == 0:
             return
+        self._check_slip(rl.structure_points(pts))
         est = self.pose()
-        fix = rl.estimate(pts, est, self.geom)
-        ok, why = rl.gate(fix, self._drift_since_fix(), self.geom)
+        # 오래 못 잡았으면 요 탐색을 넓혀 재획득 — 선회 직후에는 오도메트리
+        # 요 오차가 ±12° 를 넘을 수 있다 (실측 19.5°)
+        lost_for = time.monotonic() - self.last_ok_t
+        if lost_for > self.reacquire_after:
+            fix = rl.estimate(pts, est, self.geom,
+                              yaw_range_deg=self.reacquire_yaw,
+                              coarse=121, fine=25)
+        else:
+            fix = rl.estimate(pts, est, self.geom)
+        # 슬립 중 오도메트리 변위는 허깨비다 — 표류로 세지 않는다
+        drift = 0.0 if self.slip_active else self._drift_since_fix()
+        ok, why = rl.gate(fix, drift, self.geom)
         self.stat.update(quality=round(fix.quality, 3), n_struct=fix.n_struct,
                          gate="" if ok else why,
                          dx=round(fix.dx, 3), dy=round(fix.dy, 3),
@@ -186,6 +261,8 @@ class MapLocalizer(Node):
         new_pose = (px + fix.dx, py + dy_apply, wrap(pyaw + dyaw))
         self.T_mo = compose(new_pose, inverse(self.T_ob))
         self.drift_ref = self.T_ob
+        if self.slip_active:
+            self._slip_anchor = new_pose    # 동결 중에도 횡·요는 계속 다듬는다
         self.last_ok_t = time.monotonic()
         self.stat["n_fix"] += 1
         if self._lost_reported:
@@ -201,6 +278,7 @@ class MapLocalizer(Node):
             f"구조점 {self.stat['n_struct']} · 집중도 {self.stat['quality']:.2f} · "
             f"점군 {n} · dx {self.stat.get('dx')} dy {self.stat.get('dy')} "
             f"dyaw {self.stat.get('dyaw_deg')}° 종보정 {self.stat.get('lon_ok')}"
+            + (" · 슬립 동결 중" if self.slip_active else "")
             + (f" · 거부사유: {self.stat['gate']}" if self.stat["gate"] else ""))
 
     def _emit(self, kind, code, msg):

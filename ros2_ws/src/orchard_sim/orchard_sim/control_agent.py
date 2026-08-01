@@ -43,6 +43,7 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import Empty
+from std_msgs.msg import String as StringMsg
 from tf2_ros import Buffer, TransformListener
 
 from orchard_sim import transforms as tfu
@@ -179,6 +180,11 @@ class ControlAgent(Node):
         # (ISO 13849-1 §5.2.2 의 '시야 확보된 위치에서의 리셋').
         self.create_subscription(Empty, "~/local_reset",
                                  lambda _m: self._on_local_reset(), 10)
+
+        # 로컬라이저 진단 → 관제 개입 큐. 슬립(TRACTION_LOSS)이면 즉시 멈춘다 —
+        # 박힌 채 바퀴를 계속 돌리는 것은 기체·나무 양쪽을 갉아먹는 짓이다.
+        self.create_subscription(StringMsg, "/map_localizer/diagnostics",
+                                 self._on_loc_diag, 10)
 
         # ── 감사 로그 (코어) ────────────────────────────────────────────────
         ap_ = str(g("audit_path") or "")
@@ -317,6 +323,29 @@ class ControlAgent(Node):
             self.audit.command("local_reset", role="현장", addr="robot",
                                result=("수락" if ok else "거부"))
 
+    def _on_loc_diag(self, msg):
+        """로컬라이저 진단을 관제 이벤트로 올린다 (code 가 개입 큐 라우팅 키).
+
+        TRACTION_LOSS 는 즉시 일시정지다. 슬립 상태에서 명령을 계속 내리면
+        오도메트리만 쌓이고 기체는 제자리에서 갈린다. 재개는 사람이 한다 —
+        박힌 원인(나무·진흙)을 치우지 않으면 재개해도 똑같이 박힌다.
+        """
+        try:
+            d = json.loads(msg.data)
+        except (ValueError, TypeError):
+            return
+        kind, code = d.get("kind"), d.get("code", "")
+        text = d.get("msg", "")
+        if kind == "assistance":
+            if code == "TRACTION_LOSS" and not self.safety.paused:
+                self.safety.set_paused(True)
+                self._write_cmd(0.0, 0.0)
+                self.event("paused", f"슬립 감지로 자동 정지 — {text}",
+                           level="warn")
+            self.event("assistance", text, level="warn", code=code)
+        elif kind == "resolved":
+            self.event("resolved", text, level="info", code=code)
+
     def _read_pose(self):
         try:
             tr = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
@@ -342,13 +371,14 @@ class ControlAgent(Node):
         self.server.broadcast(P.envelope(
             f"orchard/{self.robot_id}/{kind}", payload, self.now_ns(), self.next_seq()))
 
-    def event(self, kind, msg, level="info"):
+    def event(self, kind, msg, level="info", **extra):
         """이벤트 브로드캐스트 + 감사 기록.
 
         비상정지·전복·링크두절은 사후 조사에서 가장 먼저 찾는 것이라 반드시
-        영속 기록에 남겨야 한다.
+        영속 기록에 남겨야 한다. extra 로 정지 사유 코드(code=...) 등을 실으면
+        관제 서버가 개입 큐로 바로 라우팅한다.
         """
-        e = dict(kind=kind, msg=msg, level=level, t=time.time())
+        e = dict(kind=kind, msg=msg, level=level, t=time.time(), **extra)
         with self._lock:
             self.events.append(e)
             self.events = self.events[-50:]

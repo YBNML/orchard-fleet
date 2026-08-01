@@ -222,3 +222,48 @@ def gate(fix: RowFix, drift_since_fix_m: float, geom, *, max_jump_m=0.8):
     if abs(fix.dx) > max_jump_m:
         return False, f"보정량 과다 (dx {fix.dx:+.2f} m)"
     return True, ""
+
+
+def scan_travel(prev_pts, cur_pts, *, span_m=0.7, bin_m=0.05,
+                r_min=1.0, r_max=20.0):
+    """두 스캔(로봇 기준) 사이의 **전진 변위**를 추정한다 — 슬립 감지용.
+
+    로봇이 d 만큼 전진하면 정지물의 로봇 기준 전방좌표는 d 만큼 줄어든다.
+    두 스캔의 전방좌표 히스토그램을 상관시켜 그 d 를 찾는다. 오도메트리가
+    "이만큼 갔다"고 보고하는데 스캔이 "안 갔다"고 하면 바퀴가 헛도는 것이다
+    — 실제로 나무에 박힌 채 오도메트리만 35 m 달아난 사고를 겪었다(08-02).
+
+    과수원은 1.5 m 주기 구조라 상관에도 주기마다 봉우리가 선다. 그래서 탐색
+    폭(span_m)을 반주기(0.75 m) 아래로 잡아야 해가 유일하다 — 호출자는
+    오도메트리 변위가 그 안일 때(0.5 m 안팎)마다 불러야 한다.
+
+    회전이 섞이면 1차원 상관이 성립하지 않는다. 호출자가 요 변화 몇 도
+    이내일 때만 부르는 것이 전제다.
+
+    반환 (travel_m, confidence 0~1). 점이 부족하면 (0.0, 0.0).
+    """
+    a = np.asarray(prev_pts, dtype=float)
+    b = np.asarray(cur_pts, dtype=float)
+    if len(a) < 100 or len(b) < 100:
+        return 0.0, 0.0
+    edges = np.arange(r_min, r_max + bin_m, bin_m)
+
+    def hist(p):
+        x = p[:, 0]
+        h, _ = np.histogram(x[(x >= r_min) & (x <= r_max)], bins=edges)
+        h = h.astype(float)
+        return h - h.mean()
+
+    ha, hb = hist(a), hist(b)
+    K = max(1, int(round(span_m / bin_m)))
+    best_k, best_r = 0, -1.0
+    for k in range(-K, K + 1):
+        # 전진 d=k·bin 이면 현재 히스토그램은 이전 것을 왼쪽으로 민 것:
+        #   hb[i] ≈ ha[i + k]
+        u = ha[k:] if k >= 0 else ha[:k]
+        v = hb[:len(ha) - k] if k >= 0 else hb[-k:]
+        den = math.sqrt(float((u * u).sum()) * float((v * v).sum()))
+        r = float((u * v).sum()) / den if den > 1e-9 else 0.0
+        if r > best_r:
+            best_r, best_k = r, k
+    return best_k * bin_m, max(0.0, best_r)
