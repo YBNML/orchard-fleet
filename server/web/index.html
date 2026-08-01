@@ -212,10 +212,15 @@ async function api(path, opts = {}) {
 function showLogin() { $("login-overlay").style.display = "flex"; }
 function hideLogin() { $("login-overlay").style.display = "none"; }
 
+function elementAllowed(el) {
+  const need = el.dataset.minRole;
+  if (need && (!ME || ROLE_RANK[ME.role] < ROLE_RANK[need])) return false;
+  return true;
+}
+
 function applyRoleVisibility() {
   document.querySelectorAll("[data-min-role]").forEach(el => {
-    el.style.display =
-      ROLE_RANK[ME.role] >= ROLE_RANK[el.dataset.minRole] ? "" : "none";
+    el.style.display = elementAllowed(el) ? "" : "none";
   });
 }
 
@@ -270,7 +275,21 @@ async function loadRobots() {
       if (!selKey) selKey = it.id;
     }
   }
+  await restoreMissions();            // 새로고침으로 잃어버린 진행 중 임무 id 를 복구
   renderFleet();                      // 기존 탭 렌더 함수 재사용
+}
+
+// missionId 는 mission_start REST 응답에서만 얻는 클라이언트 로컬 상태라,
+// 새로고침하면 비어서 pause/resume/cancel 이 무증상 no-op 이 된다 — 부팅 시
+// 서버의 활성 임무 목록에서 복구한다. /missions 는 최신순이라 로봇당 첫
+// 활성 항목이 곧 최신(진행 중) 임무다.
+async function restoreMissions() {
+  const list = await api("/missions");
+  for (const m of list) {
+    if (!["QUEUED", "RUNNING", "PAUSED"].includes(m.state)) continue;
+    const r = robots.get(m.robot_id);
+    if (r && !r.missionId) r.missionId = m.id;
+  }
 }
 
 function connectServer() {
@@ -290,16 +309,28 @@ function connectServer() {
     } else if (m.type === "stop_all_result") {
       for (const [rid, res] of Object.entries(m.results))
         if (res !== "sent") pushEvent(rid, "전체 정지 미확인 (" + res + ")");
+    } else if (m.type === "cmd_result") {
+      if (m.result !== "sent") pushEvent(m.robot, "명령 전달 실패 (" + m.result + ")");
     }
   };
   SRV.onclose = () => setTimeout(connectServer, 2000);   // 자동 재연결
 }
 
+// 명령 송신부 공통 가드 — SRV 가 아직 CONNECTING/CLOSED 인데 조용히 유실되는
+// 것을 막는다 (특히 비상정지처럼 무증상 실패가 위험한 명령).
+function srvReady() {
+  if (SRV && SRV.readyState === 1) return true;
+  pushEvent("서버", "연결 안 됨 — 명령이 전송되지 않았습니다");
+  return false;
+}
+
 function sendCmd(robotId, action, payload) {
+  if (!srvReady()) return;
   SRV.send(JSON.stringify({type: "cmd", action, robot: robotId,
                            cmd_id: "c" + Date.now(), payload: payload || {}}));
 }
 function sendTeleop(robotId, vx, wz) {
+  if (!srvReady()) return;
   SRV.send(JSON.stringify({type: "teleop", robot: robotId, payload: {vx, wz}}));
 }
 function pushEvent(rid, msg) {
@@ -373,8 +404,9 @@ function applyFeatures(r){
   document.querySelectorAll("section[data-needs]").forEach(sec => {
     const need = sec.dataset.needs;
     // 기능 목록을 안 주는 구형 에이전트와도 붙어야 하므로, 목록이 비면 다 보여준다
-    sec.style.display = (!r?.features || !r.features.length || have.has(need))
-      ? "" : "none";
+    const hasFeature = !r?.features || !r.features.length || have.has(need);
+    // 기능 유무만으로 되살리면 data-min-role 게이트를 덮어쓰게 되므로 AND 로 합친다
+    sec.style.display = (hasFeature && elementAllowed(sec)) ? "" : "none";
   });
   const list = $("featList");
   if (!r?.features?.length){
@@ -547,6 +579,7 @@ function draw(){
 // ── 조작 ────────────────────────────────────────────────────────────────────
 $("allstop").onclick = () => {
   // 관제실 전체 정지 — 서버가 내 스코프의 모든 로봇에 팬아웃한다 (estop·전체정지는 전 역할, D9)
+  if (!srvReady()) return;
   SRV.send(JSON.stringify({type:"cmd", action:"stop_all", cmd_id:"sa"+Date.now()}));
 };
 $("estop").onclick = () => { const r = sel(); r && sendCmd(r.id, "estop", {reason:"관제 버튼"}); };
@@ -567,7 +600,8 @@ $("mStart").onclick = async () => {
   } catch (e) { alert("임무 시작 실패: " + e.message); }
 };
 async function missionVerb(verb){
-  const r = sel(); if (!r?.missionId) return;
+  const r = sel();
+  if (!r?.missionId) { pushEvent(r?.id || "?", "활성 임무 없음"); return; }
   try { await api(`/missions/${r.missionId}/${verb}`, {method:"POST"}); }
   catch (e) { alert("임무 " + verb + " 실패: " + e.message); }
 }
