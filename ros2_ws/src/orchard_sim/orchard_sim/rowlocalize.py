@@ -215,7 +215,13 @@ def gate(fix: RowFix, drift_since_fix_m: float, geom, *, max_jump_m=0.8):
     if fix.yaw_saturated:
         return False, f"요 해가 탐색 경계 ({math.degrees(fix.dyaw):+.1f}°)"
     if not fix.in_block:
-        return False, "선회 구역 (나무 구역 밖)"
+        # 헤드랜드에서도 열 끝 줄기들이 시야에 들면 횡위상은 성립한다 —
+        # 위상은 월드 x 기준이라 로봇 방위와 무관하고, 요가 자이로로 정직한
+        # 지금은 '다른 각도에서 본 같은 나무' 오인 위험도 낮다. 실측: 횡단
+        # 클라임 중 병진 슬립 65% 로 추정이 3 m 달아나는데 그때 유일한 절대
+        # 기준이 이 횡위상이었다(08-02). 단 고신뢰·소보정만 받는다.
+        if fix.quality < 0.5 or abs(fix.dx) > 0.5:
+            return False, "선회 구역 (나무 구역 밖)"
     limit = float(geom["row_spacing"]) / 2.0
     if drift_since_fix_m > limit:
         return False, f"보정 간 표류 {drift_since_fix_m:.2f} m > 한계 {limit:.2f} m"
