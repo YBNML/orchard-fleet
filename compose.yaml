@@ -7,6 +7,7 @@ services:
       FLEET_ADMIN_LOGIN: ${FLEET_ADMIN_LOGIN:-admin}
       FLEET_ADMIN_PASSWORD: ${FLEET_ADMIN_PASSWORD:?관리자 초기 비밀번호를 지정하세요}
       FLEET_ALLOWED_ORIGINS: ${FLEET_ALLOWED_ORIGINS:-http://localhost:8000}
+      FLEET_WEB_DIR: /app/web
     volumes:
       - ./server/data:/data
     restart: unless-stopped
