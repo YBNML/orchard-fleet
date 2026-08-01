@@ -308,8 +308,13 @@ class MapLocalizer(Node):
         est = self.pose()
         half = float(self.geom["col_len"]) / 2.0
         hx, hy = math.cos(est[2]), math.sin(est[2])
-        # 통로 안이거나 열 방향으로 달리는 중이 아니면(횡단 등) 볼 것이 없다
-        if abs(est[1]) < half - 2.0 or abs(hy) < 0.7:
+        # 가까운 끝의 둑을 **향해** 달릴 때만 잰다. 남단에서 북향 출발처럼
+        # 둑을 등지고 있으면 전방에 벽이 없다 — 그때 잰 것은 벽이 아니라
+        # 딴것이고, 실제로 기운 레이가 나무 열을 '벽'으로 오인해 추정을
+        # 2 m 끌어내린 오발이 있었다 (08-02).
+        inward = ((est[1] > half - 2.0 and hy > 0.7)
+                  or (est[1] < -(half - 2.0) and hy < -0.7))
+        if not inward:
             return
         r = np.hypot(pts[:, 0], pts[:, 1])
         ang = np.abs(np.arctan2(pts[:, 1], pts[:, 0]))
@@ -322,10 +327,14 @@ class MapLocalizer(Node):
         # 맵이 기대하는 둑까지 거리 — 주행가능 격자를 전방으로 긁는다.
         # 격자 경계는 둑 '발치'고 라이다 원뿔(0.3 m 높이)이 보는 것은 법면
         # 위쪽 면이라, 법면 후퇴량만큼 더 멀다 (보정 없이는 그만큼 편향된
-        # 고정점에 수렴한다 — 08-02 실측 0.7 m).
+        # 고정점에 수렴한다 — 08-02 실측 0.7 m). 첫 비주행 셀만 보면 기운
+        # 레이가 스치는 나무 열(얇은 띠)도 잡힌다 — 1.2 m 두께가 이어져야
+        # 둑이다.
         expected = None
         for s in np.arange(0.3, self.anchor_max_range + 3.0, 0.1):
-            if not self.bundle.is_drivable(est[0] + hx * s, est[1] + hy * s):
+            if all(not self.bundle.is_drivable(est[0] + hx * (s + q),
+                                               est[1] + hy * (s + q))
+                   for q in (0.0, 0.6, 1.2)):
                 expected = float(s) + self.anchor_wall_off
                 break
         if expected is None:
