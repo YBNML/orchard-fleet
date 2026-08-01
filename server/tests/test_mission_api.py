@@ -59,3 +59,19 @@ def test_observer_cannot_create(client, app):
     r = client.post("/api/v1/missions", headers={"X-CSRF": csrf},
                     json={"robot_id": "scout01", "alleys": [0]})
     assert r.status_code == 403
+
+
+def test_verb_offline_409_state_unchanged(client, app):
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    csrf = do_login(client, "op", "oppw")
+    h = {"X-CSRF": csrf}
+    ms = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout01", "alleys": [0]}).json()
+    # 강제로 오프라인 (마지막 수신 시각을 과거로)
+    app.state.fleet.presence.touch("scout01", t=0.0)
+    r = client.post(f"/api/v1/missions/{ms['id']}/cancel", headers=h)
+    assert r.status_code == 409
+    from fleet_server.models import Mission
+    with app.state.session_factory() as db:
+        assert db.get(Mission, ms["id"]).state == "QUEUED"   # 상태 불변

@@ -17,12 +17,16 @@ class MissionBody(BaseModel):
     alleys: list[int]
 
 
-def _scoped_robot(db, user, robot_id) -> Robot:
+def _scoped_robot(db, user, robot_id, *, action: str) -> Robot:
     r = db.get(Robot, robot_id)
     if r is None:
+        audit.record(db, action=action, result="rejected", user_id=user.id,
+                     role=user.role, target=robot_id, detail="로봇 없음")
         raise HTTPException(404, "로봇이 없습니다")
     scope = farm_scope(db, user)
     if scope is not None and r.farm_id not in scope:
+        audit.record(db, action=action, result="rejected", user_id=user.id,
+                     role=user.role, target=r.id, detail="농장 권한 없음")
         raise HTTPException(403, "해당 농장 권한이 없습니다")
     return r
 
@@ -38,7 +42,7 @@ def _mission_out(ms: Mission) -> dict:
 @router.post("/missions", dependencies=[_operator, _csrf])
 async def create_mission(body: MissionBody, request: Request, db=Depends(get_db),
                          user: User = Depends(current_user)):
-    robot = _scoped_robot(db, user, body.robot_id)
+    robot = _scoped_robot(db, user, body.robot_id, action="mission_start")
     fleet = request.app.state.fleet
     ms = missions.create(db, robot_id=robot.id, farm_id=robot.farm_id,
                          spec={"alleys": body.alleys}, created_by=user.id)
@@ -62,20 +66,31 @@ _EVENT_BY_VERB = {"pause": "mission_pause", "resume": "mission_resume",
 async def mission_verb(mission_id: int, verb: str, request: Request,
                        db=Depends(get_db), user: User = Depends(current_user)):
     if verb not in _EVENT_BY_VERB:
+        audit.record(db, action=f"mission_{verb}", result="rejected", user_id=user.id,
+                     role=user.role, target=str(mission_id), detail="지원하지 않는 동작")
         raise HTTPException(404, "지원하지 않는 동작")
+    action = _EVENT_BY_VERB[verb]
     ms = db.get(Mission, mission_id)
     if ms is None:
+        audit.record(db, action=action, result="rejected", user_id=user.id,
+                     role=user.role, target=str(mission_id), detail="임무 없음")
         raise HTTPException(404, "임무가 없습니다")
-    _scoped_robot(db, user, ms.robot_id)
-    try:
-        missions.apply(db, ms, verb)
-    except missions.InvalidTransition as e:
-        raise HTTPException(409, str(e))
+    _scoped_robot(db, user, ms.robot_id, action=action)
+    if (ms.state, verb) not in missions.TRANSITIONS:      # 커밋 없이 사전 검사
+        audit.record(db, action=action, result="rejected", user_id=user.id,
+                     role=user.role, target=ms.robot_id,
+                     detail=f"mission={ms.id} 상태={ms.state} 전이불가")
+        raise HTTPException(409, f"{ms.state} 에서 {verb} 불가")
     result = await request.app.state.fleet.send_command(
-        ms.robot_id, f"m{ms.id}-{verb}", _EVENT_BY_VERB[verb], {"mission_id": ms.id})
-    audit.record(db, action=_EVENT_BY_VERB[verb],
-                 result="accepted" if result == "sent" else "rejected",
-                 user_id=user.id, role=user.role, target=ms.robot_id,
+        ms.robot_id, f"m{ms.id}-{verb}", action, {"mission_id": ms.id})
+    if result == "offline":                    # 전달 실패 → 상태 변경 없이 즉시 실패
+        audit.record(db, action=action, result="rejected", user_id=user.id,
+                     role=user.role, target=ms.robot_id,
+                     detail=f"mission={ms.id} 로봇 오프라인")
+        raise HTTPException(409, "로봇이 오프라인입니다")
+    missions.apply(db, ms, verb)                # "sent" 확인 후에만 상태 전이 커밋
+    audit.record(db, action=action, result="accepted", user_id=user.id,
+                 role=user.role, target=ms.robot_id,
                  detail=f"mission={ms.id} 전달={result}")
     return {**_mission_out(ms), "delivery": result}
 
