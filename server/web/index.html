@@ -19,8 +19,9 @@
   --bg:#F0EFE8; --surface:#FBFAF6; --sunk:#E7E5DA;
   --ink:#221E18; --dim:#6E6A60; --line:#DBD8CC; --line-soft:#E6E3D8;
   --leaf:#2E6B37; --leaf-soft:#DFEBDC;
-  --gold:#A9741A; --gold-soft:#F4E7CC;
-  --danger:#A62A21; --danger-soft:#F5DEDA;
+  /* 금색은 작은 글자(통로 번호·경고)에도 쓰이므로 WCAG AA 4.5:1 을 넘도록 어둡게 잡았다 */
+  --gold:#8A5D12; --gold-soft:#F4E7CC;
+  --danger:#A62A21; --danger-soft:#F5DEDA; --danger-btn:#A62A21;
   --plan:#4C5B8C; --plan-soft:#E2E4F0;
   --shadow:0 1px 2px rgba(34,30,24,.06), 0 6px 20px rgba(34,30,24,.05);
   --canvas:#E9E7DD; --canvas-row:#D3D0C2; --canvas-alley:#C8C4B4;
@@ -33,7 +34,8 @@
   --ink:#EBE6DA; --dim:#948D7E; --line:#2F2A21; --line-soft:#241F19;
   --leaf:#63B85C; --leaf-soft:#1B2A19;
   --gold:#D8A03C; --gold-soft:#2C2314;
-  --danger:#DE5A4E; --danger-soft:#2E1815;
+  /* 어두운 화면에서 밝은 빨강 위 흰 글자는 3.7:1 로 미달이라, 버튼 배경만 따로 진하게 */
+  --danger:#DE5A4E; --danger-soft:#2E1815; --danger-btn:#C4382C;
   --plan:#8A93CF; --plan-soft:#1B1D2C;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 22px rgba(0,0,0,.35);
   --canvas:#100E0A; --canvas-row:#241F17; --canvas-alley:#2C261C;
@@ -94,7 +96,7 @@ header{
 }
 .iconbtn:hover{border-color:var(--dim)}
 #allstop{
-  background:var(--danger); border:1px solid var(--danger); color:#fff;
+  background:var(--danger-btn); border:1px solid var(--danger-btn); color:#fff;
   font-weight:600; padding:8px 16px; border-radius:8px; cursor:pointer;
   letter-spacing:.02em; font-size:13px;
 }
@@ -178,7 +180,7 @@ aside{
 .estopwrap{padding:13px 16px; border-bottom:1px solid var(--line)}
 #estop{
   width:100%; padding:17px; font-size:17px; font-weight:700; letter-spacing:.06em;
-  background:var(--danger); color:#fff; border:none; border-radius:11px; cursor:pointer;
+  background:var(--danger-btn); color:#fff; border:none; border-radius:11px; cursor:pointer;
   box-shadow:var(--shadow);
 }
 #estop:hover{filter:brightness(1.08)}
