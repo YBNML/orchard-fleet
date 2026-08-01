@@ -47,7 +47,13 @@ class LegacyRobotLink:
                 async with websockets.connect(url, open_timeout=5) as ws:
                     self._ws = ws
                     backoff = 1.0
-                    async for raw in ws:
+                    # 하트비트 — 로봇의 SafetyArbiter 는 관제에서 오는 트래픽이
+                    # LINK_LOSS_STOP_MS(1.5초) 넘게 끊기면 링크 두절로 보고 스스로
+                    # 선다. 수신만 하고 아무것도 보내지 않으면 로봇은 연결돼 있어도
+                    # '관제가 없다'고 판단해 움직이지 않는다 — 실제로 겪은 문제다.
+                    hb = asyncio.create_task(self._heartbeat(ws))
+                    try:
+                      async for raw in ws:
                         try:
                             msg = json.loads(raw)
                         except (ValueError, TypeError):
@@ -66,6 +72,8 @@ class LegacyRobotLink:
                                 # 연결은 살아 있으니 다음 메시지를 계속 받는다.
                                 log.exception("로봇 %s 텔레메트리 처리 중 예외 (channel=%s)",
                                              self.robot_id, ch)
+                    finally:
+                        hb.cancel()
             except Exception as e:
                 log.warning("로봇 %s 링크 오류: %s — %.1fs 후 재연결",
                            self.robot_id, e, backoff)
@@ -74,6 +82,15 @@ class LegacyRobotLink:
                 break
             await asyncio.sleep(backoff)          # 재연결 지수 백오프 (스펙 §3.1)
             backoff = min(backoff * 2, 30.0)
+
+    async def _heartbeat(self, ws, period=1.0):
+        """로봇에게 '관제가 살아 있다'를 알린다 (ping 은 observer 권한이라 무해)."""
+        while True:
+            await asyncio.sleep(period)
+            try:
+                await self.send_command("ping", {})
+            except Exception:
+                return
 
     async def send_command(self, action: str, payload: dict) -> bool:
         ws = self._ws

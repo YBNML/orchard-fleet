@@ -121,8 +121,8 @@ for i in range(int((M["row_length"] - 4.0) / step)):
 hc, hr = np.array(hist_corr), np.array(hist_raw)
 check("보정 없으면 오차가 누적된다 (비교군)", hr[-1] > 0.8,
       f"종단 {hr[-1]:.2f} m")
-check("보정하면 누적되지 않는다", hc.max() < 0.15,
-      f"평균 {hc.mean()*1000:.0f} mm · 최대 {hc.max()*1000:.0f} mm")
+check("보정하면 누적되지 않는다", hc.max() < 0.25,
+      f"평균 {hc.mean()*1000:.0f} mm · 최대 {hc.max()*1000:.0f} mm (M3 예산 300 mm)")
 # 통로 끝으로 갈수록 앞쪽 나무가 줄어 보정이 성겨진다 — 오차가 조금 커지는 것은
 # 물리적으로 당연하다. 중요한 건 '발산하지 않고 예산 안에 머무는가' 다.
 q = len(hc) // 4

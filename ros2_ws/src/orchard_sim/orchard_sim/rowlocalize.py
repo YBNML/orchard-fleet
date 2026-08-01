@@ -12,8 +12,11 @@
     미끄러진 해로 수렴해도 정합 점수는 똑같이 좋다. 그래서 방향을 나눠서 다룬다.
 
         횡·요   매 스캔 보정한다 (주기 위상으로 직접 계산 — 반복 최적화 없음)
-        종      위상으로 **묶어만 둔다**(±0.75 m 안에 가둠). 절대 기준은
-                열 끝(선회 구역 진입)에서 나무가 끊기는 지점으로 잡는다.
+        종      **보정하지 않는다.** 처음에는 위상으로 묶으려 했으나 실측에서
+                기각됐다(2026-08-02, scripts/40_probe_agl_band.py) — 줄기가
+                너무 가늘어(반경 0.035 m) 원거리에서 거의 안 맞고, 대신 잡히는
+                수관은 열 방향으로 연속이라 -0.34~+0.41 m 편의가 실린다.
+                종방향은 오도메트리에 맡기고 절대 기준은 열 끝에서 잡는다.
 
     이것이 원래 실패했던 LIO 와의 차이다. LIO 는 선회부에서 횡·요 제약이
     통째로 사라져 오차가 **누적**됐다. 여기서는 열이 보이는 한 횡·요가 매번
@@ -41,8 +44,14 @@ class RowFix:
     n_struct: int = 0          # 구조점 수
     y_span: float = 0.0        # 구조점의 종방향 퍼짐 (요 추정 신뢰의 근거)
     lateral_ok: bool = False   # 횡·요를 믿어도 되는가
-    longitudinal_ok: bool = False   # 종 위상을 믿어도 되는가
+    longitudinal_ok: bool = False   # 종 위상을 믿어도 되는가 (아래 상수 참조)
+    lon_quality: float = 0.0   # 종 위상 집중도 (진단용)
     at_row_end: bool = False   # 열 끝(절대 기준을 잡을 수 있는 자리)
+
+
+# 종 위상을 채택할 최소 집중도. 실측상 이 값에 도달하는 대역이 없어서 사실상
+# 꺼져 있다 — 값을 낮추면 편의가 실린 보정이 들어온다. 근거는 estimate() 주석.
+LONGITUDINAL_MIN_QUALITY = 0.85
 
 
 def _wrap(v, period):
@@ -64,17 +73,39 @@ def _phase(vals, period):
     return off, r
 
 
-def structure_points(points_base, agl=(0.30, 1.90), max_range=25.0):
-    """스캔에서 '열을 이루는' 점만 남긴다 (지면·하늘 제거).
+def structure_points(points_base, agl=(0.35, 1.30), max_range=25.0,
+                     n_bins=12, ground_pct=15.0):
+    """스캔에서 **줄기**만 남긴다 (지면·수관 제거).
 
-    points_base: (N,3) 로봇 기준 좌표. z 는 기체 기준 높이.
+    z 를 그대로 자르면 안 된다 — 점군은 센서 기준이라 지면이 z≈-0.6 에 있고,
+    계단식 지형에서는 그 값이 거리에 따라 달라진다. 실제로 z∈[0.3,1.9] 로
+    자르면 줄기가 아니라 **수관**이 남는데, 수관은 열 방향으로 연속이라
+    종방향 위상이 통째로 무의미해진다(이번에 실제로 겪은 결함이다).
+
+    그래서 거리 구간마다 지면 높이를 스캔 자체에서 추정하고, 그 위 높이(AGL)로
+    자른다. 줄기 대(0.35~1.30 m)는 traversability.obstacle_layers 와 같은 값이다.
     """
     p = np.asarray(points_base, dtype=float)
     if p.size == 0:
         return p.reshape(0, 3)
     d = np.hypot(p[:, 0], p[:, 1])
-    m = (p[:, 2] >= agl[0]) & (p[:, 2] <= agl[1]) & (d <= max_range) & (d > 0.5)
-    return p[m]
+    near = (d <= max_range) & (d > 0.8)
+    if near.sum() < 50:
+        return p[:0]
+    p, d = p[near], d[near]
+
+    edges = np.linspace(d.min(), d.max(), n_bins + 1)
+    keep = np.zeros(len(p), dtype=bool)
+    for i in range(n_bins):
+        m = (d >= edges[i]) & (d < edges[i + 1] if i < n_bins - 1 else d <= edges[i + 1])
+        if m.sum() < 20:
+            continue
+        gz = np.percentile(p[m, 2], ground_pct)      # 이 거리대의 지면 높이
+        h = p[m, 2] - gz
+        sel = (h >= agl[0]) & (h <= agl[1])
+        idx = np.flatnonzero(m)[sel]
+        keep[idx] = True
+    return p[keep]
 
 
 def estimate(points_base, pose, geom, *,
@@ -131,11 +162,21 @@ def estimate(points_base, pose, geom, *,
     wy = y + s * px + c * py
     fix.y_span = float(wy.max() - wy.min()) if len(wy) else 0.0
 
-    # ── 종 보정: 나무 간격 위상 (잠금만) ────────────────────────────────────
+    # ── 종 보정: 실측으로 기각됐다 ──────────────────────────────────────────
+    # 2026-08-02 실측(scripts/40_probe_agl_band.py): 참값 자세에서도 종 위상이
+    # 어느 높이 대역에서든 -0.34 ~ +0.41 m 로 흔들리고 집중도가 0.04~0.55 에
+    # 그친다. 원인은 기하다 — 줄기 반경이 0.035 m 뿐이라 25 m 밖에서는 거의
+    # 맞지 않고, 높은 대역에서 잡히는 것은 **수관**인데 수관은 열 방향으로
+    # 연속이고 앞면만 보여 계통 편의가 생긴다.
+    #
+    # 편의가 실린 보정은 보정을 안 하느니만 못하다. 그래서 종방향은 위상으로
+    # 잡지 않고 오도메트리에 맡기며, 절대 기준은 열이 끝나는 지점에서 잡는다.
+    # (값은 진단용으로 계속 계산해 둔다 — 다른 수종·다른 센서에서는 달라진다)
     T = float(geom.get("tree_spacing", 1.5))
     off_y, conc_y = _phase(wy, T)
     fix.dy = -_wrap(off_y, T)
-    fix.longitudinal_ok = bool(conc_y >= min_quality)
+    fix.lon_quality = float(conc_y)
+    fix.longitudinal_ok = bool(conc_y >= LONGITUDINAL_MIN_QUALITY)
 
     # ── 열 끝 판정 ──────────────────────────────────────────────────────────
     # 종방향은 나무 간격(1.5 m)으로 앨리어싱되므로 위상만으로는 절대 위치를

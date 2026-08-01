@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>과수원 통합관제</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --line:#2a323d; --text:#e6edf3; --dim:#8b949e;
+  --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#2f81f7; --mission:#a371f7;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font-family:"Noto Sans KR",system-ui,-apple-system,sans-serif}
+body{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+
+header{display:flex;align-items:center;gap:10px;padding:9px 14px;flex-wrap:wrap;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.2px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+  font-size:12px;font-weight:600;background:#21262d;border:1px solid var(--line)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
+.spacer{flex:1}
+#allstop{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:700;
+  padding:6px 14px;letter-spacing:.5px}
+
+#fleet{display:flex;gap:6px;flex-wrap:wrap}
+.rtab{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:7px;
+  font-size:12px;font-weight:600;cursor:pointer;background:#21262d;
+  border:1px solid var(--line)}
+.rtab.sel{border-color:var(--accent);background:#1b2a41}
+.rtab.estop{border-color:var(--bad)}
+
+main{display:grid;grid-template-columns:1fr 344px;min-height:0}
+#mapwrap{position:relative;min-height:0;background:#0a0e14}
+canvas{display:block;width:100%;height:100%}
+#hud,#legend{position:absolute;font-size:12px;color:var(--dim);
+  background:rgba(13,17,23,.80);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+#hud{left:12px;top:12px;line-height:1.6;pointer-events:none}
+#hud b{color:var(--text);font-weight:600}
+#legend{right:12px;bottom:12px;font-size:11px}
+#legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;
+  vertical-align:-1px}
+
+aside{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;
+  padding:12px;display:flex;flex-direction:column;gap:11px}
+section{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#11161d}
+section h2{margin:0 0 8px;font-size:12px;font-weight:700;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.6px;display:flex;justify-content:space-between}
+.row{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:3px 0}
+.row span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
+.muted{color:var(--dim)}
+
+button,input{font:inherit;font-size:13px;color:var(--text);background:#21262d;
+  border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+button{font-weight:600;cursor:pointer}
+button:hover:not(:disabled){border-color:#4b5563;background:#262c36}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.wide{width:100%}
+.btnrow{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+input{width:100%}
+
+#estop{width:100%;font-size:16px;padding:14px;letter-spacing:1px}
+#estopState{margin-top:8px;font-size:12px;text-align:center}
+
+.alleys{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-bottom:8px}
+.alleys label{display:flex;align-items:center;justify-content:center;font-size:12px;
+  padding:6px 0;border:1px solid var(--line);border-radius:6px;cursor:pointer;user-select:none}
+.alleys input{display:none;width:auto}
+.alleys label:has(input:checked){background:var(--mission);border-color:var(--mission);color:#fff}
+
+#pad{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px}
+#pad button{padding:12px 0}
+#pad .blank{visibility:hidden}
+kbd{background:#21262d;border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:4px;padding:1px 5px;font-size:11px;font-family:inherit}
+
+#log{max-height:170px;overflow-y:auto;font-size:12px;line-height:1.5}
+#log div{padding:3px 0;border-bottom:1px solid #1c222b}
+#log .critical{color:var(--bad);font-weight:600}
+#log .warn{color:var(--warn)}
+#log time{color:var(--dim);margin-right:6px;font-variant-numeric:tabular-nums}
+#log .rid{color:var(--accent);margin-right:5px}
+
+#addForm{display:none;gap:6px;flex-direction:column}
+#addForm.on{display:flex}
+
+@media (max-width:860px){ main{grid-template-columns:1fr;grid-template-rows:44vh 1fr} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>과수원 통합관제</h1>
+  <div id="fleet"></div>
+  <button id="addBtn" title="로봇 추가">+ 로봇</button>
+  <div class="spacer"></div>
+  <span class="pill" id="secPill">전송 —</span>
+  <span class="pill" id="latPill">지연 —</span>
+  <button id="allstop">■ 전체 정지</button>
+</header>
+
+<main>
+  <div id="mapwrap">
+    <canvas id="map"></canvas>
+    <div id="hud">
+      선택 <b id="hSel">—</b><br>
+      위치 <b id="hPos">—</b> · 방위 <b id="hYaw">—</b> · 기울기 <b id="hTilt">—</b><br>
+      임무 <b id="hMis">없음</b>
+    </div>
+    <div id="legend">
+      <i style="background:#3d4756"></i>장애물(나무·구조물)<br>
+      <i style="background:#2f81f7"></i>선택 로봇 · 궤적<br>
+      <i style="background:#3fb950"></i>다른 로봇<br>
+      <i style="background:#a371f7"></i>임무 경로<br>
+      <i style="background:#333c47"></i>통로 중심선
+    </div>
+  </div>
+
+  <aside>
+    <section id="addForm">
+      <h2>로봇 추가</h2>
+      <input id="fUrl" placeholder="https://192.168.0.42:8080">
+      <input id="fTok" placeholder="접속 토큰 (없으면 비움)">
+      <div class="btnrow">
+        <button id="fAdd" class="primary">추가</button>
+        <button id="fCancel">취소</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>비상정지 <span class="muted" id="eWho"></span></h2>
+      <button id="estop" class="danger">■ 비상정지</button>
+      <div id="estopState" class="muted">—</div>
+      <button id="clearEstop" class="wide" style="margin-top:6px" disabled>래치 해제</button>
+    </section>
+
+    <section data-needs="drive_mission">
+      <h2>임무</h2>
+      <div class="alleys" id="alleyBox"></div>
+      <div class="btnrow" style="margin-bottom:6px">
+        <button id="selAll">전체</button><button id="selNone">해제</button>
+      </div>
+      <button id="mStart" class="primary wide">임무 시작</button>
+      <div class="btnrow" style="margin-top:6px">
+        <button id="mPause">일시정지</button><button id="mResume">재개</button>
+      </div>
+      <button id="mCancel" class="wide" style="margin-top:6px">취소</button>
+      <div class="row" style="margin-top:8px"><span class="muted">진행</span><span id="mProg">—</span></div>
+      <div class="row"><span class="muted">현재</span><span id="mPhase">—</span></div>
+    </section>
+
+    <section data-needs="drive_teleop">
+      <h2>원격 조종</h2>
+      <button id="teleopBtn" class="wide">조종 모드 켜기</button>
+      <div id="pad">
+        <div class="blank"></div><button data-v="1" data-w="0">▲</button><div class="blank"></div>
+        <button data-v="0" data-w="1">◀</button>
+        <button data-v="0" data-w="0">■</button>
+        <button data-v="0" data-w="-1">▶</button>
+        <div class="blank"></div><button data-v="-1" data-w="0">▼</button><div class="blank"></div>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.6">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 또는 화살표 · <kbd>Esc</kbd> 비상정지<br>
+        손을 떼면 <b id="dmMs">400</b> ms 안에 자동 정지합니다 (데드맨).
+      </div>
+    </section>
+
+    <section data-needs="telemetry_health">
+      <h2>상태</h2>
+      <div class="row"><span class="muted">라이다</span><span id="hzL">—</span></div>
+      <div class="row"><span class="muted">IMU</span><span id="hzI">—</span></div>
+      <div class="row"><span class="muted">SLAM</span><span id="hzO">—</span></div>
+      <div class="row"><span class="muted">SLAM 이격</span><span id="gap">—</span></div>
+      <div class="row"><span class="muted">맵 셀</span><span id="mcells">—</span></div>
+      <div id="warns" style="margin-top:6px"></div>
+    </section>
+
+    <section>
+      <h2>탑재 기능 <span class="muted" id="featCount"></span></h2>
+      <div id="featList" style="font-size:12px;line-height:1.7"></div>
+    </section>
+
+    <section>
+      <h2>이벤트 <span class="muted">전체 로봇</span></h2>
+      <div id="log"></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+"use strict";
+const V = 1, $ = id => document.getElementById(id);
+const LS = "orchard.fleet.v1";
+
+// ── 플릿 상태 ───────────────────────────────────────────────────────────────
+// 관제는 로봇마다 WebSocket 을 따로 연다. 중간 허브를 두지 않는 이유는
+// 로봇이 하나뿐일 때 부품을 늘리지 않기 위해서다. 로봇이 늘어나면 각 로봇이
+// 허브로 걸어 나가는 구조(MQTT 브로커)로 바꾸는데, 규약이 그대로라 화면은 유지된다.
+const robots = new Map();   // key(url) → {url, token, id, ws, geom, state, health,
+                            //             mapCell, mapIJ, track, lastMsg, seq, status}
+let selKey = null;
+const keys = new Set();
+let teleopOn = false, padV = 0, padW = 0;
+
+function endpoints(){
+  try {
+    const v = JSON.parse(localStorage.getItem(LS));
+    if (Array.isArray(v) && v.length) return v;
+  } catch {}
+  // 기본값 — 이 페이지를 낸 로봇 자신. 토큰은 URL 질의문자열에서 받는다.
+  const t = new URLSearchParams(location.search).get("token") || "";
+  return [{url: location.origin, token: t}];
+}
+function saveEndpoints(){
+  localStorage.setItem(LS, JSON.stringify(
+    [...robots.values()].map(r => ({url: r.url, token: r.token}))));
+}
+
+function addRobot(url, token){
+  url = url.replace(/\/+$/, "");
+  if (robots.has(url)) return;
+  const r = {url, token: token || "", id: url.replace(/^https?:\/\//, ""),
+             ws: null, geom: null, features: null, state: null, health: null,
+             mapCell: 0.25, mapIJ: [], track: [], lastMsg: 0, seq: 0,
+             status: "연결 중", cls: ""};
+  robots.set(url, r);
+  if (!selKey) selKey = url;
+  connect(r);
+  renderFleet(); saveEndpoints();
+}
+function removeRobot(key){
+  const r = robots.get(key);
+  if (r?.ws) { try { r.ws.close(); } catch {} }
+  robots.delete(key);
+  if (selKey === key) selKey = robots.keys().next().value || null;
+  renderFleet(); saveEndpoints(); syncPanels(); draw();
+}
+const sel = () => (selKey ? robots.get(selKey) : null);
+
+// ── 연결 ────────────────────────────────────────────────────────────────────
+function connect(r){
+  const base = r.url.replace(/^http/, "ws") + "/ws";
+  const wsUrl = base + (r.token ? "?token=" + encodeURIComponent(r.token) : "");
+  let ws;
+  try { ws = new WebSocket(wsUrl); } catch { r.status = "주소 오류"; r.cls = "bad"; return; }
+  r.ws = ws;
+  ws.onopen = () => { r.status = "연결됨"; r.cls = "ok"; renderFleet(); updateSec(); };
+  ws.onclose = ev => {
+    // 1006 + 즉시 종료는 대개 401(토큰 불일치)이다. 브라우저가 상태코드를 안 준다.
+    r.status = r.geom ? "끊김 — 재연결" : "인증 실패?";
+    r.cls = "bad"; r.state = null;
+    renderFleet(); syncPanels(); draw();
+    setTimeout(() => { if (robots.has(r.url)) connect(r); }, 2000);
+  };
+  ws.onerror = () => { r.cls = "bad"; renderFleet(); };
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.v !== V) return;
+    r.lastMsg = performance.now();
+    const kind = (m.topic || "").split("/").pop();
+    if (kind === "hello"){ r.geom = m.payload; r.id = m.payload.robot_id;
+                           r.features = m.payload.features || [];
+                           if (r.url === selKey){ buildAlleys(r); applyFeatures(r); }
+                           fitView(); renderFleet(); }
+    else if (kind === "state"){ r.state = m.payload; r.track = m.payload.track || r.track;
+                                r.cls = m.payload.estop ? "bad" :
+                                        (m.payload.paused ? "warn" : "ok");
+                                renderFleet(); if (r.url === selKey) syncPanels(); draw(); }
+    else if (kind === "health"){ r.health = m.payload; if (r.url === selKey) syncHealth(r); }
+    else if (kind === "map"){ r.mapCell = m.payload.cell; r.mapIJ = m.payload.ij || []; draw(); }
+    else if (kind === "event") logEvent(r, m.payload);
+  };
+}
+function send(r, suffix, payload){
+  if (!r?.ws || r.ws.readyState !== 1) return;
+  r.ws.send(JSON.stringify({v:V, topic:`orchard/${r.id}/${suffix}`,
+                            ts:Date.now()*1e6, seq:++r.seq, payload}));
+}
+const cmd = (r, c, extra={}) => send(r, "cmd", Object.assign({cmd:c}, extra));
+
+// ── 플릿 탭 ─────────────────────────────────────────────────────────────────
+function renderFleet(){
+  const box = $("fleet"); box.innerHTML = "";
+  for (const [k, r] of robots){
+    const d = document.createElement("div");
+    d.className = "rtab" + (k === selKey ? " sel" : "") +
+                  (r.state?.estop ? " estop" : "");
+    d.innerHTML = `<span class="dot ${r.cls}"></span>${r.id}` +
+      (r.state ? ` <span class="muted">${modeName(r.state.mode)}</span>` : "");
+    d.onclick = () => { selKey = k; renderFleet(); buildAlleys(r); applyFeatures(r);
+                        syncPanels(); syncHealth(r); updateSec(); draw(); };
+    d.oncontextmenu = e => { e.preventDefault();
+      if (confirm(`${r.id} 을 관제 목록에서 제거합니까?`)) removeRobot(k); };
+    d.title = `${r.url} — ${r.status}\n(우클릭: 목록에서 제거)`;
+    box.appendChild(d);
+  }
+}
+function updateSec(){
+  const r = sel();
+  const tls = r && r.url.startsWith("https");
+  const tok = r && !!r.token;
+  $("secPill").textContent = `전송 ${tls ? "TLS" : "평문"} · 인증 ${tok ? "토큰" : "없음"}`;
+  $("secPill").style.color = (tls && tok) ? "" : "var(--warn)";
+}
+
+// ── 패널 동기화 ─────────────────────────────────────────────────────────────
+function buildAlleys(r){
+  const box = $("alleyBox");
+  if (!r?.geom){ box.innerHTML = ""; return; }
+  box.innerHTML = "";
+  for (let k = 0; k < r.geom.alleys; k++){
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" value="${k}" checked><span>${k}</span>`;
+    box.appendChild(l);
+  }
+  $("dmMs").textContent = r.geom.deadman_ms || 400;
+}
+// 로봇이 어떤 기능을 싣고 있는지에 따라 패널을 켜고 끈다.
+// 기능을 features 목록에서 빼면 화면도 자동으로 줄어든다 — 대시보드를 안 고친다.
+function applyFeatures(r){
+  const have = new Set((r?.features || []).map(f => f.name));
+  document.querySelectorAll("section[data-needs]").forEach(sec => {
+    const need = sec.dataset.needs;
+    // 기능 목록을 안 주는 구형 에이전트와도 붙어야 하므로, 목록이 비면 다 보여준다
+    sec.style.display = (!r?.features || !r.features.length || have.has(need))
+      ? "" : "none";
+  });
+  const list = $("featList");
+  if (!r?.features?.length){
+    list.innerHTML = '<span class="muted">기능 목록 없음 (구형 에이전트)</span>';
+    $("featCount").textContent = "";
+    return;
+  }
+  $("featCount").textContent = `${r.features.length}개`;
+  list.innerHTML = r.features.map(f =>
+    `<div><b>${f.name}</b> <span class="muted">v${f.version}</span>` +
+    (f.summary ? `<br><span class="muted" style="font-size:11px">${f.summary}</span>` : "") +
+    `</div>`).join("");
+}
+
+function syncPanels(){
+  const r = sel(), p = r?.state;
+  $("eWho").textContent = r ? r.id : "";
+  $("hSel").textContent = r ? r.id : "—";
+  if (!p){
+    $("estopState").textContent = "—"; $("clearEstop").disabled = true;
+    $("hPos").textContent = $("hYaw").textContent = $("hTilt").textContent = "—";
+    $("mProg").textContent = $("mPhase").textContent = "—";
+    $("hMis").textContent = "없음"; return;
+  }
+  $("estopState").textContent = p.estop ? ("비상정지 — " + (p.estop_reason||"")) :
+                                (p.paused ? "일시정지" : "정상");
+  $("estopState").style.color = p.estop ? "var(--bad)" :
+                                (p.paused ? "var(--warn)" : "var(--dim)");
+  $("clearEstop").disabled = !p.estop;
+  if (p.pose){
+    $("hPos").textContent = `${p.pose.x.toFixed(2)}, ${p.pose.y.toFixed(2)} m`;
+    $("hYaw").textContent = (p.pose.yaw*180/Math.PI).toFixed(0)+"°";
+  }
+  $("hTilt").textContent = (p.tilt ?? 0).toFixed(1)+"°";
+  const m = p.mission;
+  if (m){
+    $("mProg").textContent = `${m.idx}/${m.total} · ${m.elapsed.toFixed(0)}s`;
+    $("mPhase").textContent = `통로 ${m.alley ?? "—"} · ${phaseName(m.phase)}`;
+    $("hMis").textContent = `통로 [${m.alleys.join(",")}] ${m.idx}/${m.total}`;
+  } else { $("mProg").textContent = $("mPhase").textContent = "—";
+           $("hMis").textContent = "없음"; }
+}
+function syncHealth(r){
+  const p = r?.health;
+  const f = (v,u,lim) => v == null ? "—" :
+    (v < lim ? `<span style="color:var(--bad)">${v} ${u}</span>` : `${v} ${u}`);
+  $("hzL").innerHTML = f(p?.lidar_hz,"Hz",5);
+  $("hzI").innerHTML = f(p?.imu_hz,"Hz",100);
+  $("hzO").innerHTML = f(p?.lio_hz,"Hz",5);
+  $("gap").textContent = p?.slam_gap == null ? "—" : p.slam_gap.toFixed(2)+" m";
+  $("mcells").textContent = (p?.map_cells||0).toLocaleString();
+  $("warns").innerHTML = (p?.warnings||[]).map(w =>
+    `<div style="color:var(--warn);font-size:12px">⚠ ${w}</div>`).join("");
+}
+function logEvent(r, e){
+  const d = document.createElement("div");
+  d.className = e.level || "info";
+  const t = new Date(e.t*1000).toLocaleTimeString("ko-KR",{hour12:false});
+  d.innerHTML = `<time>${t}</time><span class="rid">${r.id}</span>${e.msg}`;
+  const log = $("log"); log.prepend(d);
+  while (log.children.length > 80) log.lastChild.remove();
+}
+const modeName = m => ({idle:"대기",mission:"임무",teleop:"조종",estop:"비상정지"}[m] || m || "—");
+const phaseName = k => ({traverse:"통로 통과",exit:"통로 이탈",cross:"횡이동",
+                         enter:"통로 진입",done:"완료"}[k] || k || "—");
+
+// ── 지도 ────────────────────────────────────────────────────────────────────
+const cv = $("map"), ctx = cv.getContext("2d");
+let view = {cx:0, cy:0, scale:8};
+
+function fitView(){
+  const g = sel()?.geom || [...robots.values()].find(r => r.geom)?.geom;
+  if (!g) return;
+  const w = g.rows * g.row_spacing + 10;
+  const h = g.col_len + 2*g.headland + 10;
+  view.cx = g.x0 + (g.rows-1)*g.row_spacing/2;
+  view.cy = 0;
+  view.scale = Math.min(cv.width/w, cv.height/h) * 0.92;
+}
+const W2S = (x,y) => [cv.width/2 + (x-view.cx)*view.scale,
+                      cv.height/2 - (y-view.cy)*view.scale];
+function resize(){
+  const r = cv.parentElement.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  cv.width = r.width*d; cv.height = r.height*d;
+  cv.style.width = r.width+"px"; cv.style.height = r.height+"px";
+  fitView(); draw();
+}
+addEventListener("resize", resize);
+
+function drawRobot(r, isSel){
+  const p = r.state?.pose;
+  if (!p) return;
+  const s = view.scale, [px,py] = W2S(p.x,p.y), L = Math.max(7, s*0.6);
+  ctx.save(); ctx.translate(px,py); ctx.rotate(-p.yaw);
+  ctx.fillStyle = r.state.estop ? "#f85149"
+                : r.state.paused ? "#d29922"
+                : isSel ? "#2f81f7" : "#3fb950";
+  ctx.beginPath(); ctx.moveTo(L,0); ctx.lineTo(-L*0.6,L*0.6);
+  ctx.lineTo(-L*0.3,0); ctx.lineTo(-L*0.6,-L*0.6); ctx.closePath(); ctx.fill();
+  if (isSel){ ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = isSel ? "#e6edf3" : "#8b949e";
+  ctx.font = `${Math.max(10, s*0.5)}px sans-serif`;
+  ctx.fillText(r.id, px + L + 3, py - L*0.4);
+}
+
+function draw(){
+  ctx.fillStyle = "#0a0e14"; ctx.fillRect(0,0,cv.width,cv.height);
+  const g = sel()?.geom || [...robots.values()].find(r => r.geom)?.geom;
+  if (!g) return;
+  const s = view.scale;
+
+  ctx.lineWidth = Math.max(1, s*0.03);
+  for (let k = 0; k < g.rows; k++){
+    const x = g.x0 + k*g.row_spacing;
+    const [a,b] = W2S(x, -g.col_len/2), [c,d] = W2S(x, g.col_len/2);
+    ctx.strokeStyle = "#1e242c"; ctx.beginPath(); ctx.moveTo(a,b); ctx.lineTo(c,d); ctx.stroke();
+  }
+  ctx.setLineDash([s*0.4, s*0.4]);
+  for (let k = 0; k < g.alleys; k++){
+    const x = g.x0 + (k+0.5)*g.row_spacing;
+    const [a,b] = W2S(x, -g.col_len/2), [c,d] = W2S(x, g.col_len/2);
+    ctx.strokeStyle = "#333c47"; ctx.beginPath(); ctx.moveTo(a,b); ctx.lineTo(c,d); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  const [lx,ly] = W2S(g.x0 - g.row_spacing/2, g.col_len/2);
+  const [rx,ry] = W2S(g.x0 + (g.rows-0.5)*g.row_spacing, -g.col_len/2);
+  ctx.strokeStyle = "#242c36"; ctx.lineWidth = 1;
+  ctx.strokeRect(lx, ly, rx-lx, ry-ly);
+
+  // 장애물 — 모든 로봇이 본 것을 겹쳐 그린다 (같은 밭이므로 서로 보완된다)
+  for (const r of robots.values()){
+    const cs = Math.max(1, r.mapCell*s);
+    ctx.fillStyle = "#3d4756";
+    for (let i = 0; i < r.mapIJ.length; i += 2){
+      const [px,py] = W2S(r.mapIJ[i]*r.mapCell, r.mapIJ[i+1]*r.mapCell);
+      ctx.fillRect(px, py-cs, cs, cs);
+    }
+  }
+
+  // 임무 경로 (선택 로봇)
+  const srv = sel();
+  if (srv?.state?.mission && srv.geom){
+    ctx.strokeStyle = "#a371f7"; ctx.lineWidth = Math.max(1.5, s*0.06);
+    ctx.globalAlpha = .75; ctx.beginPath();
+    srv.state.mission.alleys.forEach((k,i) => {
+      const x = srv.geom.x0 + (k+0.5)*srv.geom.row_spacing, up = i % 2 === 0;
+      const [a,b] = W2S(x, up ? -srv.geom.col_len/2 : srv.geom.col_len/2);
+      const [c,d] = W2S(x, up ?  srv.geom.col_len/2 : -srv.geom.col_len/2);
+      ctx.moveTo(a,b); ctx.lineTo(c,d);
+    });
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+
+  // 궤적
+  for (const [k,r] of robots){
+    if (r.track.length < 2) continue;
+    ctx.strokeStyle = k === selKey ? "#2f81f7" : "#3fb950";
+    ctx.lineWidth = Math.max(1, s*0.05);
+    ctx.globalAlpha = k === selKey ? .55 : .32;
+    ctx.beginPath();
+    r.track.forEach((p,i) => { const [a,b] = W2S(p[0],p[1]);
+      i ? ctx.lineTo(a,b) : ctx.moveTo(a,b); });
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  for (const [k,r] of robots) if (k !== selKey) drawRobot(r, false);
+  if (srv) drawRobot(srv, true);
+}
+
+// ── 조작 ────────────────────────────────────────────────────────────────────
+$("allstop").onclick = () => {
+  // 관제실 전체 정지 — 연결된 모든 로봇에 동시에 보낸다
+  let n = 0;
+  for (const r of robots.values()){ cmd(r, "estop", {reason:"관제 전체 정지"}); n++; }
+  if (!n) alert("연결된 로봇이 없습니다.");
+};
+$("estop").onclick = () => { const r = sel(); r && cmd(r, "estop", {reason:"관제 버튼"}); };
+$("clearEstop").onclick = () => {
+  const r = sel(); if (!r) return;
+  if (confirm(`${r.id} 의 비상정지를 해제합니다. 로봇 주변이 안전한지 확인하셨습니까?`))
+    cmd(r, "clear_estop");
+};
+$("selAll").onclick  = () => document.querySelectorAll("#alleyBox input").forEach(i=>i.checked=true);
+$("selNone").onclick = () => document.querySelectorAll("#alleyBox input").forEach(i=>i.checked=false);
+$("mStart").onclick = () => {
+  const r = sel(); if (!r) return;
+  const a = [...document.querySelectorAll("#alleyBox input:checked")].map(i=>+i.value);
+  if (!a.length) return alert("통로를 하나 이상 선택하세요.");
+  cmd(r, "mission_start", {alleys:a, mode:"mapping"});
+};
+$("mPause").onclick  = () => { const r = sel(); r && cmd(r, "mission_pause"); };
+$("mResume").onclick = () => { const r = sel(); r && cmd(r, "mission_resume"); };
+$("mCancel").onclick = () => { const r = sel(); r && cmd(r, "mission_cancel"); };
+
+$("teleopBtn").onclick = () => {
+  const r = sel(); if (!r) return;
+  teleopOn = !teleopOn;
+  cmd(r, "set_mode", {mode: teleopOn ? "teleop" : "idle"});
+  $("teleopBtn").textContent = teleopOn ? "조종 모드 끄기" : "조종 모드 켜기";
+  $("teleopBtn").className = "wide" + (teleopOn ? " primary" : "");
+};
+
+$("addBtn").onclick   = () => $("addForm").classList.add("on");
+$("fCancel").onclick  = () => $("addForm").classList.remove("on");
+$("fAdd").onclick     = () => {
+  const u = $("fUrl").value.trim();
+  if (!/^https?:\/\//.test(u)) return alert("http:// 또는 https:// 로 시작하는 주소를 넣으세요.");
+  addRobot(u, $("fTok").value.trim());
+  $("fUrl").value = $("fTok").value = ""; $("addForm").classList.remove("on");
+};
+
+// 데드맨 — 누르고 있는 동안에만 20 Hz 로 보낸다. 떼면 송신이 멈추고 로봇이 스스로 선다.
+document.querySelectorAll("#pad button").forEach(b => {
+  const set = (v,w) => { padV=v; padW=w; };
+  b.addEventListener("pointerdown", e => { e.preventDefault(); set(+b.dataset.v, +b.dataset.w); });
+  ["pointerup","pointerleave","pointercancel"].forEach(ev =>
+    b.addEventListener(ev, () => set(0,0)));
+});
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if ("wasd".includes(k) || e.key.startsWith("Arrow")){ keys.add(k); e.preventDefault(); }
+  if (e.key === "Escape"){ const r = sel(); r && cmd(r, "estop", {reason:"ESC 키"}); }
+});
+addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => keys.clear());
+
+setInterval(() => {
+  if (!teleopOn) return;
+  const r = sel(); if (!r?.geom) return;
+  let v = padV, w = padW;
+  if (keys.has("w") || keys.has("arrowup"))    v =  1;
+  if (keys.has("s") || keys.has("arrowdown"))  v = -1;
+  if (keys.has("a") || keys.has("arrowleft"))  w =  1;
+  if (keys.has("d") || keys.has("arrowright")) w = -1;
+  if (v === 0 && w === 0) return;    // 입력 없으면 아예 안 보낸다 → 데드맨 발동
+  const lim = r.geom.limits || {teleop_v:0.8, teleop_w:1.2};
+  send(r, "teleop", {v: v*lim.teleop_v, w: w*lim.teleop_w});
+}, 50);
+
+// 지연 표시 — 별도 PC 운용에서 회선 상태를 바로 알 수 있어야 한다
+setInterval(() => {
+  const r = sel();
+  if (!r?.lastMsg){ $("latPill").textContent = "지연 —"; return; }
+  const age = performance.now() - r.lastMsg;
+  $("latPill").textContent = age > 3000 ? "무응답" : `갱신 ${age.toFixed(0)} ms 전`;
+  $("latPill").style.color = age > 3000 ? "var(--bad)" : (age > 1200 ? "var(--warn)" : "");
+}, 300);
+
+endpoints().forEach(e => addRobot(e.url, e.token));
+resize(); updateSec();
+</script>
+</body>
+</html>

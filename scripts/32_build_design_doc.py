@@ -11,11 +11,13 @@ from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
-MD = Path("docs/superpowers/specs/2026-08-01-orchard-fleet-3tier-design.md")
+import sys
+_a = sys.argv[1:]
+MD = Path(_a[0]) if _a else Path("docs/superpowers/specs/2026-08-01-orchard-fleet-3tier-design.md")
 OUT_DIR = Path("docs/design")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 TMP = OUT_DIR / "_pandoc_raw.docx"
-OUT = OUT_DIR / "통합관제_설계서_v1.docx"
+OUT = OUT_DIR / (_a[1] if len(_a) > 1 else "통합관제_설계서_v1.docx")
 
 # ── 1. pandoc 변환 ──────────────────────────────────────────────────────────
 pypandoc.convert_file(

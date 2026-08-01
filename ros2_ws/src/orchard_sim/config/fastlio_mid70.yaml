@@ -1,0 +1,47 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 2          # avia 기본 3 → 2. 과수원은 통로가 좁아 밀도가 필요하다
+        max_iteration: 4
+        # 복셀 0.5 m 는 폭 1.9 m 통로에서 너무 거칠다. 중심선 추출이 목적이므로 0.2 m.
+        filter_size_surf: 0.2
+        filter_size_map: 0.2
+        cube_side_length: 200.0      # 월드가 120 m 이므로 전부 담긴다
+        runtime_pos_log_enable: false
+
+        common:
+            lid_topic:  "/livox/lidar_custom"   # livox_sim_bridge 가 내는 CustomMsg
+            imu_topic:  "/imu"                  # MID-70 에는 IMU 가 없다 — 로봇에 별도 IMU 를 달았다
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 1            # 1 = Livox
+            scan_line: 1             # MID-70 은 단일 레이저 (브리지가 line=0 고정)
+            # ★ avia 기본값 4.0 을 그대로 쓰면 안 된다. 열간이 3.5 m 라 통로 양옆 나무가
+            #   1.75 m 거리에 있고, blind 4.0 이면 그 나무들이 통째로 버려진다.
+            blind: 0.5
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 75.0         # MID-70 원형 FOV 70.4° + 여유
+            det_range: 100.0         # 과수원 규모. 450 은 불필요하게 크다
+            extrinsic_est_en: false
+            # IMU 기준 LiDAR 위치. model.sdf: imu_link (0,0,0.245), livox_frame (0.275,0,0.645)
+            extrinsic_T: [ 0.275, 0.0, 0.400 ]
+            extrinsic_R: [ 1., 0., 0.,
+                           0., 1., 0.,
+                           0., 0., 1. ]
+
+        publish:
+            path_en: true
+            scan_publish_en: true
+            dense_publish_en: true
+            scan_bodyframe_pub_en: false
+
+        pcd_save:
+            pcd_save_en: false       # /cloud_registered 를 직접 받아 기록한다
+            interval: -1
