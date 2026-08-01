@@ -39,3 +39,18 @@ def test_logout_requires_csrf(client):
     r = client.post("/api/v1/auth/logout", headers={"X-CSRF": csrf})
     assert r.status_code == 200
     assert client.get("/api/v1/auth/me").status_code == 401               # 세션 소멸
+
+
+def test_expired_session_rejected_and_deleted(client, app):
+    import datetime as dt
+
+    from fleet_server.models import AuthSession
+
+    do_login(client)
+    with app.state.session_factory() as db:
+        row = db.query(AuthSession).one()
+        row.expires_at = dt.datetime(2020, 1, 1)      # tz-naive 과거 (SQLite 가 벗긴 형태)
+        db.commit()
+    assert client.get("/api/v1/auth/me").status_code == 401
+    with app.state.session_factory() as db:
+        assert db.query(AuthSession).count() == 0      # 만료 행 삭제 확인
