@@ -37,6 +37,13 @@ STAGE_LATCHED = "latched"                  # 정지 래치, 양쪽 다 미완
 STAGE_AWAITING_LOCAL = "awaiting_local"    # 관제 승인됨 → 현장 확인 대기
 STAGE_AWAITING_REMOTE = "awaiting_remote"  # 현장 확인됨 → 관제 승인 대기
 
+# 정비·시운전 — 사람이 기체 곁에 있는 상태
+SERVICE_NONE = ""
+SERVICE_MAINTENANCE = "maintenance"      # 정비 중 — 원격 구동 전면 차단
+SERVICE_COMMISSIONING = "commissioning"  # 시운전 — 속도 제한, 감시 필수
+SERVICE_MODES = (SERVICE_NONE, SERVICE_MAINTENANCE, SERVICE_COMMISSIONING)
+COMMISSIONING_SPEED_FACTOR = 0.3
+
 
 class SafetyArbiter:
 
@@ -54,6 +61,14 @@ class SafetyArbiter:
         self.link_ok = False
         self.last_client_seen = 0.0
         self._last_gate = ""
+
+        # 정비·시운전 — 사람이 기체에 붙어 있는 시간대.
+        # 사망 사고는 자율주행 중이 아니라 점검·시운전 중이거나 정지 직후 자동
+        # 기동 중에 일어난다. 그래서 이 상태에서는 원격 구동을 아예 막는다.
+        self.service_mode = SERVICE_NONE
+        self.tilt_warn_deg = max(0.0, self.tilt_limit - 5.0)
+        self.tilt_exposure_s = 0.0      # 경고선 위에 머문 누적 시간 (전복 위험 노출)
+        self._tilt_since = None
 
         # 2단계 해제 상태
         self.estop_stage = STAGE_CLEAR
@@ -73,7 +88,31 @@ class SafetyArbiter:
                         reset_window_s=self.reset_window_s,
                         needs_remote_ok=self.estop and not self._remote_ok_at,
                         needs_local_ok=self.estop and not self._local_ok_at,
-                        last_round_trip_s=self.last_round_trip_s)
+                        last_round_trip_s=self.last_round_trip_s,
+                        service_mode=self.service_mode,
+                        tilt_warn_deg=self.tilt_warn_deg,
+                        tilt_exposure_s=round(self.tilt_exposure_s, 1))
+
+    # ── 정비·시운전 ─────────────────────────────────────────────────────────
+    def set_service_mode(self, mode: str, who: str = "관제"):
+        """정비 모드에 들어가면 원격 구동이 전면 차단된다.
+
+        사람이 기체에 손을 대고 있는 동안 관제가 실수로(혹은 다른 사람이)
+        움직이게 하는 것이 이 계통에서 사람이 죽는 전형적 경로다.
+        """
+        mode = mode if mode in SERVICE_MODES else SERVICE_NONE
+        with self._lock:
+            if mode == self.service_mode:
+                return False
+            self.service_mode = mode
+            if mode == SERVICE_MAINTENANCE:
+                self.paused = True
+        names = {SERVICE_MAINTENANCE: "정비 — 원격 구동 차단",
+                 SERVICE_COMMISSIONING: "시운전 — 속도 제한",
+                 SERVICE_NONE: "정상 운용으로 복귀"}
+        self._on_event("service_mode", f"{who}: {names[mode]}",
+                       "warn" if mode else "info")
+        return True
 
     # ── 비상정지 ────────────────────────────────────────────────────────────
     def trigger(self, reason: str):
@@ -205,8 +244,26 @@ class SafetyArbiter:
         return ok
 
     # ── 자세 ────────────────────────────────────────────────────────────────
-    def check_attitude(self, tilt_deg: float):
-        if tilt_deg is not None and tilt_deg > self.tilt_limit:
+    def check_attitude(self, tilt_deg: float, now: float | None = None):
+        """계단식 과수원의 1순위 위험은 충돌이 아니라 전복이다.
+
+        정지선만 보지 않고 경고선 위에 머문 시간을 누적한다 — 한 번도 넘지
+        않았어도 위험선 근처를 오래 달렸다면 그건 경로가 잘못된 것이다.
+        """
+        now = now if now is not None else time.monotonic()
+        if tilt_deg is None:
+            self._tilt_since = None
+            return True
+        with self._lock:
+            if tilt_deg >= self.tilt_warn_deg:
+                if self._tilt_since is None:
+                    self._tilt_since = now
+                else:
+                    self.tilt_exposure_s += now - self._tilt_since
+                    self._tilt_since = now
+            else:
+                self._tilt_since = None
+        if tilt_deg > self.tilt_limit:
             self.trigger(f"전복 감지 (기울기 {tilt_deg:.0f}°)")
             return False
         return True
@@ -221,6 +278,10 @@ class SafetyArbiter:
             if self.estop:
                 self._last_gate = "estop"
                 return 0.0, 0.0, "estop"
+            # 정비 중에는 사람이 기체에 붙어 있다 — 어떤 요청도 통과시키지 않는다
+            if self.service_mode == SERVICE_MAINTENANCE:
+                self._last_gate = "maintenance"
+                return 0.0, 0.0, "maintenance"
             if not self.link_ok:
                 self._last_gate = "link"
                 return 0.0, 0.0, "link"
@@ -238,4 +299,7 @@ class SafetyArbiter:
         best = max(fresh, key=lambda rt: rt[0].priority)[0]
         with self._lock:
             self._last_gate = ""
-        return float(best.v), float(best.w), best.reason
+            # 시운전은 사람이 지켜보며 확인하는 시간이다 — 천천히 간다
+            k = (COMMISSIONING_SPEED_FACTOR
+                 if self.service_mode == SERVICE_COMMISSIONING else 1.0)
+        return float(best.v) * k, float(best.w) * k, best.reason

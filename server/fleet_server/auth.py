@@ -33,6 +33,7 @@ ROLE_REQUIRED = {
     "clear_estop_request": ROLE_ADMIN,
     "clear_estop_cancel": ROLE_ADMIN,
     "set_mode": ROLE_ADMIN,
+    "set_service_mode": ROLE_ADMIN,
 }
 
 

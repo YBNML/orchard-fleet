@@ -59,6 +59,10 @@ class MappingRun(Node):
         # 주행
         self.declare_parameter("speed", 0.9)            # 매핑 속도 (촬영 0.6 보다 빠르게)
         self.declare_parameter("turn_speed", 0.6)
+        # 통로 끝·선회 구간 감속 (단계 7 실측 대응 — speed_limit 주석 참조)
+        self.declare_parameter("y_slow_in", 25.0)      # |y| 이 값 이상이면 감속
+        self.declare_parameter("slow_factor", 0.40)    # 감속 배율
+        self.declare_parameter("decel_dist", 3.0)      # 목표 접근 감속 거리 [m]
         self.declare_parameter("alleys", 0)             # 0 = 전부
         self.declare_parameter("voxel", 0.05)           # 누적 시 다운샘플 [m]
         self.declare_parameter("max_range", 30.0)       # 먼 점은 밀도가 낮아 잡음이 된다
@@ -70,6 +74,8 @@ class MappingRun(Node):
         self.S = float(g("row_spacing")); self.ts = float(g("tree_spacing"))
         self.HL = float(g("headland"))
         self.speed = float(g("speed")); self.turn_speed = float(g("turn_speed"))
+        self.y_slow_in = float(g("y_slow_in")); self.slow_factor = float(g("slow_factor"))
+        self.decel_dist = float(g("decel_dist"))
         self.voxel = float(g("voxel")); self.max_range = float(g("max_range"))
         self.out = g("out")
 
@@ -162,6 +168,26 @@ class MappingRun(Node):
         while time.monotonic() < t_end:
             self.publish(0.0, 0.0); self.spin_once()
 
+    def speed_limit(self, xy, dist):
+        """구간별 속도 상한.
+
+        단계 7 실측(2026-07-26): FAST-LIO2 의 10 m 구간 거리오차가 통로 안에서는
+        0.61% 인데 **통로 끝(|y| 25~30 m)에서 38.3%** 로 튄다. 통로를 빠져나가는
+        순간 양옆 나무벽이 사라지고 70.4° 전방 FOV 에 빈 헤드랜드만 남아 기하가
+        퇴화하기 때문이다.
+
+        기하가 퇴화하는 구간에서는 **거리당 스캔 수를 늘리는 것** 말고 할 수 있는
+        게 없다. 그래서 통로 끝과 선회 구간에서 감속한다. 시간은 더 걸리지만
+        정합이 무너지면 맵 전체를 버려야 한다.
+        """
+        v = self.speed
+        ay = abs(float(xy[1]))
+        if ay >= self.y_slow_in:                  # 통로 끝 ~ 선회 구간
+            v = min(v, self.speed * self.slow_factor)
+        if dist < self.decel_dist:                # 목표 접근 감속
+            v = min(v, max(self.speed * 0.25, self.speed * dist / self.decel_dist))
+        return max(v, self.speed * 0.20)
+
     def goto(self, tx, ty, tol=0.35, timeout=180.0):
         """단순 비례 추종 — Nav2 이전 단계이므로 최소한의 항법만 쓴다."""
         t_end = time.monotonic() + timeout
@@ -178,7 +204,8 @@ class MappingRun(Node):
             if abs(err) > 0.6:                       # 크게 틀어지면 제자리에서 정렬
                 self.publish(0.0, self.turn_speed * (1 if err > 0 else -1))
             else:
-                self.publish(self.speed * max(0.25, 1.0 - abs(err)), 1.4 * err)
+                v = self.speed_limit(xy, dist)
+                self.publish(v * max(0.25, 1.0 - abs(err)), 1.4 * err)
             self.path.append(np.array([xy[0], xy[1], 0.0], np.float32))
             self.spin_once()
         return False

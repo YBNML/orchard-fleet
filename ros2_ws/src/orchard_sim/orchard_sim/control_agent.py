@@ -498,6 +498,9 @@ class ControlAgent(Node):
         if c == P.CMD_CLEAR_ESTOP_CANCEL:
             self.safety.cancel_clear(who or "관제")
             return
+        if c == P.CMD_SET_SERVICE_MODE:
+            self.safety.set_service_mode(str(payload.get("mode", "")), who or "관제")
+            return
         if c == P.CMD_LOCAL_RESET:
             # 링크로 온 '현장 확인'은 현장 확인이 아니다 — 절차의 존재 이유가
             # 시야를 가진 사람이므로, 원격에서 두 단계를 다 눌러 버리면 무의미하다.

@@ -55,6 +55,9 @@ CMD_CLEAR_ESTOP_CANCEL = "clear_estop_cancel"     # 해제 절차 취소
 #    (실기: 기체의 물리 리셋 버튼 / 시뮬: ~/local_reset 토픽)
 #    아래 이름은 '링크로 오면 거부한다'는 것을 명시하기 위해서만 존재한다.
 CMD_LOCAL_RESET = "local_reset"
+# 정비·시운전 — 사람이 기체 곁에 있는 시간대를 관제가 알아야 한다.
+# 사망 사고는 자율주행 중이 아니라 점검·시운전 중에 일어난다.
+CMD_SET_SERVICE_MODE = "set_service_mode"
 CMD_MISSION_START = "mission_start"        # {"alleys":[0,1,2], "mode":"mapping"}
 CMD_MISSION_PAUSE = "mission_pause"
 CMD_MISSION_RESUME = "mission_resume"
@@ -123,6 +126,7 @@ ROLE_REQUIRED = {
     # 모드 변경은 로봇의 거동 자체를 바꾼다(임무 ↔ 조종). 운전 중인 다른
     # 사람의 발밑을 빼는 격이라 admin 으로 둔다.
     CMD_SET_MODE: ROLE_ADMIN,
+    CMD_SET_SERVICE_MODE: ROLE_ADMIN,
 
     # ── 조종 ────────────────────────────────────────────────────────────────
     # 원격조종은 데드맨(400 ms)이 걸려 있어 손을 떼면 멎지만, 그렇다고

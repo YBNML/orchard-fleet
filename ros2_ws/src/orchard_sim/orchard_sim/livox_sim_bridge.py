@@ -87,11 +87,18 @@ class LivoxSimBridge(Node):
         sensor_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                                 history=HistoryPolicy.KEEP_LAST, depth=5)
 
+        # CustomMsg 는 RELIABLE 로 낸다. FAST-LIO2 가 이 토픽을 기본 QoS(=RELIABLE)로
+        # 구독하기 때문이다. BEST_EFFORT 로 내면 "incompatible QoS" 경고만 뜨고
+        # **한 프레임도 전달되지 않는다** (2026-07-26 실측). 실제 livox_ros_driver2 도
+        # 기본 QoS 로 발행하므로 이쪽이 실장비와도 일치한다.
+        custom_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
+                                history=HistoryPolicy.KEEP_LAST, depth=20)
+
         self.pub = self.create_publisher(PointCloud2, g("output_topic"), sensor_qos)
         self.pub_custom = None
         if self.want_custom:
             if HAVE_CUSTOM:
-                self.pub_custom = self.create_publisher(CustomMsg, g("custom_topic"), sensor_qos)
+                self.pub_custom = self.create_publisher(CustomMsg, g("custom_topic"), custom_qos)
             else:
                 self.get_logger().warn(
                     "livox_ros_driver2 메시지를 임포트할 수 없어 CustomMsg 발행을 끕니다. "

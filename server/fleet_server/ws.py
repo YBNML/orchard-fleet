@@ -29,10 +29,10 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _WS_ACTIONS = {"estop", "clear_estop_request", "clear_estop_cancel",
-               "stop_all", "set_mode", "ping"}
+               "stop_all", "set_mode", "set_service_mode", "ping"}
 # 저빈도·고위험 명령 — 캐시를 무시하고 매번 DB 로 세션·권한·로봇목록을 다시 본다.
 _ALWAYS_REVALIDATE = {"stop_all", "clear_estop_request", "clear_estop_cancel",
-                      "set_mode"}
+                      "set_mode", "set_service_mode"}
 _REVALIDATE_INTERVAL_S = 5.0
 
 

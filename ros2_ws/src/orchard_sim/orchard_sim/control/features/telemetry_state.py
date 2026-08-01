@@ -49,6 +49,8 @@ class TelemetryState(Feature):
             needs_remote_ok=s.get("needs_remote_ok"),
             needs_local_ok=s.get("needs_local_ok"),
             last_round_trip_s=s.get("last_round_trip_s"),
+            service_mode=s.get("service_mode"),
+            tilt_exposure_s=s.get("tilt_exposure_s"),
             pose=(None if pose is None else
                   dict(x=round(pose[0], 3), y=round(pose[1], 3),
                        yaw=round(pose[2], 4))),

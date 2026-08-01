@@ -170,29 +170,52 @@ def dem_from_terrain(hm_path, meta_path, cell=0.10, bounds=None):
 # 2. 주행가능 판정
 # ═══════════════════════════════════════════════════════════════════════════
 def traversability(ground, cell=0.10, step_win=7, step_max=0.15,
-                   slope_max=0.25, rough_max=0.05):
+                   slope_max=0.25, rough_max=0.05, min_valid_frac=0.35):
     """고도격자 → (주행가능 불리언, 지표 dict).
 
     **셀 대 셀 차이가 아니라 창(window) 최대-최소를 쓴다.** 0.10 m 셀 하나에
     58% 둑은 5.8 cm 밖에 안 담겨 어떤 임계값으로도 못 잡는다. 0.7 m 창에서는
     같은 둑이 0.41 m 가 되어 통로(0.02 m)와 11배 차이가 난다.
+
+    **빈 셀은 전역 상수로 메우면 안 된다** (2026-07-26 실측). 예전에는 구멍을
+    전역 중앙값으로 채웠는데, 참값 하이트맵에는 구멍이 없어 아무 문제가 없었다.
+    센서 DEM 은 나무 구역 안에서도 45% 가 비어 있고 테라스가 3 m 넘게 벌어져
+    있어서, 구멍마다 미터급 가짜 단차가 생겼다 — 관측된 셀의 98.7% 가
+    주행불가로 찍혔다. 그래서 통계를 **유효 셀만으로** 계산하고, 창 안 유효
+    비율이 min_valid_frac 미만이면 '모름'으로 따로 표시한다.
+
+    '모름'은 주행가능도 장애물도 아니다. 호출자는 dict["enough"] 로 구분해서
+    미관측 영역을 장애물로 오인하지 않게 해야 한다.
     """
     valid = np.isfinite(ground)
-    filled = np.where(valid, ground, np.nanmedian(ground[valid]) if valid.any() else 0.0)
+    NEG, POS = -1e9, 1e9
+    frac = ndimage.uniform_filter(valid.astype(np.float32), step_win)
+    enough = frac >= min_valid_frac
 
-    step = (ndimage.maximum_filter(filled, step_win)
-            - ndimage.minimum_filter(filled, step_win))
+    hi = ndimage.maximum_filter(np.where(valid, ground, NEG), step_win)
+    lo = ndimage.minimum_filter(np.where(valid, ground, POS), step_win)
+    step = np.where(enough, hi - lo, np.inf)
+
+    # 국소 평균·분산도 유효 셀만으로 (uniform_filter 는 평균이므로 frac 로 나눈다)
+    s1 = ndimage.uniform_filter(np.where(valid, ground, 0.0).astype(np.float64), step_win)
+    s2 = ndimage.uniform_filter(np.where(valid, ground ** 2, 0.0).astype(np.float64), step_win)
+    den = np.maximum(frac, 1e-6)
+    mean = s1 / den
+    rough = np.sqrt(np.maximum(s2 / den - mean ** 2, 0.0))
+    rough = np.where(enough, rough, np.inf)
+
+    # 기울기는 구멍을 **국소** 평균으로 메운 뒤 계산한다 (전역 상수가 아니라)
+    filled = np.where(valid, ground, mean)
     gy, gx = np.gradient(filled, cell)
     slope = np.hypot(gx, gy)
-    mean = ndimage.uniform_filter(filled, step_win)
-    rough = np.sqrt(np.maximum(
-        ndimage.uniform_filter((filled - mean) ** 2, step_win), 0.0))
+
     # 음형 장애물: 이웃보다 내가 높으면 곧 낭떠러지 가장자리다.
     # "z 위는 장애물" 규칙이 절대 못 잡는 것 — 계단식에서 옆 테라스가 26~50 cm 낮다.
-    drop = filled - ndimage.minimum_filter(filled, step_win)
+    drop = np.where(enough & valid, ground - lo, 0.0)
 
-    trav = valid & (step <= step_max) & (slope <= slope_max) & (rough <= rough_max)
-    return trav, dict(step=step, slope=slope, rough=rough, drop=drop, valid=valid)
+    trav = valid & enough & (step <= step_max) & (slope <= slope_max) & (rough <= rough_max)
+    return trav, dict(step=step, slope=slope, rough=rough, drop=drop,
+                      valid=valid, enough=enough, frac=frac)
 
 
 def obstacle_layers(points, g, ground, min_agl=0.30, max_agl=1.30,

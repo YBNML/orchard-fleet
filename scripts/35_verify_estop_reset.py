@@ -119,6 +119,47 @@ check("estop → 승인 → 해제가 순서대로 기록",
       ev[:1] == ["estop"] and "estop_clear_requested" in ev and "estop_cleared" in ev,
       str(ev))
 
+# ── 8. 정비·시운전 (사람이 기체 곁에 있는 시간대) ───────────────────────────
+print("\n── 8. 정비 모드는 원격 구동을 전면 차단한다 ──")
+from orchard_sim.control.safety import (COMMISSIONING_SPEED_FACTOR,  # noqa: E402
+                                        SERVICE_COMMISSIONING,
+                                        SERVICE_MAINTENANCE, SERVICE_NONE)
+
+s, ev = mk()
+now = time.monotonic()
+check("평시에는 요청이 통과", s.arbitrate([(R(), now)], now)[0] > 0)
+s.set_service_mode(SERVICE_MAINTENANCE, "관제")
+v, w, why = s.arbitrate([(R(), now)], now)
+check("정비 중에는 최고 우선순위도 차단", (v, w) == (0.0, 0.0) and why == "maintenance", why)
+check("정비 진입이 이벤트로 남음", "service_mode" in ev)
+s.set_service_mode(SERVICE_NONE, "관제")
+# 정비를 빠져나왔다고 저절로 다시 움직이면 안 된다 — 비상정지 해제와 같은 원칙이다.
+# 사람이 아직 기체 옆에 있을 수 있고, 재개는 별도의 결정이어야 한다.
+v, w, why = s.arbitrate([(R(), now)], now)
+check("정비 해제만으로는 자동 재개하지 않음", (v, w) == (0.0, 0.0) and why == "paused", why)
+s.set_paused(False)
+check("명시적으로 재개해야 통과", s.arbitrate([(R(), now)], now)[0] > 0)
+
+print("\n── 9. 시운전은 속도를 낮춘다 ──")
+s.set_service_mode(SERVICE_COMMISSIONING, "관제")
+s.set_paused(False)
+v, _, _ = s.arbitrate([(R(), now)], now)
+check("시운전 속도 = 요청 × 계수", abs(v - 1.0 * COMMISSIONING_SPEED_FACTOR) < 1e-9,
+      f"{v}")
+
+print("\n── 10. 전복 위험 노출 시간 누적 ──")
+s, ev = mk()
+s.tilt_warn_deg = 20.0
+t = time.monotonic()
+s.check_attitude(22.0, now=t)          # 경고선 위 진입
+s.check_attitude(22.0, now=t + 3.0)    # 3초 머무름
+check("경고선 위 체류가 누적됨", abs(s.snapshot()["tilt_exposure_s"] - 3.0) < 0.05,
+      f"{s.snapshot()['tilt_exposure_s']}초")
+s.check_attitude(5.0, now=t + 4.0)     # 내려옴
+s.check_attitude(5.0, now=t + 9.0)
+check("경고선 아래에서는 안 쌓임", abs(s.snapshot()["tilt_exposure_s"] - 3.0) < 0.05)
+check("정지선을 넘으면 비상정지", s.check_attitude(99.0, now=t + 10.0) is False and s.estop)
+
 print("\n" + "=" * 74)
 n_ok, n = sum(res), len(res)
 print(f"{n_ok}/{n} 통과")

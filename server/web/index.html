@@ -52,7 +52,7 @@ body{
   font-family:"Pretendard","Pretendard Variable","Noto Sans KR","Noto Sans CJK KR",
               system-ui,-apple-system,sans-serif;
   font-size:14px; line-height:1.5;
-  display:grid; grid-template-rows:auto 1fr auto; overflow:hidden;
+  display:grid; grid-template-rows:auto auto 1fr auto; overflow:hidden;
   -webkit-font-smoothing:antialiased;
 }
 .serif{font-family:"Noto Serif KR","Noto Serif CJK KR",Georgia,serif}
@@ -104,6 +104,12 @@ header{
   letter-spacing:.02em; font-size:13px;
 }
 #allstop:hover{filter:brightness(1.08)}
+
+#svcBanner{display:none; align-items:center; gap:10px; padding:9px 16px;
+  font-size:13px; font-weight:600; border-bottom:1px solid var(--line)}
+#svcBanner.on{display:flex}
+#svcBanner.maintenance{background:var(--danger-soft); color:var(--danger)}
+#svcBanner.commissioning{background:var(--gold-soft); color:var(--gold)}
 
 /* ── 본문: 지도 + 우측 조작 ───────────────────────────────────────────── */
 main{display:grid; grid-template-columns:1fr 336px; min-height:0}
@@ -390,6 +396,10 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
           data-min-role="admin">⚙</button>
   <button id="allstop" title="연결된 모든 로봇을 즉시 세웁니다">■ 전체 정지</button>
 </header>
+
+<!-- 정비·시운전 배너 — 사람이 기체에 붙어 있는 시간대는 화면 전체가 알려야 한다.
+     이 계통에서 사람이 죽는 순간은 자율주행 중이 아니라 점검·시운전 중이다. -->
+<div id="svcBanner"></div>
 
 <main>
   <div id="stage">
@@ -856,7 +866,7 @@ function syncPanels(){
   if (!p){
     big.textContent = "연결 대기"; big.className = "serif";
     sub.textContent = "로봇 응답을 기다리는 중";
-    syncResetSteps(null);
+    syncResetSteps(null); syncServiceBanner(null);
     $("hPos").textContent = $("hYaw").textContent = $("hTilt").textContent = "—";
     $("mProg").textContent = $("mPhase").textContent = "—";
     return;
@@ -873,6 +883,7 @@ function syncPanels(){
          sub.textContent = "임무를 지시하면 출발합니다"; }
 
   syncResetSteps(p);
+  syncServiceBanner(p);
   if (p.pose){
     $("hPos").textContent = `${p.pose.x.toFixed(2)}, ${p.pose.y.toFixed(2)} m`;
     $("hYaw").textContent = (p.pose.yaw*180/Math.PI).toFixed(0)+"°";
@@ -907,6 +918,17 @@ function syncResetSteps(p){
     st(localDone, "2", "현장 확인",
        localDone ? "완료" : "로봇 옆에서 주변을 확인하고 기체의 리셋을 누르세요") +
     `</div>`;
+}
+
+// 정비·시운전 배너 — 원격 명령이 막혀 있다는 사실을 화면이 먼저 말해야 한다.
+function syncServiceBanner(p){
+  const b = $("svcBanner");
+  const mode = p && p.service_mode;
+  b.className = mode ? "on " + mode : "";
+  if (!mode){ b.textContent = ""; return; }
+  b.textContent = mode === "maintenance"
+    ? "정비 중 — 사람이 기체 곁에 있습니다. 원격 구동이 전면 차단돼 있습니다."
+    : "시운전 중 — 속도가 제한됩니다. 감시를 유지하세요.";
 }
 
 function syncHealth(r){
