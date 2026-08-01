@@ -403,7 +403,7 @@ class MapLocalizer(Node):
         # 거부, 08-02). 앵커와 자이로가 실제 오차를 한계 아래로 묶어 주므로,
         # 고품질·소보정이 4회 연속 일관되면 재획득으로 받는다.
         if (not ok and why.startswith("보정 간 표류") and fix.quality >= 0.6
-                and abs(fix.dx) <= 0.5 and abs(math.degrees(fix.dyaw)) < 3.0):
+                and abs(fix.dx) <= 0.5 and abs(math.degrees(fix.dyaw)) < 10.0):
             self._reacq_streak += 1
             if self._reacq_streak >= 4:
                 ok, why = True, ""
@@ -425,7 +425,10 @@ class MapLocalizer(Node):
         #   새 자세 = (로봇 위치를 중심으로 dyaw 회전) + (dx, dy 평행이동)
         # 종방향(dy)은 위상 잠금이라 신뢰도가 낮다 — 절반만 반영해 흔들림을 줄인다.
         px, py, pyaw = est
-        dyaw = fix.dyaw
+        # 블록 밖(헤드랜드) 보정은 dx 만 쓴다 — 그곳의 '열'은 열 끝을 비스듬히
+        # 본 것이라 요 추정이 편향된다. 실측: 선회 중 헤드랜드 보정의 dyaw 가
+        # 누적돼 추정 요가 7° 기울었다(08-02). 요는 자이로(AHRS)가 지킨다.
+        dyaw = fix.dyaw if fix.in_block else 0.0
         dy_apply = fix.dy * 0.5 if fix.longitudinal_ok else 0.0
         new_pose = (px + fix.dx, py + dy_apply, wrap(pyaw + dyaw))
         self.T_mo = compose(new_pose, inverse(self.T_ob))
