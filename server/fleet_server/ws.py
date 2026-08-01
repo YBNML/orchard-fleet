@@ -120,13 +120,23 @@ async def ws_endpoint(websocket: WebSocket):
                 queue.put_nowait({"topic": f"fleet/v1/{conn.robot_farm[rid]}/{rid}/{ch}",
                                   "payload": pl})
 
+    def _tel_put(item):
+        # 큐가 찼다는 것은 이 구독자가 안 읽고 있다는 뜻이다(좀비 연결 등).
+        # 예외를 그대로 두면 QueueFull 폭풍이 이벤트 루프를 세우고, 그 정체가
+        # 로봇 어댑터 하트비트까지 밀어 로봇이 링크 두절로 오판한다 — 실제로
+        # 겪은 사고다(08-02, 2.9만 건). 텔레메트리는 저장소가 아니다: 버린다.
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
+
     def on_tel(robot_id: str, channel: str, payload: dict):
         if not conn.sees(robot_id):
             return
         item = {"topic": f"fleet/v1/{conn.robot_farm[robot_id]}/{robot_id}/{channel}",
                 "payload": payload}
         try:
-            loop.call_soon_threadsafe(queue.put_nowait, item)
+            loop.call_soon_threadsafe(_tel_put, item)
         except RuntimeError:
             pass
 
