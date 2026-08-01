@@ -62,3 +62,12 @@ def require_min_role(min_role: str):
 def csrf_protect(request: Request, sess: AuthSession = Depends(current_session)) -> None:
     if request.headers.get("X-CSRF") != sess.csrf:
         raise HTTPException(403, "CSRF 토큰 불일치")
+
+
+def farm_scope(db, user: User) -> set[int] | None:
+    """admin 은 None(전체), 그 외는 배정 농장 id 집합."""
+    if normalize_role(user.role) == "admin":
+        return None
+    from .models import UserFarm
+    rows = db.query(UserFarm.farm_id).filter(UserFarm.user_id == user.id).all()
+    return {r[0] for r in rows}

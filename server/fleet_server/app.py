@@ -32,8 +32,9 @@ def create_app(settings: Settings | None = None, engine=None) -> FastAPI:
     app.state.session_factory = make_session_factory(engine)
     app.state.fleet = None            # FleetPort — Task 8 이후 주입
 
-    from .api import auth_routes
+    from .api import admin_routes, auth_routes
     app.include_router(auth_routes.router, prefix="/api/v1")
+    app.include_router(admin_routes.router, prefix="/api/v1")
 
     _bootstrap_admin(app)
 
