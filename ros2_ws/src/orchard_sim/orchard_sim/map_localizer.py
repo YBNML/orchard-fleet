@@ -125,6 +125,7 @@ class MapLocalizer(Node):
         _aw = _pl.Path(str(g("bundle"))) / "anchor_walls.json"
         self._anchor_walls = json.loads(_aw.read_text()) if _aw.exists() else None
         self._tree_snap_streak = {}     # 칸 스냅 — 연속 동일 판정 횟수
+        self._anchor_big_streak = {}    # 대오차 앵커 일관성 카운트
         self.get_logger().info(
             f"맵 번들 적재 — 해시 {self.bundle.hash} · 통로 {self.bundle.alley_count()}개"
             f" · 무결성 {'OK' if self.bundle.verify() else '불일치!'}")
@@ -391,12 +392,11 @@ class MapLocalizer(Node):
         # 둑을 등지고 있으면 전방에 벽이 없다 — 그때 잰 것은 벽이 아니라
         # 딴것이고, 실제로 기운 레이가 나무 열을 '벽'으로 오인해 추정을
         # 2 m 끌어내린 오발이 있었다 (08-02).
-        # 활성 창은 넉넉히 — est 기준이라, est 가 뒤처진 만큼(실측 2 m 주입
-        # 시 30초간 미개방) 문이 늦게 열리는 닭-달걀이 있다. 오발은 아래
-        # 벽 거리(≤12 m)·두께·방향 게이트가 막는다.
-        inward = ((est[1] > half - 6.0 and hy > 0.7)
-                  or (est[1] < -(half - 6.0) and hy < -0.7))
-        if not inward:
+        # 활성화는 est 위치가 아니라 **측정 자체**로 판단한다 — est 기준
+        # 창은 est 가 크게 뒤처지면(실측 12 m) 영원히 안 열리는 닭-달걀이
+        # 있다. 벽은 구조상 끝 구역에서만 보이므로, '전방에 벽이 보인다'는
+        # 사실이 곧 끝 구역의 증거다. 방향(열 정렬)만 요구한다.
+        if abs(hy) < 0.7:
             return
         r = np.hypot(pts[:, 0], pts[:, 1])
         ang = np.abs(np.arctan2(pts[:, 1], pts[:, 0]))
@@ -422,8 +422,18 @@ class MapLocalizer(Node):
         if expected <= 0.5 or expected > 16.0:
             return
         err = expected - measured       # >0: 실제가 추정보다 벽에 가깝다
-        if abs(err) > 5.0:
+        if abs(err) > 13.0:
             return                      # 상식 밖 — 벽이 아닌 것을 봤다
+        if abs(err) > 3.0:
+            # 대오차 앵커는 일관성 3연속을 요구 — 통로 중간의 줄기 잡음이
+            # 우연히 벽처럼 읽히는 한 번을 걸러낸다
+            k_ = round(err)
+            self._anchor_big_streak[k_] = self._anchor_big_streak.get(k_, 0) + 1
+            if self._anchor_big_streak[k_] < 3:
+                return
+            self._anchor_big_streak = {}
+        else:
+            self._anchor_big_streak = {}
         corr = err * self.anchor_gain
         new_pose = (est[0] + hx * corr, est[1] + hy * corr, est[2])
         self.T_mo = compose(new_pose, inverse(self.T_ob))
