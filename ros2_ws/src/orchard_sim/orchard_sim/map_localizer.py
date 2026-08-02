@@ -400,7 +400,11 @@ class MapLocalizer(Node):
             return
         r = np.hypot(pts[:, 0], pts[:, 1])
         ang = np.abs(np.arctan2(pts[:, 1], pts[:, 0]))
-        cone = (ang < math.radians(8.0)) & (r > 0.3) & (pts[:, 2] > -0.35)
+        # z 상한 +0.9: MID-360 의 수직 +52° 는 전방 수관을 원뿔에 넣는다 —
+        # 상한 없이는 수관이 '벽 3~6 m'로 읽혀 앵커가 est 를 13 m 끌었다
+        # (실측 775~790초 순간이동, 08-03). 벽 면 대역(지상 0.3~1.5 m)만 본다.
+        cone = (ang < math.radians(8.0)) & (r > 2.0) \
+            & (pts[:, 2] > -0.35) & (pts[:, 2] < 0.9)   # r>2: 자기 기체 반사 제외(MID-360)
         if cone.sum() < 40:
             return
         measured = float(np.percentile(r[cone], 10))   # 클라우드가 이미 base 기준

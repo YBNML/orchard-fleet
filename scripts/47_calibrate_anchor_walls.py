@@ -88,7 +88,8 @@ def main():
         lvl = pts @ (Rz @ R).T                  # 롤·피치 수평화
         r = np.hypot(lvl[:, 0], lvl[:, 1])
         ang = np.abs(np.arctan2(lvl[:, 1], lvl[:, 0]))
-        cone = (ang < math.radians(8.0)) & (r > 0.3) & (lvl[:, 2] > -0.35)
+        cone = (ang < math.radians(8.0)) & (r > 2.0) \
+            & (lvl[:, 2] > -0.35) & (lvl[:, 2] < 0.9)  # 수관·자기반사 제외
         if cone.sum() < 40:
             return None
         return float(np.percentile(r[cone], 10))

@@ -369,7 +369,8 @@ class ControlAgent(Node):
         r = np.hypot(p[:, 0], p[:, 1])
         near_frac = float((r < 0.8).mean())
         ang = np.abs(np.arctan2(p[:, 1], p[:, 0]))
-        cone = (ang < math.radians(8.0)) & (r > 0.25) & (p[:, 2] > -0.35)
+        cone = (ang < math.radians(8.0)) & (r > 1.6) \
+            & (p[:, 2] > -0.35) & (p[:, 2] < 0.9)   # 수관·자기반사 제외 (MID-360)
         clearance = (float(np.percentile(r[cone], 10))
                      if int(cone.sum()) >= 30 else float("inf"))
         self.bb.set(clearance=clearance, near_frac=near_frac)
