@@ -54,7 +54,7 @@ class DriveMission(Feature):
         앵커 — 통로×단별 실측 벽 위치로 접근 중 종오차를 소거한다
         (주입 2 m → 0.4 m 수렴 실측).
         """
-        return sign * (self.col_l / 2.0 + self.HL * 0.8333)
+        return sign * (self.col_l / 2.0 + self.HL * 0.6667)
 
     def build_waypoints(self, alleys):
         y_lo = -self.col_l / 2.0 - self.HL * 0.25
