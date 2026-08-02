@@ -394,12 +394,51 @@ class MapLocalizer(Node):
         self.stat["anchor_err"] = round(err, 2)
 
     # ── 보정 ────────────────────────────────────────────────────────────────
+    def _try_treeline(self, sp):
+        """나무 선 앵커 — 통로에 **들어갈 때**의 종방향 절대 기준.
+
+        나갈 때는 전방의 둑이 앵커지만(_try_anchor), 들어갈 때 둑은 등 뒤라
+        안 보인다. 대신 전방에 나무들이 시작되는 선(열 끝, y=±블록반)이 있다
+        — 구조점이 시작되는 전방거리가 곧 절대 y 다. 이게 없으면 횡단에서
+        밀린 종오차가 위상의 '한 칸 미끄러진 해'(±1.5 m)로 잠겨 통로 전체를
+        오답으로 달린다 (실측: 통로 1 전 구간 1.5 m 오프셋, 08-03).
+        """
+        est = self.pose()
+        half = float(self.geom["col_len"]) / 2.0
+        hy = math.sin(est[2])
+        inward = ((est[1] > half - 2.0 and hy < -0.7)
+                  or (est[1] < -(half - 2.0) and hy > 0.7))
+        if not inward or len(sp) < 80:
+            return
+        ahead = sp[sp[:, 0] > 0.5]
+        if len(ahead) < 40:
+            return
+        d_meas = float(np.percentile(ahead[:, 0], 5))
+        d_exp = (abs(est[1]) - half) / max(abs(hy), 0.7)   # 진행선 상 거리
+        if d_meas > 12.0 or d_exp <= 0.0:
+            return
+        err = d_exp - d_meas            # >0: 실제가 나무 선에 더 가깝다
+        if abs(err) > 4.0:
+            return
+        corr = err * self.anchor_gain
+        hx = math.cos(est[2])
+        new_pose = (est[0] + hx * corr, est[1] + hy * corr, est[2])
+        self.T_mo = compose(new_pose, inverse(self.T_ob))
+        if self.slip_active:
+            self._slip_anchor = new_pose
+            self._slip_ob_yaw0 = self.T_ob[2]
+        self.drift_ref = self.T_ob
+        self.last_anchor_t = time.monotonic()
+        self.stat["n_tree_anchor"] = self.stat.get("n_tree_anchor", 0) + 1
+
     def _try_fix(self):
         pts = self.last_cloud
         if pts is None or len(pts) == 0:
             return
-        self._check_slip(rl.structure_points(pts), pts)
+        sp0 = rl.structure_points(pts)
+        self._check_slip(sp0, pts)
         self._try_anchor(pts)
+        self._try_treeline(sp0)
         est = self.pose()
         # 오래 못 잡았으면 요 탐색을 넓혀 재획득 — 선회 직후에는 오도메트리
         # 요 오차가 ±12° 를 넘을 수 있다 (실측 19.5°)
