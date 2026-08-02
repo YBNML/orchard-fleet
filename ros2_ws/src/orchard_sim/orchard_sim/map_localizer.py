@@ -99,9 +99,10 @@ class MapLocalizer(Node):
         d("anchor_wall_offset_m", 0.7)  # 주행불가 경계(둑 발치)와 라이다가 보는
                                         # 면(0.3 m 높이) 사이 법면 후퇴량 (08-02 실측)
         d("sensor_fwd_m", 0.275)        # 라이다 광학 원점의 base_link 전방 오프셋
-        d("treeline_anchor", False)     # 진입 나무선 앵커 — 추정기 편향 미해결로
-                                        # 봉인 (시동 시 +3 m 오보정 실측, 08-03).
-                                        # 오프라인 스캔 캡처로 재보정 후 켤 것.
+        d("treeline_anchor", True)      # 진입 나무선 앵커 — **셀 스냅퍼**로 부활.
+                                        # 연속 보정은 추정기 편향(±0.3~0.5 m)에
+                                        # 물렸지만, 나무 간격 배수 양자화에는
+                                        # 반 칸 미만이라 무해하다.
         d("lost_critical_s", 90.0)      # 이만큼 못 잡으면 격상 — 로봇을 세워야 한다
         d("imu_topic", "/imu")          # 요는 자이로 적분 — 바퀴는 회전을 속인다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
@@ -111,6 +112,7 @@ class MapLocalizer(Node):
         from scipy.spatial import cKDTree
         self._map_tree = cKDTree(self.bundle.cloud[:, :2])
         self._row_jump_streak = {}      # 열 확정 — 후보 오프셋별 연속 우세 횟수
+        self._tree_snap_streak = {}     # 칸 스냅 — 연속 동일 판정 횟수
         self.get_logger().info(
             f"맵 번들 적재 — 해시 {self.bundle.hash} · 통로 {self.bundle.alley_count()}개"
             f" · 무결성 {'OK' if self.bundle.verify() else '불일치!'}")
@@ -464,17 +466,32 @@ class MapLocalizer(Node):
         if d_meas > 12.0:
             return
         err = d_exp - d_meas            # >0: 실제가 나무 선에 더 가깝다
-        if abs(err) > 4.0:
+        # 연속 보정이 아니라 **칸 단위 스냅**만 한다. 이 측정기의 잔여 편향
+        # (원뿔 기하·빈 문턱, ±0.3~0.5 m)은 세 번의 보정 시도를 물었지만
+        # 나무 간격(1.5 m) 배수 판정에는 반 칸 미만이라 무해하다. 잡는 것은
+        # 정확히 '한 칸 미끄러진 해'다 (실측: 북단 횡단 후 1.5 m 오프셋이
+        # 통로 전체를 살아남아 남측 출구를 일찍 끝냄, 08-03).
+        T_ = float(self.geom.get("tree_spacing", 1.5))
+        k = round(err / T_)
+        frac = err - k * T_
+        if k == 0 or abs(k) > 2 or abs(frac) > 0.45:
+            self._tree_snap_streak = {}
             return
-        corr = err * self.anchor_gain
+        self._tree_snap_streak[k] = self._tree_snap_streak.get(k, 0) + 1
+        if self._tree_snap_streak[k] < 3:
+            return
+        self._tree_snap_streak = {}
+        jump = k * T_
         hx = math.cos(est[2])
-        new_pose = (est[0] + hx * corr, est[1] + hy * corr, est[2])
+        new_pose = (est[0] + hx * jump, est[1] + hy * jump, est[2])
         self.T_mo = compose(new_pose, inverse(self.T_ob))
         if self.slip_active:
             self._slip_anchor = new_pose
             self._slip_ob_yaw0 = self.T_ob[2]
         self.drift_ref = self.T_ob
         self.last_anchor_t = time.monotonic()
+        self.get_logger().warning(
+            f"칸 스냅 — 나무선 대조로 진행방향 {jump:+.1f} m 도약 (잔차 {frac:+.2f})")
         self.stat["n_tree_anchor"] = self.stat.get("n_tree_anchor", 0) + 1
 
     def _row_disambig(self, sp):
