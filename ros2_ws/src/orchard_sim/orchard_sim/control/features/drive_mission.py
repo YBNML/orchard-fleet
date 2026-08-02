@@ -184,7 +184,7 @@ class DriveMission(Feature):
                 return None
             if self._align_key is None or self._align_key[0] != m["idx"]:
                 self._align_key = (m["idx"], now)
-            elif now - self._align_key[1] > 30.0:
+            elif now - self._align_key[1] > 45.0:
                 self._align_key = None
                 self.ctx.safety.set_paused(True)
                 self.ctx.event("assistance",
