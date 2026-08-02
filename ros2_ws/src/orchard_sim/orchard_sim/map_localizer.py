@@ -497,14 +497,18 @@ class MapLocalizer(Node):
         self.stat["n_tree_anchor"] = self.stat.get("n_tree_anchor", 0) + 1
 
     def _row_disambig(self, sp):
-        """열 확정 — 위상의 '한 열 미끄러진 해'(±3.5 m)를 밭 가장자리로 깬다.
+        """격자 확정 — 위상의 '정수 단위 미끄러진 해'를 비주기 경계로 깬다.
 
-        횡위상도, 두 앵커도 주기 구조라 x 의 정수 열 오차에는 장님이다 —
-        실측: 횡단 실패 후 est 가 한 열 옆에 잠긴 채 통로 하나를 통째로
-        '옆 통로'로 믿고 완주했다(08-03). 주기를 깨는 유일한 것은 밭
-        가장자리(끝 열 너머엔 나무가 없다)다: 실제 스캔을 맵 줄기 점군과
-        x±열간격 세 후보로 대조해, 가장자리가 시야에 들 때 우세한 후보가
-        4연속이면 열을 확정한다. 밭 한가운데서는 셋이 비겨 무해하다.
+        위상도 앵커도 주기 구조 안에서는 정수 격자 오차(x: 열 간격 3.5 m,
+        y: 나무 간격 1.5 m)에 장님이다 — 실측: 한 열 옆에 잠긴 채 통로
+        하나를 옆 통로로 믿고 완주(x), 한 칸 오차가 통로를 살아남아 남측
+        출구를 조기 종료(y). 주기를 깨는 것은 비주기 경계뿐이다: 밭
+        가장자리(x)와 열 끝(y). 실제 스캔을 맵 줄기 점군과 격자 오프셋
+        후보들로 양방향 대조해(정방향: 실점→맵, 역방향: 보여야 할 맵→실점),
+        경계가 시야에 들 때 우세 후보가 4연속이면 도약한다. 경계가 안
+        보이는 한가운데서는 후보들이 비겨 무해하다. 나무선 앵커(4회 실패,
+        봉인)의 자리를 이 가설검정이 대신한다 — 단일 통계(첫 빈 거리)가
+        아니라 구조 전체의 상관 대결이라 원뿔 기하 편향에 강하다.
         """
         if len(sp) < 300:
             return
@@ -514,22 +518,19 @@ class MapLocalizer(Node):
         wy = est[1] + sp[:, 0] * s + sp[:, 1] * c
         pts = np.stack([wx, wy], axis=1)
         S = float(self.geom["row_spacing"])
-        cand = (-S, 0.0, S)
+        T_ = float(self.geom.get("tree_spacing", 1.5))
+        cand = [(0.0, 0.0), (-S, 0.0), (S, 0.0),
+                (0.0, -2 * T_), (0.0, -T_), (0.0, T_), (0.0, 2 * T_)]
         from scipy.spatial import cKDTree
         rtree = cKDTree(pts)
         mp = self.bundle.cloud
         scores = []
-        for dxk in cand:
-            # 정방향: 가설 위치에서 실점이 맵과 맞는가
-            dd, _ = self._map_tree.query(pts + [dxk, 0.0],
+        for dxk, dyk in cand:
+            dd, _ = self._map_tree.query(pts + [dxk, dyk],
                                          distance_upper_bound=0.4)
             f = float(np.isfinite(dd).mean())
-            # 역방향: 가설 위치에서 **보여야 할** 맵 줄기가 실스캔에 있는가.
-            # 판별력은 여기서 나온다 — 틀린 가설은 가장자리 너머의 '없는
-            # 열'을 예측한다. 정방향만으론 두 가설이 비긴다(둘 다 실점이
-            # 어떤 열엔가 맞으므로).
             rx = mp[:, 0] - (est[0] + dxk)
-            ry = mp[:, 1] - est[1]
+            ry = mp[:, 1] - (est[1] + dyk)
             fx = rx * c + ry * s
             fyl = -rx * s + ry * c
             vis = (fx > 1.0) & (np.hypot(fx, fyl) < 20.0) \
@@ -537,28 +538,28 @@ class MapLocalizer(Node):
             if vis.sum() < 20:
                 scores.append(0.0)
                 continue
-            dd2, _ = rtree.query(mp[vis][:, :2] - [dxk, 0.0],
+            dd2, _ = rtree.query(mp[vis][:, :2] - [dxk, dyk],
                                  distance_upper_bound=0.6)
             r = float(np.isfinite(dd2).mean())
             scores.append(f * r)
         best = int(np.argmax(scores))
-        if best == 1 or scores[best] < scores[1] + 0.10:
+        if best == 0 or scores[best] < scores[0] + 0.10:
             self._row_jump_streak = {}
             return
         self._row_jump_streak[best] = self._row_jump_streak.get(best, 0) + 1
         if self._row_jump_streak[best] < 4:
             return
         self._row_jump_streak = {}
-        jump = cand[best]
-        new_pose = (est[0] + jump, est[1], est[2])
+        jx, jy = cand[best]
+        new_pose = (est[0] + jx, est[1] + jy, est[2])
         self.T_mo = compose(new_pose, inverse(self.T_ob))
         if self.slip_active:
             self._slip_anchor = new_pose
             self._slip_ob_yaw0 = self.T_ob[2]
         self.drift_ref = self.T_ob
         self.get_logger().warning(
-            f"열 확정 — 가장자리 대조로 x {jump:+.1f} m 도약 "
-            f"(일치율 {scores[best]:.2f} vs 현재 {scores[1]:.2f})")
+            f"격자 확정 — 경계 대조로 ({jx:+.1f}, {jy:+.1f}) m 도약 "
+            f"(일치율 {scores[best]:.2f} vs 현재 {scores[0]:.2f})")
 
     def _try_fix(self):
         pts = self.last_cloud
