@@ -99,6 +99,10 @@ class MapLocalizer(Node):
         d("anchor_wall_offset_m", 0.7)  # 주행불가 경계(둑 발치)와 라이다가 보는
                                         # 면(0.3 m 높이) 사이 법면 후퇴량 (08-02 실측)
         d("sensor_fwd_m", 0.275)        # 라이다 광학 원점의 base_link 전방 오프셋
+        d("grid_disambig", False)      # 격자(열·칸) 가설검정 — 실스캔 검증 미달로
+                                        # 봉인: 합성 5/5 지만 실스캔은 y 0/8·x 3/6
+                                        # (수관·둑 오염). run29 에서 4회 오발로
+                                        # est 10 m 이탈 실측. 켜려면 실스캔 검증부터.
         d("treeline_anchor", False)     # 진입 나무선 앵커 — 재봉인 (4번째 실패).
                                         # 시작선의 원뿔 기하 편향이 최대 1.3 m 로
                                         # 반 칸을 넘어 칸 스냅조차 틀린 칸으로
@@ -510,6 +514,8 @@ class MapLocalizer(Node):
         봉인)의 자리를 이 가설검정이 대신한다 — 단일 통계(첫 빈 거리)가
         아니라 구조 전체의 상관 대결이라 원뿔 기하 편향에 강하다.
         """
+        if not bool(self.get_parameter("grid_disambig").value):
+            return
         if len(sp) < 300:
             return
         est = self.pose()
@@ -524,9 +530,18 @@ class MapLocalizer(Node):
         from scipy.spatial import cKDTree
         rtree = cKDTree(pts)
         mp = self.bundle.cloud
+        half = float(self.geom["col_len"]) / 2.0
         scores = []
         for dxk, dyk in cand:
-            dd, _ = self._map_tree.query(pts + [dxk, dyk],
+            # 대조는 **블록 안 점**으로만 한다 — 끝 구역 실스캔의 둑 반사가
+            # y-후보를 밀면 엉뚱한 줄기 예측과 가짜 매칭돼 오발한다 (실전
+            # 4회 오발로 est 10 m 이탈, 08-03; 합성은 둑이 없어 5/5였다).
+            inb = np.abs(pts[:, 1] + dyk) < half - 0.5
+            if inb.sum() < 200:
+                scores.append(0.0)
+                continue
+            sub = pts[inb]
+            dd, _ = self._map_tree.query(sub + [dxk, dyk],
                                          distance_upper_bound=0.4)
             f = float(np.isfinite(dd).mean())
             rx = mp[:, 0] - (est[0] + dxk)
@@ -542,6 +557,9 @@ class MapLocalizer(Node):
                                  distance_upper_bound=0.6)
             r = float(np.isfinite(dd2).mean())
             scores.append(f * r)
+        if max(scores) <= 0.0:
+            self._row_jump_streak = {}
+            return
         best = int(np.argmax(scores))
         if best == 0 or scores[best] < scores[0] + 0.10:
             self._row_jump_streak = {}
