@@ -413,7 +413,14 @@ class MapLocalizer(Node):
         ahead = sp[sp[:, 0] > 0.5]
         if len(ahead) < 40:
             return
-        d_meas = float(np.percentile(ahead[:, 0], 5))
+        # 시작선 거리는 백분위수로 재면 안 된다 — 가까운 첫 열은 점이 적어
+        # 원거리 질량에 밀린다 (실측: 1.5 m 를 2.9 m 로 읽어 시동 직후 est 를
+        # 1.4 m 끌어냄). 전방거리 히스토그램의 첫 유의 빈이 시작선이다.
+        h, edges = np.histogram(ahead[:, 0], bins=np.arange(0.5, 12.5, 0.3))
+        idx = np.flatnonzero(h >= 8)
+        if len(idx) == 0:
+            return
+        d_meas = float(edges[idx[0]])
         d_exp = (abs(est[1]) - half) / max(abs(hy), 0.7)   # 진행선 상 거리
         if d_meas > 12.0 or d_exp <= 0.0:
             return
