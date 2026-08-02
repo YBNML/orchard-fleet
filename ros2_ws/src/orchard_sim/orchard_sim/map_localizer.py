@@ -631,7 +631,7 @@ class MapLocalizer(Node):
         # 거부, 08-02). 앵커와 자이로가 실제 오차를 한계 아래로 묶어 주므로,
         # 고품질·소보정이 4회 연속 일관되면 재획득으로 받는다.
         if (not ok and why.startswith("보정 간 표류") and fix.quality >= 0.7
-                and abs(fix.dx) <= 1.2):
+                and abs(fix.dx) <= 1.6):   # 반간격(1.75) 안 — 1.2 는 실측 1.5 에 물렸다
             self._reacq_streak += 1
             if self._reacq_streak >= 4:
                 ok, why = True, ""
