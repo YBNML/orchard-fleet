@@ -413,16 +413,33 @@ class MapLocalizer(Node):
         ahead = sp[sp[:, 0] > 0.5]
         if len(ahead) < 40:
             return
-        # 시작선 거리는 백분위수로 재면 안 된다 — 가까운 첫 열은 점이 적어
-        # 원거리 질량에 밀린다 (실측: 1.5 m 를 2.9 m 로 읽어 시동 직후 est 를
-        # 1.4 m 끌어냄). 전방거리 히스토그램의 첫 유의 빈이 시작선이다.
-        h, edges = np.histogram(ahead[:, 0], bins=np.arange(0.5, 12.5, 0.3))
-        idx = np.flatnonzero(h >= 8)
+        # 기대 거리를 공식으로 만들면 안 된다 — 정면의 열 시작 나무는 원뿔
+        # 시야(±35°) 밖이라, 처음 보이는 나무는 둘째·셋째다 (실측: 공식 기대
+        # 1.5 m vs 관측 ~3 m 로 est 를 1.3 m 끌어냄). 맵의 줄기 점군을 est
+        # 자세에서 **같은 원뿔로 가상 스캔**해 첫 유의 빈끼리 비교하면 기하
+        # 편향이 상쇄된다.
+        bins = np.arange(0.5, 12.5, 0.3)
+        h, edges = np.histogram(ahead[:, 0], bins=bins)
+        idx = np.flatnonzero(h >= 5)
         if len(idx) == 0:
             return
         d_meas = float(edges[idx[0]])
-        d_exp = (abs(est[1]) - half) / max(abs(hy), 0.7)   # 진행선 상 거리
-        if d_meas > 12.0 or d_exp <= 0.0:
+        mp = self.bundle.cloud
+        rx = mp[:, 0] - est[0]
+        ry = mp[:, 1] - est[1]
+        cy_, sy_ = math.cos(est[2]), math.sin(est[2])
+        fx = rx * cy_ + ry * sy_
+        fyl = -rx * sy_ + ry * cy_
+        vis = (fx > 0.5) & (np.hypot(fx, fyl) < 25.0) \
+            & (np.abs(np.arctan2(fyl, fx)) < math.radians(35.2))
+        if vis.sum() < 10:
+            return
+        h2, _ = np.histogram(fx[vis], bins=bins)
+        idx2 = np.flatnonzero(h2 >= 3)   # 맵 점군은 줄기당 ~6점으로 성기다
+        if len(idx2) == 0:
+            return
+        d_exp = float(edges[idx2[0]])
+        if d_meas > 12.0:
             return
         err = d_exp - d_meas            # >0: 실제가 나무 선에 더 가깝다
         if abs(err) > 4.0:
