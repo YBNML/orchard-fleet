@@ -240,7 +240,13 @@ class MapLocalizer(Node):
             self.T_mo = compose(cur, inverse(self.T_ob))
 
     def _on_cloud(self, msg: PointCloud2):
-        self.last_cloud = read_xyz(msg)
+        p = read_xyz(msg)
+        # 센서 프레임 → base 프레임 전방 오프셋 보정. 이걸 빼먹은 채 위상을
+        # 재면 종위상에 −0.275 m 상수 편의가 실린다 — §3 실험에서 '수관 탓'
+        # 으로 결론냈던 −0.309 m 의 대부분이 실은 이 오프셋이었다(08-02
+        # 재발견). 종방향 보정을 켤 수 있게 된 근거다.
+        p[:, 0] += self.sensor_fwd
+        self.last_cloud = p
 
     # ── 현재 추정 ───────────────────────────────────────────────────────────
     def pose(self):
@@ -355,7 +361,7 @@ class MapLocalizer(Node):
         cone = (ang < math.radians(8.0)) & (r > 0.3) & (pts[:, 2] > -0.35)
         if cone.sum() < 40:
             return
-        measured = float(np.percentile(r[cone], 10)) + self.sensor_fwd
+        measured = float(np.percentile(r[cone], 10))   # 클라우드가 이미 base 기준
         if measured > self.anchor_max_range:
             return
         # 맵이 기대하는 둑까지 거리 — 주행가능 격자를 전방으로 긁는다.
@@ -445,7 +451,9 @@ class MapLocalizer(Node):
                        min(math.radians(0.5), fix.dyaw * 0.2))
         else:
             dyaw = 0.0
-        dy_apply = fix.dy * 0.5 if fix.longitudinal_ok else 0.0
+        # 종위상은 ±(간격/2) 앨리어싱 안에서만 유효 — 절반 이득 + 0.4 m 클램프
+        dy_apply = (max(-0.4, min(0.4, fix.dy * 0.5))
+                    if fix.longitudinal_ok else 0.0)
         new_pose = (px + fix.dx, py + dy_apply, wrap(pyaw + dyaw))
         self.T_mo = compose(new_pose, inverse(self.T_ob))
         self.drift_ref = self.T_ob
