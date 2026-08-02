@@ -109,7 +109,7 @@ class MapLocalizer(Node):
                                         # 도약한다(스냅 5회 폭주 실측, 08-03).
                                         # 다음 설계: 첫 빈 거리가 아니라 구조
                                         # 전체의 가상-실측 상관으로 칸 가설검정.
-        d("lost_critical_s", 90.0)      # 이만큼 못 잡으면 격상 — 로봇을 세워야 한다
+        d("lost_critical_s", 150.0)     # 격상 대기 — 정상 횡단(피벗2+등판+진입)이 최대 ~120초라 그보다 길게. 환상 주행은 여전히 잡는다(이전 사고는 5분+)
         d("imu_topic", "/imu")          # 요는 자이로 적분 — 바퀴는 회전을 속인다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
 
