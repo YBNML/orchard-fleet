@@ -206,6 +206,18 @@ class DriveMission(Feature):
             return VelocityRequest(0.0, self.turn_speed * (1 if err > 0 else -1),
                                    priority=5, reason="mission:align")
         self._align_key = None
+        # 횡단은 **방위 유지 조향** — est 위치 오차로 조향하지 않는다.
+        # 등판 슬립 중 위상 보정이 거부되면 est 가 오염되고, 그 오염이
+        # wz 요동으로 되먹임돼 접지를 무너뜨린다 (소거법 실측: 지형·피벗·
+        # 정속·정wz·참값폐루프 전부 개루프 4/4~56/56 인데 임무만 정체,
+        # 08-03). 횡단은 직선이다 — 자이로 방위만 물고 간다. est 는 도착
+        # 판정에만 쓴다.
+        if wp["kind"] == "cross":
+            want = 0.0 if dx > 0 else math.pi
+            err_h = (want - p[2] + math.pi) % (2 * math.pi) - math.pi
+            return VelocityRequest(self.speed,
+                                   max(-0.4, min(0.4, 1.0 * err_h)),
+                                   priority=5, reason="mission:cross-hold")
         v = self.speed_limit(p[1], dist)
         if wp["kind"] == "cross":
             # 클라임은 관성이 살린다 — 서행 구간(0.28 m/s)에서 출발하면
