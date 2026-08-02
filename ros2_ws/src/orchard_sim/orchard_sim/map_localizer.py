@@ -105,6 +105,9 @@ class MapLocalizer(Node):
 
         self.bundle = mapbundle.Bundle(str(g("bundle")))
         self.geom = self.bundle.meta["geom"]
+        from scipy.spatial import cKDTree
+        self._map_tree = cKDTree(self.bundle.cloud[:, :2])
+        self._row_jump_streak = {}      # 열 확정 — 후보 오프셋별 연속 우세 횟수
         self.get_logger().info(
             f"맵 번들 적재 — 해시 {self.bundle.hash} · 통로 {self.bundle.alley_count()}개"
             f" · 무결성 {'OK' if self.bundle.verify() else '불일치!'}")
@@ -455,6 +458,70 @@ class MapLocalizer(Node):
         self.last_anchor_t = time.monotonic()
         self.stat["n_tree_anchor"] = self.stat.get("n_tree_anchor", 0) + 1
 
+    def _row_disambig(self, sp):
+        """열 확정 — 위상의 '한 열 미끄러진 해'(±3.5 m)를 밭 가장자리로 깬다.
+
+        횡위상도, 두 앵커도 주기 구조라 x 의 정수 열 오차에는 장님이다 —
+        실측: 횡단 실패 후 est 가 한 열 옆에 잠긴 채 통로 하나를 통째로
+        '옆 통로'로 믿고 완주했다(08-03). 주기를 깨는 유일한 것은 밭
+        가장자리(끝 열 너머엔 나무가 없다)다: 실제 스캔을 맵 줄기 점군과
+        x±열간격 세 후보로 대조해, 가장자리가 시야에 들 때 우세한 후보가
+        4연속이면 열을 확정한다. 밭 한가운데서는 셋이 비겨 무해하다.
+        """
+        if len(sp) < 300:
+            return
+        est = self.pose()
+        c, s = math.cos(est[2]), math.sin(est[2])
+        wx = est[0] + sp[:, 0] * c - sp[:, 1] * s
+        wy = est[1] + sp[:, 0] * s + sp[:, 1] * c
+        pts = np.stack([wx, wy], axis=1)
+        S = float(self.geom["row_spacing"])
+        cand = (-S, 0.0, S)
+        from scipy.spatial import cKDTree
+        rtree = cKDTree(pts)
+        mp = self.bundle.cloud
+        scores = []
+        for dxk in cand:
+            # 정방향: 가설 위치에서 실점이 맵과 맞는가
+            dd, _ = self._map_tree.query(pts + [dxk, 0.0],
+                                         distance_upper_bound=0.4)
+            f = float(np.isfinite(dd).mean())
+            # 역방향: 가설 위치에서 **보여야 할** 맵 줄기가 실스캔에 있는가.
+            # 판별력은 여기서 나온다 — 틀린 가설은 가장자리 너머의 '없는
+            # 열'을 예측한다. 정방향만으론 두 가설이 비긴다(둘 다 실점이
+            # 어떤 열엔가 맞으므로).
+            rx = mp[:, 0] - (est[0] + dxk)
+            ry = mp[:, 1] - est[1]
+            fx = rx * c + ry * s
+            fyl = -rx * s + ry * c
+            vis = (fx > 1.0) & (np.hypot(fx, fyl) < 20.0) \
+                & (np.abs(np.arctan2(fyl, fx)) < math.radians(30.0))
+            if vis.sum() < 20:
+                scores.append(0.0)
+                continue
+            dd2, _ = rtree.query(mp[vis][:, :2] - [dxk, 0.0],
+                                 distance_upper_bound=0.6)
+            r = float(np.isfinite(dd2).mean())
+            scores.append(f * r)
+        best = int(np.argmax(scores))
+        if best == 1 or scores[best] < scores[1] + 0.10:
+            self._row_jump_streak = {}
+            return
+        self._row_jump_streak[best] = self._row_jump_streak.get(best, 0) + 1
+        if self._row_jump_streak[best] < 4:
+            return
+        self._row_jump_streak = {}
+        jump = cand[best]
+        new_pose = (est[0] + jump, est[1], est[2])
+        self.T_mo = compose(new_pose, inverse(self.T_ob))
+        if self.slip_active:
+            self._slip_anchor = new_pose
+            self._slip_ob_yaw0 = self.T_ob[2]
+        self.drift_ref = self.T_ob
+        self.get_logger().warning(
+            f"열 확정 — 가장자리 대조로 x {jump:+.1f} m 도약 "
+            f"(일치율 {scores[best]:.2f} vs 현재 {scores[1]:.2f})")
+
     def _try_fix(self):
         pts = self.last_cloud
         if pts is None or len(pts) == 0:
@@ -463,6 +530,7 @@ class MapLocalizer(Node):
         self._check_slip(sp0, pts)
         self._try_anchor(pts)
         self._try_treeline(sp0)
+        self._row_disambig(sp0)
         est = self.pose()
         # 오래 못 잡았으면 요 탐색을 넓혀 재획득 — 선회 직후에는 오도메트리
         # 요 오차가 ±12° 를 넘을 수 있다 (실측 19.5°)
