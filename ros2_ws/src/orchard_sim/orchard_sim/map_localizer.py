@@ -335,15 +335,20 @@ class MapLocalizer(Node):
             # — 지물이 측면 위주라 전진해도 히스토그램이 거의 안 밀린다.
             # 하네스 실측: 모든 램프·정책 56/56 통과인데 임무만 '슬립'으로
             # 섰다(08-03). 밖에서는 코앞 밀착이 동반될 때만 진짜 정체다.
-            est_y = self.pose()[1]
+            est = self.pose()
             half = float(self.geom["col_len"]) / 2.0
-            if abs(est_y) > half - 1.0:
+            # 기하맹은 **횡단 방위**에서만 생긴다 — 열 방향(남북) 주행은 장면이
+            # 전방이라 스캔 전진 측정이 유효하다. 첫 판(블록 밖 전부 무시)은
+            # 남측 하강의 진짜 슬립까지 버려 오도메트리 환상이 선회를 통째로
+            # 조작했다 (실측: 통로 1을 '통로 2'로 믿고 재주행, 08-03).
+            crossing = abs(math.sin(est[2])) < 0.7
+            if abs(est[1]) > half - 1.0 and crossing:
                 p_ = self.last_cloud
                 r_ = np.hypot(p_[:, 0], p_[:, 1])
                 if float((r_ < 1.2).mean()) < 0.25:
                     self._slip_count = 0        # 막힘 없음 — 시선기하 오독
                     self.get_logger().info(
-                        "슬립 신호 무시 — 블록 밖 + 전방 개활 (측면 기하 오독)")
+                        "슬립 신호 무시 — 횡단 방위 + 전방 개활 (기하맹)")
                     return
             self.slip_active = True
             self._slip_ob_yaw0 = self.T_ob[2]
