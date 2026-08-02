@@ -99,6 +99,9 @@ class MapLocalizer(Node):
         d("anchor_wall_offset_m", 0.7)  # 주행불가 경계(둑 발치)와 라이다가 보는
                                         # 면(0.3 m 높이) 사이 법면 후퇴량 (08-02 실측)
         d("sensor_fwd_m", 0.275)        # 라이다 광학 원점의 base_link 전방 오프셋
+        d("treeline_anchor", False)     # 진입 나무선 앵커 — 추정기 편향 미해결로
+                                        # 봉인 (시동 시 +3 m 오보정 실측, 08-03).
+                                        # 오프라인 스캔 캡처로 재보정 후 켤 것.
         d("lost_critical_s", 90.0)      # 이만큼 못 잡으면 격상 — 로봇을 세워야 한다
         d("imu_topic", "/imu")          # 요는 자이로 적분 — 바퀴는 회전을 속인다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
@@ -406,6 +409,8 @@ class MapLocalizer(Node):
         밀린 종오차가 위상의 '한 칸 미끄러진 해'(±1.5 m)로 잠겨 통로 전체를
         오답으로 달린다 (실측: 통로 1 전 구간 1.5 m 오프셋, 08-03).
         """
+        if not bool(self.get_parameter("treeline_anchor").value):
+            return
         est = self.pose()
         half = float(self.geom["col_len"]) / 2.0
         hy = math.sin(est[2])
