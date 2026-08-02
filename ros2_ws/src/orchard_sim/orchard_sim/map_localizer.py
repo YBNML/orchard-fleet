@@ -323,6 +323,20 @@ class MapLocalizer(Node):
                 self._emit("resolved", "TRACTION_LOSS", "구동이 회복되었습니다")
                 self.get_logger().info("슬립 해제 — 스캔 변위가 오도메트리와 일치")
         if self._slip_count >= 2 and not self.slip_active:
+            # 블록 밖(횡단·선회)에서는 전방축 1D 상관이 전진을 과소평가한다
+            # — 지물이 측면 위주라 전진해도 히스토그램이 거의 안 밀린다.
+            # 하네스 실측: 모든 램프·정책 56/56 통과인데 임무만 '슬립'으로
+            # 섰다(08-03). 밖에서는 코앞 밀착이 동반될 때만 진짜 정체다.
+            est_y = self.pose()[1]
+            half = float(self.geom["col_len"]) / 2.0
+            if abs(est_y) > half - 1.0:
+                p_ = self.last_cloud
+                r_ = np.hypot(p_[:, 0], p_[:, 1])
+                if float((r_ < 1.2).mean()) < 0.25:
+                    self._slip_count = 0        # 막힘 없음 — 시선기하 오독
+                    self.get_logger().info(
+                        "슬립 신호 무시 — 블록 밖 + 전방 개활 (측면 기하 오독)")
+                    return
             self.slip_active = True
             self._slip_ob_yaw0 = self.T_ob[2]
             self.T_mo = compose(self._slip_anchor, inverse(self.T_ob))
