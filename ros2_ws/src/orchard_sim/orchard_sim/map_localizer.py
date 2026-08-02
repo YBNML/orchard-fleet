@@ -118,6 +118,12 @@ class MapLocalizer(Node):
         from scipy.spatial import cKDTree
         self._map_tree = cKDTree(self.bundle.cloud[:, :2])
         self._row_jump_streak = {}      # 열 확정 — 후보 오프셋별 연속 우세 횟수
+        # 통로×단별 실측 벽 위치 — 겉보기 벽은 통로마다 최대 1.9 m 다른 곳에
+        # 선다(계단식 램프의 상승면). 보편 벽(레이캐스트+고정 법면) 가정이
+        # 앵커 만성 편향의 정체였다. 산포 ≤3 cm 실측 (08-03).
+        import pathlib as _pl
+        _aw = _pl.Path(str(g("bundle"))) / "anchor_walls.json"
+        self._anchor_walls = json.loads(_aw.read_text()) if _aw.exists() else None
         self._tree_snap_streak = {}     # 칸 스냅 — 연속 동일 판정 횟수
         self.get_logger().info(
             f"맵 번들 적재 — 해시 {self.bundle.hash} · 통로 {self.bundle.alley_count()}개"
@@ -385,8 +391,11 @@ class MapLocalizer(Node):
         # 둑을 등지고 있으면 전방에 벽이 없다 — 그때 잰 것은 벽이 아니라
         # 딴것이고, 실제로 기운 레이가 나무 열을 '벽'으로 오인해 추정을
         # 2 m 끌어내린 오발이 있었다 (08-02).
-        inward = ((est[1] > half - 2.0 and hy > 0.7)
-                  or (est[1] < -(half - 2.0) and hy < -0.7))
+        # 활성 창은 넉넉히 — est 기준이라, est 가 뒤처진 만큼(실측 2 m 주입
+        # 시 30초간 미개방) 문이 늦게 열리는 닭-달걀이 있다. 오발은 아래
+        # 벽 거리(≤12 m)·두께·방향 게이트가 막는다.
+        inward = ((est[1] > half - 6.0 and hy > 0.7)
+                  or (est[1] < -(half - 6.0) and hy < -0.7))
         if not inward:
             return
         r = np.hypot(pts[:, 0], pts[:, 1])
@@ -395,25 +404,25 @@ class MapLocalizer(Node):
         if cone.sum() < 40:
             return
         measured = float(np.percentile(r[cone], 10))   # 클라우드가 이미 base 기준
-        if measured > self.anchor_max_range:
+        if measured > 13.0:
             return
-        # 맵이 기대하는 둑까지 거리 — 주행가능 격자를 전방으로 긁는다.
-        # 격자 경계는 둑 '발치'고 라이다 원뿔(0.3 m 높이)이 보는 것은 법면
-        # 위쪽 면이라, 법면 후퇴량만큼 더 멀다 (보정 없이는 그만큼 편향된
-        # 고정점에 수렴한다 — 08-02 실측 0.7 m). 첫 비주행 셀만 보면 기운
-        # 레이가 스치는 나무 열(얇은 띠)도 잡힌다 — 1.2 m 두께가 이어져야
-        # 둑이다.
-        expected = None
-        for s in np.arange(0.3, self.anchor_max_range + 3.0, 0.1):
-            if all(not self.bundle.is_drivable(est[0] + hx * (s + q),
-                                               est[1] + hy * (s + q))
-                   for q in (0.0, 0.6, 1.2)):
-                expected = float(s) + self.anchor_wall_off
-                break
-        if expected is None:
+        # 기대 거리는 실측 벽 테이블에서 — 겉보기 벽 y 는 통로×단마다 다른
+        # 상수다 (레이캐스트+보편 법면 가정이 만성 편향의 정체, 08-03 실측).
+        if self._anchor_walls is None:
             return
-        err = expected - measured       # >0: 실제가 추정보다 둑에 가깝다
-        if abs(err) > 4.0:
+        S_ = float(self.geom["row_spacing"])
+        x0_ = float(self.geom["x0"])
+        k = int(round((est[0] - x0_) / S_ - 0.5))
+        k = max(0, min(int(self.geom["alleys"]) - 1, k))
+        end = "north" if hy > 0.0 else "south"
+        wall_y = self._anchor_walls.get(f"{k}:{end}")
+        if wall_y is None:
+            return
+        expected = (wall_y - est[1]) / hy   # 진행선 상 거리 (양수)
+        if expected <= 0.5 or expected > 16.0:
+            return
+        err = expected - measured       # >0: 실제가 추정보다 벽에 가깝다
+        if abs(err) > 5.0:
             return                      # 상식 밖 — 벽이 아닌 것을 봤다
         corr = err * self.anchor_gain
         new_pose = (est[0] + hx * corr, est[1] + hy * corr, est[2])
