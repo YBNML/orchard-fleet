@@ -181,6 +181,14 @@ class DriveMission(Feature):
         # 성분이 열 끝 모서리 경사로 파고든다 (실측: 남단에서 3회 모두
         # x≈-8.9 지점 밀착, 08-02). 직진 구간은 0.6 rad 로 충분하다.
         align_th = 0.15 if wp["kind"] == "cross" else 0.6
+        # 블록 안 traverse 에서는 피벗하지 않는다 — 횡표류가 계단 법면
+        # 깔때기에 걸리면 err 가 0.6 을 넘는데, 그 자리(법면 위)의 제자리
+        # 회전은 회전 슬립으로 쐐기가 된다 (실측: x=-9.1 근방 3회, 08-03).
+        # 조향각을 눌러 굴러가며 복귀하면 접지가 산다.
+        if (wp["kind"] == "traverse"
+                and abs(p[1]) < self.col_l / 2.0 - 1.0
+                and abs(err) > align_th):
+            err = max(-0.55, min(0.55, err))
         if abs(err) > align_th:
             # 방향 전환은 제자리 회전이 아니라 **호**로 돈다 — 램프에서
             # 제자리 회전은 궤도가 통째로 미끄러져 물리적으로 안 된다
