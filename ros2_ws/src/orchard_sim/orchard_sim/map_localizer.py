@@ -419,7 +419,7 @@ class MapLocalizer(Node):
         # 거부, 08-02). 앵커와 자이로가 실제 오차를 한계 아래로 묶어 주므로,
         # 고품질·소보정이 4회 연속 일관되면 재획득으로 받는다.
         if (not ok and why.startswith("보정 간 표류") and fix.quality >= 0.7
-                and abs(fix.dx) <= 1.2 and abs(math.degrees(fix.dyaw)) < 15.0):
+                and abs(fix.dx) <= 1.2):
             self._reacq_streak += 1
             if self._reacq_streak >= 4:
                 ok, why = True, ""
@@ -446,9 +446,12 @@ class MapLocalizer(Node):
         # 요를 편향된 측정이 덮어쓴다 (실측: AHRS 델타 오차 0.0° 인데 추정
         # 요가 24° 이탈, 08-02). 보정 dyaw 는 AHRS 표류를 흡수하는 미세
         # 트림으로만 쓴다 — 이득 0.2, 회당 ±0.5° 클램프, 블록 안에서만.
-        if fix.in_block:
-            dyaw = max(-math.radians(0.5),
-                       min(math.radians(0.5), fix.dyaw * 0.2))
+        # 트림은 아주 느려야 한다 — ±0.5°/회 는 2 Hz 로 1°/s: 블록 경계의
+        # 편향 측정 30초가 정확한 AHRS 를 30° 끌고 간다 (실측 16.8° 이탈,
+        # 08-03). 측정 자체가 작을 때(<3° = 믿을 장면)만 ±0.1° 씩.
+        if fix.in_block and abs(fix.dyaw) < math.radians(3.0):
+            dyaw = max(-math.radians(0.1),
+                       min(math.radians(0.1), fix.dyaw * 0.2))
         else:
             dyaw = 0.0
         # 종위상은 ±(간격/2) 앨리어싱 안에서만 유효 — 절반 이득 + 0.4 m 클램프
