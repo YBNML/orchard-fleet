@@ -163,6 +163,8 @@ class ControlAgent(Node):
                           history=HistoryPolicy.KEEP_LAST, depth=5)
         self._cloud_n = 0
         self._blocked_since = None
+        self._recover_until = 0.0       # 슬립 자율 복구 (후진) 종료 시각
+        self._recover_tries = {}        # 웨이포인트 idx → 재시도 횟수
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
                                  self._on_cloud, sqos)
         self._imu_R = None              # 기체 자세 (월드←바디) — 점군 수평화용
@@ -403,9 +405,22 @@ class ControlAgent(Node):
         text = d.get("msg", "")
         if kind == "assistance":
             # 슬립, 또는 장기 위치상실 격상(critical) — 계속 달리면 추정은
-            # 오도메트리 환상이 된다. 세우고 사람을 부른다.
+            # 오도메트리 환상이 된다. 세우고 사람을 부른다. 단 헤드랜드
+            # 구간의 슬립은 먼저 스스로 물러났다 재시도한다 (최대 2회).
             must_stop = (code == "TRACTION_LOSS"
                          or d.get("severity") == "critical")
+            ms = self.bb.extra.get("mission_status") or {}
+            phase, widx = ms.get("phase"), ms.get("idx")
+            if (code == "TRACTION_LOSS" and phase in ("exit", "cross", "enter")
+                    and self._recover_tries.get(widx, 0) < 2
+                    and not self.safety.paused):
+                self._recover_tries[widx] = self._recover_tries.get(widx, 0) + 1
+                self._recover_until = time.monotonic() + 4.0
+                self.event("assistance",
+                           f"클라임 슬립 — 후진 재시도 "
+                           f"{self._recover_tries[widx]}/2 ({text})",
+                           level="warn", code=code)
+                return
             if must_stop and not self.safety.paused:
                 self.safety.set_paused(True)
                 self._write_cmd(0.0, 0.0)
@@ -642,6 +657,12 @@ class ControlAgent(Node):
         self.safety.check_attitude(tilt if pose is not None else None)
         self.safety.update_link(self.server.client_count(), now)
 
+        # 슬립 자율 복구 — 사람이 하듯 조금 물러났다 다시 돌진한다.
+        # 클라임 슬립비(0.3~0.5)가 감시 문턱(0.35)에 걸쳐 있어, 즉시 정지만
+        # 하면 횡단 시도의 절반이 사람 손을 기다린다 (실측: 남단 4회 정지).
+        if self._recover_until > now:
+            self._write_cmd(-0.3, 0.0)
+            return
         requests = self.registry.tick(now)
         v, w, _why = self.safety.arbitrate(requests, now)
         if v == 0.0 and w == 0.0 and not self.idle_publish:
