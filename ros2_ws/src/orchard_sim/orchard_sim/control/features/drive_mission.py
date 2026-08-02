@@ -200,7 +200,13 @@ class DriveMission(Feature):
                                    priority=5, reason="mission:align")
         self._align_key = None
         v = self.speed_limit(p[1], dist)
-        if cross > 0.5:
+        if wp["kind"] == "cross":
+            # 클라임은 관성이 살린다 — 서행 구간(0.28 m/s)에서 출발하면
+            # 슬립 65% 오르막을 기다시피 오르다 코를 박는다 (실측: 횡단
+            # 시도의 절반이 밀착 정지, 08-02). 전속으로 치고 오르고, 감속도
+            # 면제한다 — 넘친 만큼은 다음 진입 웨이포인트가 되당긴다.
+            v = self.speed
+        elif cross > 0.5:
             v = min(v, self.speed * 0.4)    # 선을 벗어났으면 느리게 복귀한다
         return VelocityRequest(v * max(0.25, 1.0 - abs(err)), 1.4 * err,
                                priority=5, reason="mission:follow")
