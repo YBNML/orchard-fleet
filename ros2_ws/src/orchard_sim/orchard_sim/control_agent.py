@@ -411,7 +411,13 @@ class ControlAgent(Node):
                          or d.get("severity") == "critical")
             ms = self.bb.extra.get("mission_status") or {}
             phase, widx = ms.get("phase"), ms.get("idx")
-            if (code == "TRACTION_LOSS" and phase in ("exit", "cross", "enter")
+            # traverse 라도 헤드랜드(블록 밖)면 복구 대상 — 횡단이 조기 완료로
+            # 위장하면 정체가 traverse 단계에 떨어진다 (실측 3회, 08-03)
+            pose = self.bb.pose
+            headland = pose is not None and abs(pose[1]) > 28.0
+            eligible = (phase in ("exit", "cross", "enter")
+                        or (phase == "traverse" and headland))
+            if (code == "TRACTION_LOSS" and eligible
                     and self._recover_tries.get(widx, 0) < 2
                     and not self.safety.paused):
                 self._recover_tries[widx] = self._recover_tries.get(widx, 0) + 1
