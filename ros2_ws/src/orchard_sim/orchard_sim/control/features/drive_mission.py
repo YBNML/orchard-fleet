@@ -54,7 +54,11 @@ class DriveMission(Feature):
         앵커 — 통로×단별 실측 벽 위치로 접근 중 종오차를 소거한다
         (주입 2 m → 0.4 m 수렴 실측).
         """
-        return sign * (self.col_l / 2.0 + self.HL * 0.6667)
+        # 남북 비대칭 — 남측 겉보기 벽(램프 면)은 통로에 따라 -34.3~-35.6
+        # 로 북측(36.4~38.3)보다 얕다 (벽 테이블 실측). 호 정점(출구+1 m)이
+        # 램프 면을 넘지 않게 남측은 한 단 얕게 잡는다.
+        f = 0.6667 if sign > 0 else 0.5
+        return sign * (self.col_l / 2.0 + self.HL * f)
 
     def build_waypoints(self, alleys):
         y_lo = -self.col_l / 2.0 - self.HL * 0.25
