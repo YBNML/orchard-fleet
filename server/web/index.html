@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>과수원 관제 v2</title>
+<title>과수원 관제 v3</title>
 <style>
 /* ═══════════════════════════════════════════════════════════════════════════
    과수원 통합관제 — 관제 v2
@@ -112,7 +112,45 @@ header{
 #svcBanner.commissioning{background:var(--gold-soft); color:var(--gold)}
 
 /* ── 본문: 지도 + 우측 조작 ───────────────────────────────────────────── */
-main{display:grid; grid-template-columns:1fr 336px; min-height:0}
+main{display:grid; grid-template-columns:176px minmax(0,1fr) 336px; min-height:0}
+
+/* ── 좌측 내비 — 밭(지도)은 항상 무대에 있고, 내비는 우측 문맥 패널을
+   갈아끼운다. 항목 순서가 곧 운영 우선순위다: 개입이 맨 위다. ── */
+#side{display:flex; flex-direction:column; border-right:1px solid var(--line);
+  background:var(--panel); padding:10px 8px; gap:2px; min-height:0}
+#side .snav{display:flex; flex:0 0 auto; align-items:center; gap:9px; width:100%;
+  padding:9px 11px; border:0; border-radius:9px; background:none;
+  color:var(--dim); font-size:13px; text-align:left; cursor:pointer;
+  border-bottom:none}
+#side .snav:hover{background:var(--bg); color:var(--ink)}
+#side .snav[aria-selected="true"]{background:var(--bg); color:var(--ink);
+  font-weight:600; box-shadow:inset 3px 0 0 var(--leaf)}
+#side .snav .ico{width:17px; text-align:center; opacity:.75}
+#side .snav .qbadge{margin-left:auto}
+#side .divider{height:1px; background:var(--line-soft); margin:8px 4px}
+#side .spacer{flex:1}
+#sideAcct{font-size:11.5px; color:var(--dim); padding:8px 11px; line-height:1.7}
+#sideAcct b{color:var(--ink); font-weight:600}
+
+/* ── 기록 모달 — 목록(좌) + 상세(우). 감사 관점: 언제·누가·무엇을. ── */
+#recSheet{width:min(860px, 94vw); height:min(560px, 86vh); display:flex;
+  flex-direction:column}
+#recBody{display:grid; grid-template-columns:300px 1fr; gap:0; flex:1;
+  min-height:0; border:1px solid var(--line); border-radius:10px; overflow:hidden}
+#recList{overflow-y:auto; border-right:1px solid var(--line); background:var(--bg)}
+#recList .row{padding:8px 12px; border-bottom:1px solid var(--line-soft);
+  cursor:pointer; font-size:12px}
+#recList .row:hover{background:var(--panel)}
+#recList .row.sel{background:var(--panel); box-shadow:inset 3px 0 0 var(--gold)}
+#recList .row time{color:var(--dim); font-variant-numeric:tabular-nums;
+  margin-right:7px}
+#recList .row .k{font-weight:600}
+#recList .row.warn .k{color:var(--gold)} #recList .row.critical .k{color:var(--danger)}
+#recDetail{padding:14px 16px; overflow-y:auto; font-size:13px}
+#recDetail .lbl{font-size:11px; color:var(--dim); margin-top:10px}
+#recDetail pre{background:var(--bg); border:1px solid var(--line-soft);
+  border-radius:8px; padding:10px 12px; font-size:12px; overflow-x:auto;
+  margin-top:4px; white-space:pre-wrap; word-break:break-all}
 
 #stage{display:grid; grid-template-rows:1fr auto; min-height:0; min-width:0;
   border-right:1px solid var(--line)}
@@ -325,7 +363,11 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 
 /* ── 반응형: 태블릿·현장 ──────────────────────────────────────────────── */
 @media (max-width:1000px){
-  main{grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) auto}
+  main{grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr) auto}
+  #side{flex-direction:row; overflow-x:auto; border-right:0;
+    border-bottom:1px solid var(--line); padding:6px 8px}
+  #side .snav{width:auto; white-space:nowrap}
+  #side .divider,#side .spacer,#sideAcct{display:none}
   #stage{border-right:none; border-bottom:1px solid var(--line)}
   aside{max-height:52vh; border-top:1px solid var(--line)}
   header{gap:10px; padding:9px 12px}
@@ -374,6 +416,19 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 </div>
 
 <!-- 설정 (계정) -->
+<div id="rec-overlay" class="overlay">
+  <div class="sheet" id="recSheet">
+    <h2 class="serif">사건·명령 기록</h2>
+    <p class="dim" style="font-size:12px; margin:2px 0 10px">
+      로봇과 관제 사이에 오간 사건들입니다. 줄을 누르면 자세히 보입니다.</p>
+    <div id="recBody">
+      <div id="recList"></div>
+      <div id="recDetail"><div class="dim">왼쪽에서 사건을 고르세요.</div></div>
+    </div>
+    <button id="rec-close" class="wide" style="margin-top:12px">닫기</button>
+  </div>
+</div>
+
 <div id="settings-overlay" class="overlay">
   <div class="sheet" style="width:min(430px,100%)">
     <h2 class="serif">설정</h2>
@@ -398,7 +453,7 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 
 <header>
   <div class="brand">
-    <h1 class="serif">과수원 관제</h1><span class="ver">v2</span>
+    <h1 class="serif">과수원 관제</h1><span class="ver">v3</span>
   </div>
   <div id="fleet"></div>
   <div class="spacer"></div>
@@ -415,6 +470,22 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 <div id="svcBanner"></div>
 
 <main>
+  <nav id="side" aria-label="관제 내비게이션">
+    <button class="tab snav" data-tab="queue" aria-selected="false">
+      <span class="ico">⚑</span>개입 <span class="qbadge" id="qBadge">0</span></button>
+    <button class="tab snav" data-tab="mission" aria-selected="true">
+      <span class="ico">▤</span>임무</button>
+    <button class="tab snav" data-tab="drive" aria-selected="false"
+            data-min-role="operator"><span class="ico">✛</span>조종</button>
+    <button class="tab snav" data-tab="history" aria-selected="false">
+      <span class="ico">▥</span>이력</button>
+    <button class="tab snav" data-tab="info" aria-selected="false">
+      <span class="ico">ⓘ</span>정보</button>
+    <div class="divider"></div>
+    <button class="snav" id="recBtn"><span class="ico">≡</span>기록 전체</button>
+    <div class="spacer"></div>
+    <div id="sideAcct">—</div>
+  </nav>
   <div id="stage">
     <div id="mapwrap">
       <canvas id="map"></canvas>
@@ -460,14 +531,6 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
       <div id="resetStep"></div>
     </div>
 
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" data-tab="queue" aria-selected="false">
-        개입 <span class="qbadge" id="qBadge">0</span></button>
-      <button class="tab" role="tab" data-tab="mission" aria-selected="true">임무</button>
-      <button class="tab" role="tab" data-tab="drive" aria-selected="false">조종</button>
-      <button class="tab" role="tab" data-tab="history" aria-selected="false">이력</button>
-      <button class="tab" role="tab" data-tab="info" aria-selected="false">정보</button>
-    </div>
 
     <div class="panes">
       <!-- 개입 큐 — 로봇이 스스로 못 풀어 사람을 부른 건들 -->
@@ -646,6 +709,7 @@ async function boot() {
   try {
     const me = await api("/auth/me");
     ME = me.user; CSRF = me.csrf;
+    $("sideAcct").innerHTML = `<b>${esc(ME.login)}</b><br>${esc(ME.role)}`;
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
     refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
@@ -661,6 +725,7 @@ $("login-form").addEventListener("submit", async ev => {
                             password: $("login-pw").value})});
     if (!r.ok) throw new Error("아이디 또는 비밀번호가 틀립니다");
     const d = await r.json(); ME = d.user; CSRF = d.csrf;
+    $("sideAcct").innerHTML = `<b>${esc(ME.login)}</b><br>${esc(ME.role)}`;
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
     refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
@@ -1007,8 +1072,40 @@ function trackLoc(e){
     LOC_STATE = {cls:"", txt:""};
   }
 }
+/* 기록 모달 — 사건을 배열로도 쌓아 목록+상세로 되짚을 수 있게 한다.
+   화면 드로어는 최근 80건, 여기는 500건까지. */
+const REC = [];
+function recRender(){
+  const list = $("recList");
+  list.innerHTML = REC.map((x, i) =>
+    `<div class="row ${x.e.level || "info"}" data-i="${i}">` +
+    `<time>${new Date(x.e.t*1000).toLocaleTimeString("ko-KR",{hour12:false})}</time>` +
+    `<span class="k">${esc(x.e.kind || "event")}</span> ` +
+    `<span class="dim">${esc((x.e.msg || "").slice(0, 34))}</span></div>`).join("");
+  list.querySelectorAll(".row").forEach(row => row.onclick = () => {
+    list.querySelectorAll(".row").forEach(q => q.classList.remove("sel"));
+    row.classList.add("sel");
+    const x = REC[+row.dataset.i];
+    $("recDetail").innerHTML =
+      `<div style="font-weight:600; font-size:14px">${esc(x.e.kind || "event")}` +
+      (x.e.code ? ` <span class="chip">${esc(x.e.code)}</span>` : "") + `</div>` +
+      `<div class="lbl">시각</div><div>${new Date(x.e.t*1000).toLocaleString("ko-KR")}</div>` +
+      `<div class="lbl">로봇</div><div>${esc(x.rid)}</div>` +
+      `<div class="lbl">내용</div><div>${esc(x.e.msg || "—")}</div>` +
+      `<div class="lbl">원본</div><pre>${esc(JSON.stringify(x.e, null, 2))}</pre>`;
+  });
+}
+$("recBtn").onclick = () => { recRender(); $("rec-overlay").classList.add("on"); };
+$("rec-close").onclick = () => $("rec-overlay").classList.remove("on");
+$("rec-overlay").onclick = e => {
+  if (e.target === $("rec-overlay")) $("rec-overlay").classList.remove("on"); };
+
 function logEvent(r, e){
+  if (e.kind === "pong") return;       // 하트비트 응답은 기록 가치가 없다
   trackLoc(e);
+  REC.unshift({rid: r.id, e});
+  if (REC.length > 500) REC.pop();
+  if ($("rec-overlay").classList.contains("on")) recRender();
   const d = document.createElement("div");
   d.className = e.level || "info";
   const t = new Date(e.t*1000).toLocaleTimeString("ko-KR",{hour12:false});
