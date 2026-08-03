@@ -256,7 +256,13 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
   vertical-align:1px}
 .qbadge.on{display:inline-block}
 .qcard{border:1px solid var(--line); border-radius:10px; padding:10px 11px;
-  margin-bottom:8px; background:var(--bg)}
+  margin-bottom:8px; background:var(--bg); border-left-width:4px}
+/* 정지 사유 카테고리별 좌측 띠 — 구동(주황)·측위(보라)·인지(파랑)·자세(빨강) */
+.qcard[data-cat="구동"]{border-left-color:#B0641E}
+.qcard[data-cat="측위"]{border-left-color:#6E5AA8}
+.qcard[data-cat="인지"]{border-left-color:#3D6C9E}
+.qcard[data-cat="자세"]{border-left-color:var(--danger)}
+.qcard[data-cat="통신"]{border-left-color:#5B7A6A}
 .qcard.open{border-color:var(--danger); background:var(--danger-soft)}
 .qcard.acked{border-color:var(--gold); background:var(--gold-soft)}
 .qcard .top{display:flex; align-items:baseline; gap:7px}
@@ -267,6 +273,13 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 .qcard .meta{font-size:11.5px; color:var(--dim); margin-top:4px}
 .qcard .acts{display:flex; gap:6px; margin-top:9px}
 .qcard .acts button{flex:1; padding:7px; font-size:12px}
+/* 선회·횡단 구간 — 자이로 방위유지로 달리는 특수 구간임을 알린다 */
+.phase-turn{color:var(--gold); font-weight:600}
+.locchip{display:inline-block; font-size:10.5px; border:1px solid var(--line);
+  border-radius:999px; padding:1px 8px; margin-left:6px; vertical-align:1px;
+  color:var(--dim)}
+.locchip.warn{color:var(--gold); border-color:var(--gold)}
+.locchip.bad{color:var(--danger); border-color:var(--danger); font-weight:600}
 .mgrid{display:grid; grid-template-columns:1fr 1fr; gap:8px}
 .mcell{border:1px solid var(--line-soft); border-radius:9px; padding:9px 10px;
   background:var(--bg)}
@@ -513,6 +526,8 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
       <!-- 정보 -->
       <div class="pane" id="pane-info">
         <h3>센서</h3>
+        <div class="row"><span class="dim">라이다</span>
+          <span class="num" title="2026-08-03 MID-70에서 교체 — 360° 시야로 선회 중에도 열 보정 유지">Livox MID-360 · 360°×59°</span></div>
         <div class="row"><span class="dim">SLAM 이격</span><span id="gap" class="num">—</span></div>
         <div class="row"><span class="dim">맵 셀</span><span id="mcells" class="num">—</span></div>
         <div id="warns" style="margin-top:9px"></div>
@@ -892,8 +907,17 @@ function syncPanels(){
   const m = p.mission;
   if (m){
     $("mProg").textContent = `${m.idx}/${m.total} · ${hms(m.elapsed)}`;
-    $("mPhase").textContent = `통로 ${m.alley ?? "—"} · ${phaseName(m.phase)}`;
-  } else { $("mProg").textContent = $("mPhase").textContent = "—"; }
+    const turning = ["exit","cross","enter"].includes(m.phase);
+    $("mPhase").innerHTML =
+      `통로 ${m.alley ?? "—"} · ` +
+      (turning
+        ? `<span class="phase-turn">${phaseName(m.phase)}</span>` +
+          `<span class="locchip warn" title="선회·횡단 구간은 자이로 방위유지로 달립니다">선회 구간</span>`
+        : esc(phaseName(m.phase))) + locChipHtml();
+  } else {
+    $("mProg").textContent = "—";
+    $("mPhase").innerHTML = "—" + locChipHtml();
+  }
 }
 // 해제 절차를 화면이 그대로 설명한다 — "왜 안 풀리지?" 를 묻지 않게 한다.
 // 관제 승인만으로는 절대 풀리지 않고, 누군가 기체까지 가야 한다는 것이 요점이다.
@@ -960,7 +984,31 @@ $("drawerBar").onclick = () => {
   $("drawerCaret").textContent = logOpen ? "▼" : "▲";
   if (logOpen){ logUnread = 0; $("logCnt").classList.remove("on"); }
 };
+/* 추정 건강 상태 — 로컬라이저의 assistance/resolved 이벤트로 유지한다.
+   슬립·상실은 로봇이 이미 스스로 세웠다는 뜻이라, 칩은 '왜 서 있는지'를
+   한 눈에 답하는 용도다. */
+let LOC_STATE = {cls:"", txt:""};
+function locChipHtml(){
+  return LOC_STATE.txt
+    ? `<span class="locchip ${LOC_STATE.cls}">${esc(LOC_STATE.txt)}</span>` : "";
+}
+function trackLoc(e){
+  const msg = e.msg || "";
+  if (e.kind === "assistance"){
+    if (e.code === "TRACTION_LOSS" || msg.includes("헛돎"))
+      LOC_STATE = {cls:"bad", txt:"슬립 감지"};
+    else if (e.code === "OBSTACLE_FRONT" || msg.includes("밀착"))
+      LOC_STATE = {cls:"bad", txt:"전방 밀착"};
+    else if (e.code === "LOCALIZATION_LOST" || msg.includes("위치"))
+      LOC_STATE = {cls:"warn", txt:"위치 재획득 중"};
+  } else if (e.kind === "resolved"){
+    LOC_STATE = {cls:"", txt:""};
+  } else if (e.kind === "mission_resumed"){
+    LOC_STATE = {cls:"", txt:""};
+  }
+}
 function logEvent(r, e){
+  trackLoc(e);
   const d = document.createElement("div");
   d.className = e.level || "info";
   const t = new Date(e.t*1000).toLocaleTimeString("ko-KR",{hour12:false});
@@ -1280,7 +1328,7 @@ async function refreshQueue(){
   const canAct = ME && ROLE_RANK[ME.role] >= ROLE_RANK.operator;
   box.innerHTML = rows.map(r => {
     const age = Math.max(0, (Date.now() - Date.parse(r.opened_at)) / 1000);
-    return `<div class="qcard ${r.state.toLowerCase()}" data-id="${r.id}">
+    return `<div class="qcard ${r.state.toLowerCase()}" data-id="${r.id}" data-cat="${esc(r.category)}">
       <div class="top"><span class="ttl">${esc(r.label)}</span>
         <span class="cat">${esc(r.category)}</span>
         ${r.needs_site_visit ? '<span class="visit">현장 출동</span>' : ""}</div>
