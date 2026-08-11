@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>robomw</name>
+  <version>0.1.0</version>
+  <description>로봇측 미들웨어 — 명령 계약·안전·링크 (ROS 비의존 코어)</description>
+  <maintainer email="rla1231013@gmail.com">myhome</maintainer>
+  <license>MIT</license>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
