@@ -24,9 +24,11 @@ docs/findings/2026-07-30-fleet-stack-decision.md 참조.
 기능 늘리고 줄이기
     파라미터 features 목록으로 정한다. 기본값은 지금 쓰는 다섯 개다.
         ros2 run orchard_sim control_agent --ros-args \
-            -p "features:=['telemetry_state','telemetry_health','drive_teleop']"
-    기능을 새로 만들려면 control/features/ 에 모듈 하나 넣고 목록에 이름을
+            -p "features:=['telemetry_state','telemetry_health','teleop']"
+    기능을 새로 만들려면 robomw/features/ 에 모듈 하나 넣고 목록에 이름을
     추가한다 — 이 파일은 고치지 않는다. 계약은 robomw/core/base.py 참조.
+    현장(과수원)에 매인 거동은 robomw/profiles/orchard/ 에 두고 목록에는
+    완전 경로로 적는다.
 
 안전은 기능이 아니다
     비상정지·데드맨·링크두절·전복은 robomw/core/safety.py 의 코어에 있고,
@@ -50,7 +52,7 @@ from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import Empty
 from std_msgs.msg import String as StringMsg
 
-from orchard_sim.adapters import RosDrive, RosSensors
+from orchard_sim.adapters import RosCloudWorld, RosDrive, RosSensors
 from robomw.core.audit import R_ACCEPT, R_REJECT, AuditLog
 from robomw.core.base import Blackboard, Context
 from robomw.core.registry import Registry
@@ -59,8 +61,17 @@ from robomw.core.safety import SafetyArbiter
 from robomw.link import protocol as P
 from robomw.link.wsserver import ControlServer
 
+# 이름만 적은 것은 robomw.features 아래 모듈이고, 점이 들어간 것은 완전
+# 경로다 — 임무 엔진은 과수원 **현장 프로파일**이라 robomw.profiles 에 있다
+# (다른 현장에 이 기체를 보내면 이 한 줄만 바뀐다).
 DEFAULT_FEATURES = ["telemetry_state", "telemetry_health", "telemetry_map",
-                    "drive_mission", "drive_teleop"]
+                    "robomw.profiles.orchard.mission", "teleop"]
+
+# 이관(T7) 전 이름 → 새 모듈 경로. 런치 파일·파라미터·현장 설정에 옛 이름이
+# 남아 있어도 그대로 뜨게 한다. 기능의 name 은 안 바뀌므로(drive_mission·
+# drive_teleop) 대시보드 패널(data-needs)과 hello 목록은 영향이 없다.
+LEGACY_FEATURES = {"drive_mission": "robomw.profiles.orchard.mission",
+                   "drive_teleop": "teleop"}
 
 # 이 로봇이 서 있는 현장의 종류 (hello v2 의 site.type). 토픽 앞머리와 같은
 # 어휘를 쓴다 — 관제가 화면(지도·패널)을 고르는 열쇠다.
@@ -204,6 +215,11 @@ class ControlAgent(Node):
             self,
             v_max=max(float(g("speed")), float(g("teleop_max_v"))),
             w_max=max(float(g("turn_speed")), float(g("teleop_max_w"))))
+        # 점군을 map 프레임 점 배열로 풀어 주는 공급원. 기능(robomw)은 ROS
+        # 메시지를 모르므로 어댑터가 풀어서 넘긴다 — 지도 격자 기능이 이걸
+        # 받는다. 받을 기능이 하나도 없으면 변환도 하지 않는다.
+        self.cloud_world = RosCloudWorld(self, self.bb,
+                                         range_max=float(g("map_range_max", 25.0)))
         sqos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           history=HistoryPolicy.KEEP_LAST, depth=5)
         self._blocked_since = None
@@ -263,8 +279,17 @@ class ControlAgent(Node):
 
         # ── 기능 적재 ───────────────────────────────────────────────────────
         ctx = Context(self, self.bb, self._emit, self.event,
-                      lambda n, dflt=None: g(n, dflt), self.safety)
-        names = list(g("features") or DEFAULT_FEATURES)
+                      lambda n, dflt=None: g(n, dflt), self.safety,
+                      emit_cmd_result=self._feature_cmd_result)
+        names = []
+        for n in (g("features") or DEFAULT_FEATURES):
+            n = str(n).strip()
+            if n in LEGACY_FEATURES:
+                self.get_logger().warn(
+                    f"기능 '{n}' 은 옛 이름이다 — '{LEGACY_FEATURES[n]}' 로 적재한다 "
+                    f"(설정을 새 이름으로 고칠 것)")
+                n = LEGACY_FEATURES[n]
+            names.append(n)
         self.registry = Registry(ctx, on_event=self.event).load(names)
         if self.registry.failed:
             self.get_logger().warn(f"적재 실패 기능: {self.registry.failed}")
@@ -390,6 +415,10 @@ class ControlAgent(Node):
         잡을 수 있으니 여기서 세운다.
         """
         self.rate["lidar"].tick(time.monotonic())
+        # 지도 격자용 공급 — 예전에는 지도 기능이 이 토픽을 따로 구독했다.
+        # 두 콜백의 순서는 원래도 정해져 있지 않았으므로 여기서 먼저 넘겨도
+        # 밀착 판단이 받는 지연은 예전 그대로다. 솎인 프레임도 지도에는 쓴다.
+        self.cloud_world.feed(msg)
         got = self.sensors.feed_cloud(msg)
         if got is None:                 # 솎였거나 점이 모자란 프레임 — 직전 값 유지
             return
@@ -483,6 +512,13 @@ class ControlAgent(Node):
         with self._lock:
             self.events.append(e)
             self.events = self.events[-50:]
+            if kind == "assistance":
+                # 임무 완료 보고의 interventions. assistance 는 관제 개입 큐로
+                # 가는 사건이므로, 그 횟수가 곧 '사람 손이 필요했던 횟수'다.
+                # 세는 것은 호스트가 하고(이벤트가 여기로 모인다) 보고에 싣는
+                # 것은 임무 기능이 한다.
+                self.bb.extra["mission_interventions"] = int(
+                    self.bb.extra.get("mission_interventions", 0)) + 1
         self._emit("event", e)
         # SafetyArbiter 가 event 를 콜백으로 물고 있어 audit 생성 전에도 불릴 수 있다
         if getattr(self, "audit", None) and kind not in ("denied",):   # denied 는 _deny 가 이미 남긴다
@@ -655,6 +691,22 @@ class ControlAgent(Node):
         e.setdefault("msg", f"{res.get('cmd')} → {res.get('status')}"
                             + (f" ({code})" if code and code != "OK" else ""))
         self._emit("event", e)
+
+    def _feature_cmd_result(self, cmd_id, cmd, status, code="OK", data=None):
+        """기능이 **나중에** 내는 결과를 라우터의 결과 경로로 보낸다.
+
+        임무 완료 보고가 이 길로 나간다 (Context.emit_cmd_result → 여기 →
+        CommandRouter.emit_result). 라우터를 거치는 이유는 두 가지다: 같은
+        cmd_id 캐시에 남아야 관제가 다시 물었을 때 같은 답이 나가고, 발행
+        형식이 한 곳에서만 만들어져야 언젠가 갈라지지 않는다.
+        """
+        r = getattr(self, "router", None)
+        if r is None:
+            # 기능 적재 중(라우터 생성 전)에는 결과를 낼 곳이 없다. setup 에서
+            # 명령 결과를 내는 기능은 없지만, 조용히 죽는 것보다 낫다.
+            self.get_logger().warn(f"cmd_result 를 낼 라우터가 아직 없다: {cmd}")
+            return None
+        return r.emit_result(cmd_id, cmd, status, code, data)
 
     def _core_result(self, payload, cmd, status, code="OK", data=None):
         """코어가 직접 처리한 명령의 결과. cmd_id 가 없으면 아무것도 안 한다.

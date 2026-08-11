@@ -9,8 +9,10 @@ robomw/tests/test_no_ros_imports.py). 그래서 rclpy·메시지 타입·tf2 에
     Drive      → ros_drive.RosDrive       (/cmd_vel 발행)
     Localizer  → ros_sensors.RosSensors   (TF 포즈·로컬라이저 진단)
     Perception → ros_sensors.RosSensors   (점군 여유거리·밀착률)
+    (점군 공급) → ros_cloud.RosCloudWorld  (PointCloud2 → map 프레임 점 배열)
 """
+from orchard_sim.adapters.ros_cloud import RosCloudWorld
 from orchard_sim.adapters.ros_drive import RosDrive
 from orchard_sim.adapters.ros_sensors import RosSensors
 
-__all__ = ["RosDrive", "RosSensors"]
+__all__ = ["RosCloudWorld", "RosDrive", "RosSensors"]

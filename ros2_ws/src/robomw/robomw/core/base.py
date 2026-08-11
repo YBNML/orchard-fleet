@@ -17,7 +17,8 @@
 **요청**할 뿐이고, 최종 출력은 항상 안전 조정자를 통과한다.
 
 기능 하나 추가하는 절차
-    1. control/features/ 에 모듈 하나 만들고 Feature 를 상속한다
+    1. robomw/features/ 에 모듈 하나 만들고 Feature 를 상속한다
+       (현장에 매인 거동이면 robomw/profiles/<현장>/ 에 두고 완전 경로로 적는다)
     2. 파라미터 features 목록에 모듈명을 넣는다
     3. 끝. 코어 파일은 고치지 않는다
 
@@ -88,13 +89,15 @@ class Context:
     전송을 MQTT 로 바꾸거나 텔레메트리를 샘플링해도 기능을 안 고친다.
     """
 
-    def __init__(self, node, bb, emit, event, params, safety):
+    def __init__(self, node, bb, emit, event, params, safety,
+                 emit_cmd_result=None):
         self.node = node
         self.bb = bb
         self._emit = emit
         self._event = event
         self._params = params
         self.safety = safety        # 읽기 전용 조회용 (estop 여부 등)
+        self._cmd_result = emit_cmd_result   # 호스트가 라우터의 결과 경로를 꽂는다
         self._lookup = None         # 레지스트리가 적재할 때 꽂아준다
 
     def bind_features(self, lookup) -> None:
@@ -131,6 +134,20 @@ class Context:
     def event(self, kind: str, msg: str, level: str = "info", **extra):
         # extra 는 정지 사유 코드(code=...) 등 — 관제 개입 큐 라우팅 키
         self._event(kind, msg, level, **extra)
+
+    def emit_cmd_result(self, cmd_id, cmd, status, code="OK", data=None):
+        """오래 걸리는 명령의 결과를 낸다 (임무 완료 보고·즉시 거부 등).
+
+        **기능이 cmd_result 봉투를 직접 만들지 않는다.** 결과는 라우터의 같은
+        경로·같은 cmd_id 캐시로 나가야 재전송에 같은 답이 나가고, 형식이
+        갈라지지 않는다. 기능은 '무엇이 어떻게 됐는지'만 말한다.
+
+        cmd_id 가 없으면(옛 클라이언트가 상관 키 없이 보낸 명령) 아무것도 하지
+        않는다 — 짝지을 상대가 없는 결과는 화면에서 고아가 된다.
+        """
+        if not cmd_id or self._cmd_result is None:
+            return None
+        return self._cmd_result(cmd_id, cmd, status, code, data)
 
     def param(self, name, default=None):
         return self._params(name, default)

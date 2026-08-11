@@ -3,10 +3,10 @@
 
 파라미터 예:
     features: ["telemetry_state", "telemetry_health", "telemetry_map",
-               "drive_mission", "drive_teleop"]
+               "teleop", "robomw.profiles.orchard.mission"]
 
-이름은 orchard_sim.control.features 아래 모듈명이다. 점이 들어간 이름은
-완전 경로로 본다 (사내 다른 패키지의 기능도 붙일 수 있게).
+이름은 robomw.features 아래 모듈명이다. 점이 들어간 이름은 완전 경로로 본다 —
+현장 프로파일(robomw.profiles.*)이나 사내 다른 패키지의 기능도 그렇게 붙인다.
 
 **기능 하나가 터져도 관제가 죽지 않는다.** 훅마다 예외를 잡아 그 기능만
 격리하고 이벤트로 올린다. 관제가 죽는 것이 기능 하나 죽는 것보다 훨씬 나쁘다 —
@@ -28,7 +28,7 @@ import time
 
 from robomw.core.base import Feature
 
-PKG = "orchard_sim.control.features"
+PKG = "robomw.features"
 
 
 class _Node:

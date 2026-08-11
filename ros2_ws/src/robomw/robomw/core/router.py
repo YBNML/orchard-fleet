@@ -24,6 +24,18 @@ class CommandRouter:
         self._emit(res)
         return res
 
+    def emit_result(self, cmd_id, cmd, status, code="OK", data=None):
+        """명령이 끝난 **나중에** 나오는 결과 (임무 완료 보고 등).
+
+        기능이 Context.emit_cmd_result 로 부르면 여기로 온다. 즉시 답하는
+        결과와 같은 경로·같은 캐시를 쓰는 이유: 관제가 같은 cmd_id 를 다시
+        물었을 때 마지막 답이 그대로 나와야 하고, 발행 형식이 두 벌이 되면
+        언젠가 갈라진다.
+        """
+        if not cmd_id:
+            return None
+        return self._result(cmd_id, cmd, status, code, data)
+
     def handle(self, cmd, payload, role):
         cmd_id = payload.get("cmd_id")
         if cmd_id and cmd_id in self._cache:
@@ -50,6 +62,13 @@ class CommandRouter:
                         "level": "critical", "code": "CMD_INTERNAL"})
             return res
         if cmd_id:
+            done = self._cache.get(cmd_id)
+            if done is not None:
+                # 기능이 처리 도중에 이미 답을 냈다 (측위 미준비 거부·잘못된
+                # work·즉시 완료). 그 답이 최종이다 — 여기서 accepted 로
+                # 덮으면 거부가 수락으로 뒤집혀 관제가 임무가 도는 줄 안다.
+                # (입구에서 캐시를 확인하고 왔으므로 이 항목은 방금 생긴 것이다)
+                return done
             if handled:
                 return self._result(cmd_id, cmd, "accepted", "OK")
             return self._result(cmd_id, cmd, "rejected", "BAD_PARAM",

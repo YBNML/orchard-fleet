@@ -65,3 +65,34 @@ def test_dispatch_exception_without_cmd_id_still_warns():
     r = CommandRouter(BoomReg(), events.append, lambda c: True)
     assert r.handle("mission_pause", {}, P.ROLE_OPERATOR) is None
     assert [e["kind"] for e in events] == ["assistance"]
+
+
+def test_feature_result_wins_over_accepted():
+    """기능이 처리 중에 낸 답(거부)을 라우터가 accepted 로 덮지 않는다.
+
+    측위 미준비 BUSY 거부가 이 경로를 탄다 — 덮이면 관제는 임무가 도는 줄 안다.
+    """
+    events = []
+    r = CommandRouter(None, events.append, lambda c: True)
+
+    class RejReg:
+        def dispatch(self, cmd, payload):
+            r.emit_result(payload["cmd_id"], cmd, "rejected", "BUSY",
+                          {"reason": "측위 미준비"})
+            return True                     # 기능이 처리는 했다
+    r._reg = RejReg()
+    res = r.handle(P.CMD_MISSION_START, {"cmd_id": "c10"}, P.ROLE_OPERATOR)
+    assert res["status"] == "rejected" and res["code"] == "BUSY"
+    assert [e["status"] for e in events] == ["rejected"]      # accepted 발행 없음
+
+
+def test_emit_result_later_is_cached_and_replayed():
+    """임무 완료 보고처럼 나중에 나오는 결과도 같은 cmd_id 캐시에 남는다."""
+    r, reg, events = mk()
+    r.handle(P.CMD_MISSION_START, {"cmd_id": "c11"}, P.ROLE_OPERATOR)
+    late = r.emit_result("c11", P.CMD_MISSION_START, "completed",
+                         data={"coverage": 1.0})
+    assert late["status"] == "completed" and late["data"]["coverage"] == 1.0
+    again = r.handle(P.CMD_MISSION_START, {"cmd_id": "c11"}, P.ROLE_OPERATOR)
+    assert again == late and reg.calls == [P.CMD_MISSION_START]   # 재실행 없음
+    assert r.emit_result(None, P.CMD_MISSION_START, "completed") is None
