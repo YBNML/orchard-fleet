@@ -107,6 +107,36 @@ graph = co.RouteGraph(g, segs, dist)
 alleys = co.alley_polylines(graph, min_length=10.0)
 
 
+def column_runs(graph, half_len, min_len=10.0):
+    """모든 그래프 엣지에서 나무 열 구간(|y|<=half_len)의 연속 런을 뽑는다.
+
+    선회 평지 패드(08-10)가 통로 쌍을 물리적으로 이어 자유공간이 사다리가
+    아니라 뱀형이 됐다 — 스켈레톤 엣지 하나가 U-호 너머 통로 두 개에 걸치고,
+    그런 엣지는 끝점 변위 기준(along_row)으로는 통로로 분류되지 않는다.
+    분류 기준을 '엣지의 전체 모양'에서 '수목 구간 안의 직선 런'으로 바꾼다.
+    """
+    runs = []
+    for e in graph.edges:
+        pts = e["pts"]
+        if pts[0, 1] > pts[-1, 1]:
+            pts = pts[::-1]
+        m = np.abs(pts[:, 1]) <= half_len
+        i, n = 0, len(pts)
+        while i < n:
+            if not m[i]:
+                i += 1
+                continue
+            j = i
+            while j < n and m[j]:
+                j += 1
+            seg = pts[i:j]
+            ln = float(np.linalg.norm(np.diff(seg, axis=0), axis=1).sum())
+            if ln >= min_len:
+                runs.append(dict(pts=seg, width=e["width"], length=ln))
+            i = j
+    return runs
+
+
 def flanked(al, obst_mask, grid, cell, spacing, need=0.80):
     """양옆이 나무 열로 둘러싸인 통로만 '작업 통로'로 친다.
 
@@ -148,10 +178,22 @@ def trim_to_column(al, half_len):
                 length=float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()))
 
 
-kept = [al for al in alleys if flanked(al, obst, g, CELL, S)]
-kept = [t for t in (trim_to_column(al, L / 2) for al in kept) if t is not None]
-dropped = len(alleys) - len(kept)
-alleys = kept
+runs = column_runs(graph, L / 2)
+kept = [r for r in runs if flanked(r, obst, g, CELL, S)]
+dropped = len(runs) - len(kept)
+# 같은 통로에 걸린 런들을 병합 (분기점이 통로 중간을 끊을 수 있다)
+by_k = {}
+for r in kept:
+    k = int(round((float(np.mean(r["pts"][:, 0])) - X0) / S - 0.5))
+    by_k.setdefault(k, []).append(r)
+alleys = []
+for k in sorted(by_k):
+    pts = np.concatenate([p["pts"] for p in by_k[k]])
+    pts = pts[np.argsort(pts[:, 1])]
+    alleys.append(dict(
+        pts=pts,
+        width=float(np.median([p["width"] for p in by_k[k]])),
+        length=float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())))
 print(f"   세그먼트 {len(segs)} · 노드 {len(graph.nodes)} · 통로 중심선 {len(alleys)}개"
       f" (기대 {R - 1})" + (f" · 가장자리 띠 {dropped}개 제외" if dropped else ""))
 

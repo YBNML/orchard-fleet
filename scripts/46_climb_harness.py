@@ -33,6 +33,8 @@ from tf2_msgs.msg import TFMessage
 sys.path.insert(0, "sim") if False else None
 
 import json
+
+Y_TGT = 34.0            # P9 목표 y — run_block 이 시작 y 로 덮는다
 M = json.load(open("sim/models/orchard_terrain/heightmap_meta.json"))
 H = np.load("sim/models/orchard_terrain/heightmap.npy")
 N, HALF, E = H.shape[0], M["half"], M["size_x"]
@@ -128,11 +130,36 @@ def drive(h: Harness, policy: str, goal_x: float, t_max=45.0):
         elif policy == "P8":
             h.cmd(0.7, 0.35)
         elif policy == "P9":            # 임무형 폐루프: 목표점 조준 (참값 사용)
-            gx2, gy2 = goal_x + 0.5, 34.0
+            gx2, gy2 = goal_x + 0.5, Y_TGT
             err = (math.atan2(gy2 - h.p[1], gx2 - h.p[0]) - h.p[2]
                    + math.pi) % (2 * math.pi) - math.pi
             h.cmd(0.7, max(-0.6, min(0.6, 1.4 * err)))
         h.spin(0.05)
+
+
+def run_block(h, fx, y, policies, n):
+    """한 횡단 지점에서 정책별 n회 시도. 반환 {정책: (통과수, 평균초, 최악정체)}."""
+    global Y_TGT
+    Y_TGT = y
+    goal_x = fx + 3.5 - 0.5             # 다음 통로 중심 못 미쳐 0.5 m
+    print(f"클라임 하네스 — ({fx}, {y}) → x≥{goal_x:.1f} · 시도 {n}회/정책")
+    print("=" * 72)
+    results = {}
+    for pol in policies:
+        start_x = fx - (2.5 if pol == "P2" else 0.0)
+        ok_n, times, stalls = 0, [], []
+        for i in range(n):
+            h.teleport(start_x, y, 0.0)
+            ok, el, st = drive(h, pol, goal_x)
+            ok_n += ok
+            times.append(el)
+            stalls.append(st)
+            print(f"  {pol} #{i+1:2d}: {'통과' if ok else '실패'} "
+                  f"{el:5.1f}초 · 최대정체 {st:4.1f}초")
+        results[pol] = (ok_n, np.mean(times), np.max(stalls))
+        print(f"  {pol} 합계: {ok_n}/{n} 통과 · 평균 {np.mean(times):.1f}초")
+        print("-" * 72)
+    return results
 
 
 def main():
@@ -142,32 +169,32 @@ def main():
     ap.add_argument("--from-x", type=float, default=-10.5,   # 통로 1 → 2
                     dest="fx")
     ap.add_argument("--y", type=float, default=34.0)
+    ap.add_argument("--mission-pairs", action="store_true",
+                    help="임무 파리티대로 8개 횡단(짝수k 북, 홀수k 남)을 순회한다 "
+                         "(선회 패드 검증, 08-10)")
     a = ap.parse_args()
 
     rclpy.init()
     h = Harness()
     h.spin(1.0)
-    goal_x = a.fx + 3.5 - 0.5           # 다음 통로 중심 못 미쳐 0.5 m
-    print(f"클라임 하네스 — ({a.fx}, {a.y}) → x≥{goal_x:.1f} · 시도 {a.n}회/정책")
-    print("=" * 72)
-    results = {}
-    for pol in a.policies.split(","):
-        start_x = a.fx - (2.5 if pol == "P2" else 0.0)
-        ok_n, times, stalls = 0, [], []
-        for i in range(a.n):
-            h.teleport(start_x, a.y, 0.0)
-            ok, el, st = drive(h, pol, goal_x)
-            ok_n += ok
-            times.append(el)
-            stalls.append(st)
-            print(f"  {pol} #{i+1:2d}: {'통과' if ok else '실패'} "
-                  f"{el:5.1f}초 · 최대정체 {st:4.1f}초")
-        results[pol] = (ok_n, np.mean(times), np.max(stalls))
-        print(f"  {pol} 합계: {ok_n}/{a.n} 통과 · 평균 {np.mean(times):.1f}초")
-        print("-" * 72)
-    print("\n정책     통과율   평균시간  최악정체")
-    for pol, (k, tm, st) in results.items():
-        print(f"  {pol}   {k:2d}/{a.n}   {tm:6.1f}초  {st:5.1f}초")
+    pols = a.policies.split(",")
+    if a.mission_pairs:
+        allres = {}
+        for k in range(8):
+            side = 1.0 if k % 2 == 0 else -1.0
+            fx = -14.0 + 3.5 * k
+            y = side * (34.0 if side > 0 else 33.5)
+            allres[k] = run_block(h, fx, y, pols, a.n)
+        print("\n쌍     " + "   ".join(f"{p:>10s}" for p in pols))
+        for k, res in allres.items():
+            side = "N" if k % 2 == 0 else "S"
+            print(f"  ({k},{k+1}){side}  " + "   ".join(
+                f"{v[0]}/{a.n} {v[1]:5.1f}초" for v in res.values()))
+    else:
+        results = run_block(h, a.fx, a.y, pols, a.n)
+        print("\n정책     통과율   평균시간  최악정체")
+        for pol, (k, tm, st) in results.items():
+            print(f"  {pol}   {k:2d}/{a.n}   {tm:6.1f}초  {st:5.1f}초")
 
 
 if __name__ == "__main__":

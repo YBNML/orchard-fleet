@@ -138,6 +138,40 @@ def ramp_profile(x, x0, spacing, levels):
     return np.interp(x, centers, levels)
 
 
+def turn_pad_weights(wx, wy, x0, spacing, levels, n_alleys, p):
+    """선회 평지 패드 — 횡단 쌍마다 헤드랜드에 평탄한 선회장을 조성한다.
+
+    램프 위 U-선회가 횡단 산포의 물리적 원인이었다(08-08 판정: 추정은 닫혔고
+    남은 것은 지형). 패드 높이 = 두 통로 평균 → 진입(통로 k 직진 이탈)과
+    진출(통로 k+1 직진 재진입)이 각각 반 단차의 y-방향 **직선** 램프가 되고,
+    호 전체는 평지에서 돈다. 직선 등판은 하네스에서 12/12 였다.
+
+    부스트로피돈 파리티(임무 고정): 쌍 (k,k+1) 은 짝수 k → 북단, 홀수 k → 남단.
+    같은 단의 이웃 패드는 서로 닿지 않는다 (마진 1.6 m → 틈 0.3 m).
+
+    반환: (weight, level) — H_new = H*(1-w) + level*w 로 합성할 배열 쌍.
+    """
+    wsum = np.zeros_like(wx)
+    lsum = np.zeros_like(wx)
+    pads = []
+    for k in range(n_alleys - 1):
+        side = 1.0 if k % 2 == 0 else -1.0
+        lvl = float((_lvl(levels, np.array(k)) + _lvl(levels, np.array(k + 1))) / 2.0)
+        cxa = x0 + (k + 0.5) * spacing
+        cxb = x0 + (k + 1.5) * spacing
+        xa, xb = cxa - p["margin"], cxb + p["margin"]
+        w_x = smoothstep((wx - xa) / p["blend_x"]) * smoothstep((xb - wx) / p["blend_x"])
+        d = wy * side                       # 해당 단 쪽으로의 부호화 거리
+        w_y = smoothstep((d - p["y0"]) / (p["y1"] - p["y0"])) \
+            * (1.0 - smoothstep((d - p["fade0"]) / (p["fade1"] - p["fade0"])))
+        w = w_x * w_y
+        wsum = np.maximum(wsum, w)          # 패드끼리는 겹치지 않아 max 로 충분
+        lsum = np.where(w >= wsum, lvl, lsum)
+        pads.append(dict(pair=[k, k + 1], side="N" if side > 0 else "S",
+                         level=round(lvl, 4), x=[round(xa, 2), round(xb, 2)]))
+    return wsum, lsum, pads
+
+
 TERRAIN_SDF = """<?xml version="1.0" ?>
 <!-- 자동 생성 (gen_heightmap.py)
      계단식 과수원 지형: 통로 {rows}개 테라스, 통로간 단차 {step:.2f} m,
@@ -217,6 +251,22 @@ def main():
                          "블렌드 구간은 계단과 램프가 섞여 횡단 경사가 20~40%%로 남으므로 "
                          "짧을수록 통로 간 이동 가능 대역이 넓어진다. "
                          "0.75 였을 때 |y|<34 m 가 전부 횡단 불가였고 실제로 로봇이 전복했다.")
+    # 선회 평지 패드 — 횡단 쌍마다 헤드랜드에 평탄 선회장 (08-10, 산포 대책)
+    ap.add_argument("--turn-pads", dest="turn_pads", action="store_true", default=True,
+                    help="횡단 쌍별 선회 평지 패드 조성 (기본 켬)")
+    ap.add_argument("--no-turn-pads", dest="turn_pads", action="store_false")
+    ap.add_argument("--pad-margin", type=float, default=1.6,
+                    help="패드가 통로 중심 밖으로 확장되는 폭 m (1.75 초과 시 이웃 패드와 겹침)")
+    ap.add_argument("--pad-blend-x", type=float, default=0.6,
+                    help="패드 x 가장자리 블렌드 폭 m")
+    ap.add_argument("--pad-y0", type=float, default=30.5,
+                    help="진입 램프 시작 |y| m (수목 구간 30 직후). 짧을수록 램프가 가팔라진다 — "
+                         "smoothstep 최대경사 = 1.5×(반단차/램프길이), 50 cm 단차·2 m 램프에서 18.8%%")
+    ap.add_argument("--pad-y1", type=float, default=32.5,
+                    help="패드 완전 평탄 시작 |y| m — exit wp(33·34)와 호 정점(34·35)을 덮어야 한다")
+    ap.add_argument("--pad-fade0", type=float, default=40.0,
+                    help="울타리(±38.3) 밖에서 패드가 램프로 되돌아가기 시작하는 |y| m")
+    ap.add_argument("--pad-fade1", type=float, default=43.0)
     ap.add_argument("--terrace-margin", type=int, default=2,
                     help="과수원 바깥으로 몇 단 더 계단을 두고 그 밖은 평탄하게 할지. "
                          "8-bit 하이트맵 양자화를 통로 평탄성보다 곱게 유지하는 데 필요")
@@ -268,16 +318,31 @@ def main():
     z_ramp = ramp_profile(wx, x0, S, levels)
     H = (1.0 - w) * z_terr + w * z_ramp
 
+    # 선회 평지 패드 — 램프 위에 평탄 선회장을 얹는다 (노이즈 전, 절대높이 기준)
+    pads = []
+    if args.turn_pads:
+        pp = dict(margin=args.pad_margin, blend_x=args.pad_blend_x,
+                  y0=args.pad_y0, y1=args.pad_y1,
+                  fade0=args.pad_fade0, fade1=args.pad_fade1)
+        wp, lp, pads = turn_pad_weights(wx, wy, x0, S, levels, R - 1, pp)
+        H = (1.0 - wp) * H + wp * lp
+
     # 롤링 노이즈 — 통로 평탄성을 위해 소진폭
     H = H + (fractal((n, n), args.seed, octaves=4, base=3) - 0.5) * 2 * args.noise_amp
 
-    H -= H.min()
+    hmin = float(H.min())
+    H -= hmin
     size_z = float(H.max())
+    for p in pads:
+        p["level"] = round(p["level"] - hmin, 4)      # 정규화 후 실높이로 기록
 
     tex_dir = os.path.join(args.out, "materials", "textures")
     os.makedirs(tex_dir, exist_ok=True)
     png = (H / max(size_z, 1e-9) * 255).astype(np.uint8)
-    write_gray_png(os.path.join(tex_dir, "orchard_heightmap.png"), png)
+    # Gazebo 는 이미지 첫 행을 +y(북) 에 맵핑한다. H 는 행 0 = y=-half(남) 이므로
+    # 뒤집어 쓴다. 종전 지형은 남북 대칭이라 3주간 안 드러났고, 선회 패드(08-10,
+    # 최초의 남북 비대칭 지형)에서 시뮬 충돌 지형이 통째로 뒤집혀 있던 것이 발각됐다.
+    write_gray_png(os.path.join(tex_dir, "orchard_heightmap.png"), png[::-1])
 
     np.save(os.path.join(args.out, "heightmap.npy"), H.astype(np.float32))
     # 과수원이 실제로 덮는 테라스 구간의 단차만 추려 기록한다
@@ -292,7 +357,9 @@ def main():
                 face_width=args.face_width,
                 ramp_len=ramp_len, noise_amp=args.noise_amp,
                 terrace_steps=[round(float(s), 4) for s in used_steps],
-                profile="terraced_random")
+                turn_pads=pads,
+                pad_y=[args.pad_y0, args.pad_y1] if pads else None,
+                profile="terraced_random+turnpads" if pads else "terraced_random")
     with open(os.path.join(args.out, "heightmap_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
@@ -318,6 +385,11 @@ def main():
           f" ({math.degrees(math.atan(ramp_grade_max)):.1f}°) · 램프 길이 {ramp_len:.1f} m")
     print(f"[heightmap]   과수원 전체 표고차 {total_rise:.2f} m / 폭 {(R - 1) * S:.1f} m")
     print(f"[heightmap]   size_z {size_z:.3f} m · 통로 노이즈 ±{args.noise_amp * 100:.1f} cm")
+    if pads:
+        ramp_g = 1.5 * (args.step_max / 2.0) / (args.pad_y1 - args.pad_y0)   # smoothstep 피크
+        pad_str = " ".join(f"{p['pair'][0]}{p['side']}" for p in pads)
+        print(f"[heightmap]   선회 패드 {len(pads)}개 ({pad_str}) — 평탄 |y|≥{args.pad_y1:.1f},"
+              f" 진입 직선램프 {args.pad_y1 - args.pad_y0:.1f} m · 최대 {ramp_g:.0%}")
 
 
 if __name__ == "__main__":

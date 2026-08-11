@@ -328,10 +328,15 @@ def build_environment(cfg, terrain, orchard_x0, orchard_x1, orchard_y0, orchard_
     out.append(_machinery("machinery", trx, try_, zf, rng))
 
     # ── 수확 컨테이너 (전부 모델 하나) ───────────────────────────────
+    # ★ 선회 대역(|y| = 나무구역 끝 ~ +HL) 안에 두면 안 된다. 예전에는 여기에
+    #   |y| = 나무끝+HL·0.45~0.5 로 놓았고 x 도 통로와 겹쳐서, 통로 0·2 의 종단과
+    #   횡이동선을 막았다 (2026-07-30 scripts/20_verify_headland.py 로 발견 —
+    #   초기 매핑 주행의 "통로 1 로의 횡이동 실패"가 이것 때문이었다).
+    #   선회 대역 **밖**으로 뺀다.
     p = Prop("harvest_bins")
-    for bx, by in [(orchard_x0 + 2.0, orchard_y0 - HL * 0.45),
-                   (orchard_x0 + 9.0, orchard_y1 + HL * 0.45),
-                   (orchard_x1 - 3.0, orchard_y1 + HL * 0.5)]:
+    for bx, by in [(orchard_x0 + 2.0, orchard_y0 - HL - 2.0),
+                   (orchard_x0 + 9.0, orchard_y1 + HL + 2.0),
+                   (orchard_x1 - 3.0, orchard_y1 + HL + 3.5)]:
         _bins_into(p, bx, by, zf(bx, by), rng.uniform(0, 3.14),
                    rng.randint(1, 3), rng.randint(2, 4))
     out.append(p.build())
@@ -361,10 +366,15 @@ def build_environment(cfg, terrain, orchard_x0, orchard_x1, orchard_y0, orchard_
     # ── 돌무더기 (모델 하나) ─────────────────────────────────────────
     p = Prop("rock_piles")
     placed = 0
+    # 나무 구역만 피하는 것으로는 부족했다 — 선회 대역에 떨어져 횡이동선을 막았다.
+    # 밭 x 범위 안이면 선회 대역까지 함께 피한다 (20_verify_headland.py 참조).
     for i in range(8):
         rx = rng.choice([fx0 - 0.8, fx1 + 0.8, rng.uniform(fx0, fx1)])
         ry = rng.uniform(fy0 + 1.0, fy1 - 1.0)
         if orchard_x0 - 1 < rx < orchard_x1 + 1 and orchard_y0 - 1 < ry < orchard_y1 + 1:
+            continue
+        if (orchard_x0 - 2 < rx < orchard_x1 + 2
+                and orchard_y0 - HL - 1.5 < ry < orchard_y1 + HL + 1.5):
             continue
         z = zf(rx, ry)
         for _ in range(rng.randint(4, 8)):
@@ -375,6 +385,156 @@ def build_environment(cfg, terrain, orchard_x0, orchard_x1, orchard_y0, orchard_
                   (g, g, g * 0.95), LBL_ROCK, "rock")
         p.add_collision(_box(1.4, 1.4, 0.5), (rx, ry, z + 0.25, 0, 0, 0))
         placed += 1
+    out.append(p.build())
+
+    return [o for o in out if o]
+
+
+def build_headland(cfg, terrain, ox0, ox1, oy0, oy1, R, flip_x, flip_y, rng, detail=2):
+    """선회 구간(헤드랜드) 구조물 — LIO 기하 퇴화 대책.
+
+    단계 7 실측(2026-07-30): FAST-LIO2 의 10 m 구간 거리오차가 통로 안에서는
+    0.61% 인데 **통로 끝(|y| 25~30 m)에서 38.3%** 로 튄다. 통로를 나오는 순간
+    양옆 나무벽이 사라지고 MID-70 의 70.4° 전방 FOV 에 빈 땅만 남아 기하가
+    퇴화하기 때문이다. 파라미터 17회 스윕으로도 못 고쳤다
+    (docs/findings/2026-07-30-fastlio-tuning.md).
+
+    그런데 **실제 과수원 헤드랜드는 비어 있지 않다.** 열마다 트렐리스 말단
+    앵커 조립체(콘크리트 데드맨 + 버팀대 + 당김줄)가 서고, 관수 입상관과
+    밸브함이 열 끝에 놓이고, 선회로 경계에 말뚝이 박히고, 물탱크·펌프실이
+    한쪽에 있고, 팔레트가 쌓인다. 우리 월드가 이걸 빼놨던 탓에 퇴화가
+    실제보다 심하게 재현됐다 — 기존 환경 오브젝트는 전부 외곽(|y| ≈ 39)에
+    있었고 선회 구간 내부(|y| 31~39)는 완전히 비어 있었다.
+
+    배치 원칙: 선회 경로(|y| ≈ 34.3, x 는 열 전체를 횡단)에서 라이다 유효
+    거리 안에 들어와야 한다. 그래서 x 방향으로 **골고루** 깔고, 선회 통로를
+    양쪽에서 감싸는 두 줄로 둔다.
+
+    RTF 예산: 헤드랜드당 모델 1개 + 앵커 조립체 전체 1개 = 총 3 엔티티.
+    (2026-07-25 벤치마크 — 비용은 삼각형이 아니라 모델 엔티티 수에 붙는다)
+    """
+    zf = lambda x, y: terrain.z(x, y, flip_x, flip_y)
+    HL, S = cfg["headland"], cfg["row_spacing"]
+    out = []
+
+    # ── 트렐리스 말단 앵커 조립체 (전 열, 양끝) ──────────────────────
+    # 기존 build_row_details 의 말단 앵커는 지름 4.5 cm 막대 하나뿐이라
+    # 라이다에 거의 안 잡힌다. 실제 말단 조립체는 훨씬 실체가 있다.
+    p = Prop("row_end_anchors")
+    for r in range(R):
+        rx = ox0 + r * S
+        for ye, sgn in ((oy0 - 1.0, -1), (oy1 + 1.0, 1)):
+            z = zf(rx, ye)
+            # 굵은 말단 지주 (일반 지주 3.75 cm → 말단 7 cm)
+            p.add(_cyl(0.07, 2.9), (rx, ye, z + 1.45, 0, 0, 0),
+                  (0.33, 0.26, 0.18), LBL_TRELLIS, "endpost")
+            p.add_collision(_cyl(0.08, 2.9), (rx, ye, z + 1.45, 0, 0, 0))
+            # 버팀대 (외측 40° 경사)
+            by = ye + sgn * 1.1
+            p.add(_cyl(0.055, 2.4), (rx, (ye + by) / 2, z + 1.0, sgn * 0.70, 0, 0),
+                  (0.33, 0.26, 0.18), LBL_TRELLIS, "brace")
+            # 콘크리트 데드맨 (지면에 반쯤 묻힌 블록)
+            dy = ye + sgn * 1.9
+            p.add(_box(0.5, 0.4, 0.35), (rx, dy, zf(rx, dy) + 0.12, 0, 0, 0),
+                  (0.62, 0.62, 0.60), LBL_STRUCTURE, "deadman")
+            p.add_collision(_box(0.5, 0.4, 0.35), (rx, dy, zf(rx, dy) + 0.12, 0, 0, 0))
+            # 당김줄
+            p.add(_box(0.012, 2.0, 0.012),
+                  (rx, (ye + dy) / 2, z + 1.5, sgn * 0.95, 0, 0),
+                  (0.55, 0.55, 0.58), LBL_WIRE, "guy")
+    out.append(p.build())
+
+    # ── 헤드랜드별 구조물 (남/북 각각 모델 하나) ─────────────────────
+    for tag, sgn in (("S", -1.0), ("N", 1.0)):
+        ybase = (oy0 if sgn < 0 else oy1)
+        p = Prop(f"headland_{tag}")
+
+        # ★ 선회 통로를 막지 않는 것이 절대 조건이다.
+        #
+        # 2026-07-30 실측: 처음에는 경계 말뚝을 x 방향 3 m 간격으로 깔고 물탱크·
+        # 펌프실을 선회 대역 한가운데 놓았다. 그러자 물탱크가 통로 0 입구에,
+        # 펌프실이 통로 1 위치에 앉아 로봇이 횡이동을 못 하고 주행이 실패했다
+        # ("통로 1 로의 횡이동 실패").
+        #
+        # 그래서 배치 규칙을 둔다:
+        #   · 선회 대역(|y| = col_l/2 ~ +HL) 안에는 **열 x 위치에만** 둔다.
+        #     통로 x 는 로봇이 지나는 길이므로 비워야 한다.
+        #   · 부피가 큰 것(탱크·펌프실·팔레트)은 선회 대역 **밖**(|y| > HL) 또는
+        #     밭 x 범위 **밖**으로 뺀다.
+        #   · 횡이동선(cross_y ≈ col_l/2 + HL·0.72)에는 아무것도 두지 않는다.
+        cross_y = HL * 0.72                    # mapping_run.cross_y 와 같은 값
+
+        # 선회로 경계 말뚝 — **열 x 위치에만**, 횡이동선 앞뒤로 두 줄.
+        # 열 x 는 나무가 서 있던 선이므로 로봇이 지나지 않는다.
+        for off in (1.8, HL - 0.6):
+            if abs(off - cross_y) < 1.2:       # 횡이동선과 겹치면 건너뛴다
+                continue
+            yl = ybase + sgn * off
+            for r in range(R):
+                rx = ox0 + r * S
+                z = zf(rx, yl)
+                p.add(_cyl(0.06, 1.15), (rx, yl, z + 0.575, 0, 0, 0),
+                      (0.40, 0.34, 0.26), LBL_STRUCTURE, "markerpost")
+                # 반사판 — 실제 선회로 표식
+                p.add(_box(0.14, 0.02, 0.20), (rx, yl, z + 1.02, 0, 0, 0),
+                      (0.85, 0.72, 0.18), LBL_STRUCTURE, "reflector")
+                p.add_collision(_cyl(0.07, 1.15), (rx, yl, z + 0.575, 0, 0, 0))
+
+        # 관수 입상관 + 밸브함 — 열 끝마다 (열 x 위치라 통로를 안 막는다)
+        # 08-11: ±33.0 → ±31.2. 선회 평지 패드에서 U-호가 y=±33 대역을 지나는데
+        # 입상관(충돌 있음)이 그 선에 서 있어 호가 열선 부근에서 걸렸다 (run42
+        # 개입 1·2의 물리 원인). 실제 과수원 입상관은 열 끝 나무 옆에 선다.
+        for r in range(R):
+            rx = ox0 + r * S
+            ry = ybase + sgn * 1.2
+            z = zf(rx, ry)
+            p.add(_cyl(0.05, 1.05), (rx, ry, z + 0.525, 0, 0, 0),
+                  (0.20, 0.35, 0.55), LBL_IRRIGATION, "standpipe")
+            p.add(_box(0.10, 0.10, 0.16), (rx, ry, z + 1.10, 0, 0, 0),
+                  (0.25, 0.25, 0.28), LBL_IRRIGATION, "valve")
+            # 밸브함은 열 쪽으로 붙여 통로에서 멀어지게
+            p.add(_box(0.42, 0.32, 0.26), (rx, ry + sgn * 0.5, z + 0.11, 0, 0, 0),
+                  (0.35, 0.35, 0.33), LBL_IRRIGATION, "valvebox")
+            p.add_collision(_cyl(0.06, 1.05), (rx, ry, z + 0.525, 0, 0, 0))
+
+        # 물탱크 + 펌프실 — 밭 x 범위 **밖**, 선회 대역 바로 뒤
+        tx = ox0 - 3.2 if sgn < 0 else ox1 + 3.2
+        ty = ybase + sgn * (HL * 0.55)
+        tz = zf(tx, ty)
+        p.add(_cyl(1.15, 2.30), (tx, ty, tz + 1.15, 0, 0, 0),
+              (0.30, 0.42, 0.52), LBL_STRUCTURE, "tank")
+        p.add(_cyl(1.20, 0.10), (tx, ty, tz + 2.35, 0, 0, 0),
+              (0.24, 0.34, 0.42), LBL_STRUCTURE, "tanklid")
+        p.add_collision(_cyl(1.20, 2.30), (tx, ty, tz + 1.15, 0, 0, 0))
+        px_, py_ = tx, ty + sgn * 3.0
+        pz_ = zf(px_, py_)
+        p.add(_box(1.9, 1.7, 2.10), (px_, py_, pz_ + 1.05, 0, 0, 0),
+              (0.72, 0.70, 0.64), LBL_STRUCTURE, "pumphouse")
+        p.add(_box(2.1, 1.9, 0.10), (px_, py_, pz_ + 2.16, 0, 0, 0),
+              (0.42, 0.30, 0.24), LBL_STRUCTURE, "pumproof")
+        p.add_collision(_box(1.9, 1.7, 2.10), (px_, py_, pz_ + 1.05, 0, 0, 0))
+
+        # 팔레트 적재 — 선회 대역 **바깥**(|y| > HL) 에 둔다
+        for i in range(3):
+            qx = ox0 + (ox1 - ox0) * (0.22 + 0.28 * i) + rng.gauss(0, 0.5)
+            qy = ybase + sgn * (HL + 1.6)
+            qz = zf(qx, qy)
+            n = rng.randint(3, 6)
+            for k in range(n):
+                p.add(_box(1.15, 0.95, 0.14),
+                      (qx, qy, qz + 0.08 + k * 0.15, 0, 0, rng.gauss(0, 0.05)),
+                      (0.55, 0.44, 0.30), LBL_CONTAINER, "pallet")
+            p.add_collision(_box(1.2, 1.0, n * 0.15),
+                            (qx, qy, qz + n * 0.075, 0, 0, 0))
+
+        out.append(p.build())
+
+    # ── 남측 방풍림 — 기존에는 좌·우·상만 있었다 ─────────────────────
+    p = Prop("windbreak_S")
+    for i in range(7):
+        wx = ox0 - 4.0 + i * ((ox1 + 4.0) - (ox0 - 4.0)) / 6.0
+        wy = oy0 - HL - 4.5 + rng.gauss(0, 0.4)
+        _windbreak_into(p, wx, wy, zf(wx, wy), rng.uniform(4.5, 6.0), rng)
     out.append(p.build())
 
     return [o for o in out if o]
@@ -465,8 +625,9 @@ def _farm_yard(name, sx, sy, zf, rng):
     p.add(_box(0.06, 1.0, 2.0), (sx - 2.0, sy, z + 1.0, 0, 0, yaw), (0.30, 0.26, 0.22),
           LBL_STRUCTURE, "door")
     p.add_collision(_box(4.0, 3.0, 2.5), (sx, sy, z + 1.25, 0, 0, yaw))
-    # 물탱크
-    tx, ty = sx - 5.5, sy + 0.5
+    # 물탱크 — 창고 서쪽 5.5 m 는 선회 패드(7,8)S 한복판이라 북쪽 옆으로 옮겼다
+    # (08-11, run42 개입 3: 깊게 돈 U-호가 탱크에 접촉·정지)
+    tx, ty = sx - 0.2, sy + 3.4
     tz = zf(tx, ty)
     p.add(_cyl(1.1, 2.5), (tx, ty, tz + 1.25, 0, 0, 0), (0.55, 0.57, 0.60),
           LBL_STRUCTURE, "tank")
@@ -825,6 +986,14 @@ def main():
         body.extend(env)
         stats["env"] = len(env)
 
+        # 선회 구간 구조물 — LIO 기하 퇴화 대책 (build_headland 주석 참조).
+        # 기존 환경 오브젝트는 전부 외곽에 있어서 선회 구간 내부가 비어 있었다.
+        hl = build_headland(cfg, terrain, x0, x0 + row_w, y0, y0 + col_l, R,
+                            args.flip_x, args.flip_y, rng, args.detail)
+        body.append("\n    <!-- 선회 구간 구조물 (말단 앵커·경계 말뚝·관수·물탱크) -->\n")
+        body.extend(hl)
+        stats["headland"] = len(hl)
+
     # 로봇 스폰 — 첫 통로(0열과 1열 사이) 시작점, 선회 구간에서 진입
     robot_block = ""
     if args.robot:
@@ -863,6 +1032,9 @@ def main():
     if stats.get("rowdetail"):
         print(f"[gen_world]   행 디테일 모델 {stats['rowdetail']} "
               f"(지주·3단와이어·청경대·점적관수·잡초·낙과)")
+    if stats.get("headland"):
+        print(f"[gen_world]   선회 구간 구조물 모델 {stats['headland']} "
+              f"(말단 앵커·경계 말뚝·관수 입상관·물탱크·펌프실·팔레트·남측 방풍림)")
     if stats.get("env"):
         print(f"[gen_world]   환경 오브젝트 모델 {stats['env']} "
               f"(방풍림·울타리·창고·물탱크·농기계·컨테이너·전신주·돌무더기·진입로)")

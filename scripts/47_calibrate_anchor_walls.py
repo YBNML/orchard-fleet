@@ -96,12 +96,19 @@ def main():
 
     rows = int(M["rows"])
     x0 = M["x0"]
+    n_alleys = rows - 1
     table = {}
-    for k in range(rows - 1):
+    for k in range(n_alleys):
         cx = x0 + (k + 0.5) * 3.5
         for end, sgn in (("north", 1), ("south", -1)):
+            # 08-11: 패드 단은 임무가 실제로 앵커를 쓰는 관측점(램프 위 31.5 ·
+            # 패드 위 33.5)에서 잰다. 통로 바닥(28·30)에서 재면 진입램프 면이
+            # 겉보기 벽으로 잡히거나(5S 산포 1.8 m) 임무 관측과 계통 편차가
+            # 생긴다. 패드 규칙: 북단은 k<8, 남단은 k>0 (부스트로피돈 파리티).
+            padded = (k < n_alleys - 1) if sgn > 0 else (k > 0)
+            probe_ys = (31.5, 33.5) if padded else (28.0, 30.0)
             ws = []
-            for ty in (28.0, 30.0):
+            for ty in probe_ys:
                 tp(cx, sgn * ty, sgn * math.pi / 2)
                 w = wall_range()
                 if w is not None:

@@ -103,6 +103,13 @@ class MapLocalizer(Node):
                                         # 봉인: 합성 5/5 지만 실스캔은 y 0/8·x 3/6
                                         # (수관·둑 오염). run29 에서 4회 오발로
                                         # est 10 m 이탈 실측. 켜려면 실스캔 검증부터.
+        d("rear_anchor", False)         # 후방 벽 앵커 (MID-360) — 봉인 (08-11, 실패 모드
+                                        # 5종: ①호 중 k 오판 ②정렬 스침 ③전방잡음 폴백누락
+                                        # ④대각 방위 x 오염 ⑤통로 안 줄기 메아리 방(est 가
+                                        # '벽 뒤 4 m'에 자기일관 고정). 진입 순간(run46 통로1
+                                        # 0.11 m)은 완치를 증명했으나 활동 창을 안전하게 닫는
+                                        # 게이트를 못 찾았다. 차기 후보: 후방 클러스터 거리
+                                        # 산포 게이트 (벽=pct50-pct10<0.8, 줄기밭=수 m 산포)
         d("treeline_anchor", False)     # 진입 나무선 앵커 — 재봉인 (4번째 실패).
                                         # 시작선의 원뿔 기하 편향이 최대 1.3 m 로
                                         # 반 칸을 넘어 칸 스냅조차 틀린 칸으로
@@ -207,6 +214,7 @@ class MapLocalizer(Node):
         분해된다. 실기의 AHRS 요 표류는 블록 안 위상 보정이 흡수한다.
         """
         q = msg.orientation
+        self._imu_wz = msg.angular_velocity.z   # 후방 앵커의 '직진 중' 판별용
         n2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
         if n2 > 0.5:                    # orientation 이 채워져 있다
             R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
@@ -406,9 +414,11 @@ class MapLocalizer(Node):
         cone = (ang < math.radians(8.0)) & (r > 2.0) \
             & (pts[:, 2] > -0.35) & (pts[:, 2] < 0.9)   # r>2: 자기 기체 반사 제외(MID-360)
         if cone.sum() < 40:
+            self._try_rear_anchor(pts, est, hx, hy, r, ang)
             return
         measured = float(np.percentile(r[cone], 10))   # 클라우드가 이미 base 기준
         if measured > 13.0:
+            self._try_rear_anchor(pts, est, hx, hy, r, ang)
             return
         # 기대 거리는 실측 벽 테이블에서 — 겉보기 벽 y 는 통로×단마다 다른
         # 상수다 (레이캐스트+보편 법면 가정이 만성 편향의 정체, 08-03 실측).
@@ -424,6 +434,12 @@ class MapLocalizer(Node):
             return
         expected = (wall_y - est[1]) / hy   # 진행선 상 거리 (양수)
         if expected <= 0.5 or expected > 16.0:
+            # 전방 벽이 그냥 먼 정상 상황(진입 직후·통로 중반) — 전방 원뿔에
+            # 수관 잡음이 40점 이상 걸려도 여기 도달한다. 후방 폴백이 없으면
+            # 진입 앵커가 확률적으로 침묵한다 (run46 실측: 통로 1 은 전방이
+            # 비어 폴백 경로로 완치(0.11), 통로 2 는 잡음이 걸려 이 분기로
+            # 반환 → +1.4 재발).
+            self._try_rear_anchor(pts, est, hx, hy, r, ang)
             return
         err = expected - measured       # >0: 실제가 추정보다 벽에 가깝다
         if abs(err) > 13.0:
@@ -440,6 +456,83 @@ class MapLocalizer(Node):
             self._anchor_big_streak = {}
         corr = err * self.anchor_gain
         new_pose = (est[0] + hx * corr, est[1] + hy * corr, est[2])
+        self.T_mo = compose(new_pose, inverse(self.T_ob))
+        if self.slip_active:
+            self._slip_anchor = new_pose
+            self._slip_ob_yaw0 = self.T_ob[2]
+        self.drift_ref = self.T_ob
+        self.last_anchor_t = time.monotonic()
+        self.stat["n_anchor"] = self.stat.get("n_anchor", 0) + 1
+        self.stat["anchor_err"] = round(err, 2)
+
+    def _try_rear_anchor(self, pts, est, hx, hy, r, ang):
+        """후방 벽 앵커 — 통로 **진입 직후**의 종방향 절대 기준 (MID-360 전용).
+
+        run42·43 실측 병리: U-호 동안 스키드 슬립으로 데드레커닝이 +1.3 m
+        과적산 → 진입 시 벽은 등 뒤라 전방 앵커 불가 → 위상 보정(mod 1.5)이
+        오차를 '한 칸 미끄러진 해'(+1.5 m)로 굳혀 통로 전체를 오답으로 달림
+        (끝 앵커가 회복 → 다음 호가 재발 — 통로마다 반복). 나무선 앵커는 이
+        병을 노렸다가 4연패로 봉인됐다(treeline_anchor=False). MID-360 은
+        등 뒤를 보므로, 방금 떠난 단의 **교정된 겉보기 벽** 그 자체를 후방
+        원뿔로 재면 된다 — 새 추론이 아니라 검증된 앵커의 거울상이다.
+        기대 거리 창(0.5~16 m)이 자연히 '진입 후 첫 ~13 m'로 활동을 제한한다.
+        """
+        if not bool(self.get_parameter("rear_anchor").value):
+            return
+        if self._anchor_walls is None:
+            return
+        # x-위상 정렬 게이트 — U-호 **도중**에는 발화 금지 (run44 실측: 호 중간
+        # est x 가 통로 사이라 k 가 틀리고(이웃 단 벽차 ~2 m) 후방 원뿔이
+        # 나무·패드를 벽으로 오인 → est 를 3 m 끌어 첫 선회에서 미션이 좌초).
+        # 진입 직진 구간(통로 중심 정렬)에서만 등 뒤 벽을 믿는다.
+        S_g = float(self.geom["row_spacing"])
+        x0_g = float(self.geom["x0"])
+        lane_off = abs(((est[0] - x0_g) / S_g - 0.5) % 1.0)
+        if min(lane_off, 1.0 - lane_off) * S_g > 0.6:
+            return
+        # 회전 게이트 — est x 는 호 도중에도 통로 중심선을 '스쳐' 지나므로
+        # (run45 실측: 그 순간 3연속 대오차 앵커가 est 를 1.5 m 밀고, 이후
+        # 횡보정이 0.8 m 상한에 걸려 복구 불능) 정렬만으로는 부족하다.
+        # 진짜 판별자는 회전 속도다: 진입 직진 wz≈0, U-호 wz≈0.35 rad/s.
+        if abs(getattr(self, "_imu_wz", 0.0)) > 0.15:
+            return
+        # 방위 게이트 — |hy|>0.7 은 열축 ±45° 까지 허용한다. 호 꼬리의 대각
+        # 방위에서 보정을 방위 방향으로 적용하면 절반이 x 로 새고(run47
+        # 실측: 미세 보정 350회 누적 → est x +1.1, 횡보정 상한에 걸려 고착),
+        # 열축 정렬(±18°)에서만 재고 보정은 y 축에만 투영한다.
+        if abs(hy) < 0.95:
+            return
+        rear = (ang > math.radians(172.0)) & (r > 2.0) \
+            & (pts[:, 2] > -0.35) & (pts[:, 2] < 0.9)
+        if rear.sum() < 40:
+            return
+        measured = float(np.percentile(r[rear], 10))
+        if measured > 13.0:
+            return
+        S_ = float(self.geom["row_spacing"])
+        x0_ = float(self.geom["x0"])
+        k = int(round((est[0] - x0_) / S_ - 0.5))
+        k = max(0, min(int(self.geom["alleys"]) - 1, k))
+        end = "south" if hy > 0.0 else "north"      # 등 뒤의 단
+        wall_y = self._anchor_walls.get(f"{k}:{end}")
+        if wall_y is None:
+            return
+        expected = (est[1] - wall_y) / hy           # 등 뒤 벽까지 거리 (양수)
+        if expected <= 0.5 or expected > 16.0:
+            return
+        err = expected - measured   # >0: est 가 벽에서 실제보다 멀다고 믿음 → 뒤로 당긴다
+        if abs(err) > 13.0:
+            return
+        if abs(err) > 3.0:
+            k_ = ("r", round(err))
+            self._anchor_big_streak[k_] = self._anchor_big_streak.get(k_, 0) + 1
+            if self._anchor_big_streak[k_] < 3:
+                return
+            self._anchor_big_streak = {}
+        corr = err * self.anchor_gain
+        # y 축(열축)에만 투영 — 벽은 y-평면이므로 정보는 y 뿐이다. 방위 방향
+        # 적용은 대각 방위에서 x 를 오염시킨다 (run47 실측).
+        new_pose = (est[0], est[1] - corr * (1.0 if hy > 0.0 else -1.0), est[2])
         self.T_mo = compose(new_pose, inverse(self.T_ob))
         if self.slip_active:
             self._slip_anchor = new_pose
