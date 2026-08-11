@@ -225,6 +225,7 @@ class ControlAgent(Node):
         self._blocked_since = None
         self._recover_until = 0.0       # 슬립 자율 복구 (후진) 종료 시각
         self._recover_tries = {}        # 웨이포인트 idx → 재시도 횟수
+        self._cloud_map_errs = 0        # 지도 공급 고장 횟수 (로그 3회 한도)
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
                                  self._on_cloud, sqos)
         self.create_subscription(Imu, "/imu", self._on_imu, sqos)
@@ -418,7 +419,22 @@ class ControlAgent(Node):
         # 지도 격자용 공급 — 예전에는 지도 기능이 이 토픽을 따로 구독했다.
         # 두 콜백의 순서는 원래도 정해져 있지 않았으므로 여기서 먼저 넘겨도
         # 밀착 판단이 받는 지연은 예전 그대로다. 솎인 프레임도 지도에는 쓴다.
-        self.cloud_world.feed(msg)
+        #
+        # **화면용 계산이 안전 판단을 데려가지 못하게 막는다.** 구독을 하나로
+        # 합치면서 예전의 격리(남의 콜백)가 사라졌다 — 여기서 예외가 새면 아래
+        # 밀착 판단이 통째로 건너뛰어질 뿐 아니라, 예외가 구독 콜백 밖으로
+        # 나가면 노드가 죽는다(T6 의 `_write_cmd` 사고와 같은 모양). 점군은
+        # 밖에서 온 자료라 필드 결손·길이 불일치가 '언젠가'는 온다. 지도가
+        # 안 그려지는 것은 화면 문제지만, 밀착 판단이 없어지는 것은 로봇이
+        # 무언가에 코를 박은 채 바퀴를 계속 돌리는 문제다.
+        try:
+            self.cloud_world.feed(msg)
+        except Exception as e:
+            self._cloud_map_errs += 1
+            if self._cloud_map_errs <= 3:       # 초당 10프레임 — 로그를 뒤덮지 않게
+                self.get_logger().warn(
+                    f"지도 점군 공급 오류 ({self._cloud_map_errs}/3) — "
+                    f"밀착 판단은 계속한다: {e}")
         got = self.sensors.feed_cloud(msg)
         if got is None:                 # 솎였거나 점이 모자란 프레임 — 직전 값 유지
             return
