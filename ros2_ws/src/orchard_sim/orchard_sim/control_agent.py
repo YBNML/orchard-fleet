@@ -12,52 +12,66 @@ control_agent — 로봇에 올라가는 관제 에이전트 (코어 호스트)
     4. 기능들을 적재하고 명령을 라우팅하고 속도 요청을 조정해 /cmd_vel 로 낸다
 
 **DDS 는 이 노드 밖으로 나가지 않는다.** 관제 PC 에 ROS 를 깔 필요가 없고,
-열어야 할 포트도 하나다. 규약은 link/protocol.py, 선택 근거는
+열어야 할 포트도 하나다. 규약은 robomw/link/protocol.py, 선택 근거는
 docs/findings/2026-07-30-fleet-stack-decision.md 참조.
+
+코어는 이 파일이 아니라 robomw 다
+    안전 조정자·기능 레지스트리·명령 라우터·감사·링크 서버·통신 계약은 전부
+    robomw 패키지에 있다 (ROS 를 모르는 순수 파이썬 — 다른 기체로 그대로
+    옮겨간다). 이 파일은 그 부품들을 **이 기체에 배선하는 호스트**다.
+    ROS 에 닿는 부분(속도 발행·센서 해석)은 adapters/ 의 어댑터가 맡는다.
 
 기능 늘리고 줄이기
     파라미터 features 목록으로 정한다. 기본값은 지금 쓰는 다섯 개다.
         ros2 run orchard_sim control_agent --ros-args \
             -p "features:=['telemetry_state','telemetry_health','drive_teleop']"
     기능을 새로 만들려면 control/features/ 에 모듈 하나 넣고 목록에 이름을
-    추가한다 — 이 파일은 고치지 않는다. 계약은 control/base.py 참조.
+    추가한다 — 이 파일은 고치지 않는다. 계약은 robomw/core/base.py 참조.
 
 안전은 기능이 아니다
-    비상정지·데드맨·링크두절·전복은 control/safety.py 의 코어에 있고, 기능은
-    이를 우회할 수단이 없다. 기능은 속도를 **요청**할 뿐이고 최종 출력은 항상
-    조정자를 통과한다. /cmd_vel 을 쓰는 곳도 이 파일 한 군데다.
+    비상정지·데드맨·링크두절·전복은 robomw/core/safety.py 의 코어에 있고,
+    기능은 이를 우회할 수단이 없다. 기능은 속도를 **요청**할 뿐이고 최종
+    출력은 항상 조정자를 통과한다. /cmd_vel 퍼블리셔를 가진 곳은
+    adapters/ros_drive.py 하나뿐이다.
 """
 from __future__ import annotations
 
 import json
-import math
 import os
 import queue
 import threading
 import time
 
-import numpy as np
 import rclpy
-from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import Empty
 from std_msgs.msg import String as StringMsg
-from tf2_ros import Buffer, TransformListener
 
-from orchard_sim import transforms as tfu
-from orchard_sim.control.audit import (R_ACCEPT, R_BLOCKED, R_REJECT,
-                                        AuditLog)
-from orchard_sim.control.base import Blackboard, Context
-from orchard_sim.control.registry import Registry
-from orchard_sim.control.safety import SafetyArbiter
-from orchard_sim.link import protocol as P
-from orchard_sim.link.wsserver import ControlServer
+from orchard_sim.adapters import RosDrive, RosSensors
+from robomw.core.audit import R_ACCEPT, R_REJECT, AuditLog
+from robomw.core.base import Blackboard, Context
+from robomw.core.registry import Registry
+from robomw.core.router import CommandRouter
+from robomw.core.safety import SafetyArbiter
+from robomw.link import protocol as P
+from robomw.link.wsserver import ControlServer
 
 DEFAULT_FEATURES = ["telemetry_state", "telemetry_health", "telemetry_map",
                     "drive_mission", "drive_teleop"]
+
+# 이 로봇이 서 있는 현장의 종류 (hello v2 의 site.type). 토픽 앞머리와 같은
+# 어휘를 쓴다 — 관제가 화면(지도·패널)을 고르는 열쇠다.
+SITE_TYPE = "orchard"
+
+# 계약(protocol)에는 있지만 이 기체에는 **아직 동작이 없는** 명령들.
+# 라우터가 UNSUPPORTED 로 되돌린다. 조용히 받아 삼키면 관제는 자진단이
+# 돌아간 줄 알고 다음 절차로 넘어간다 — 없는 기능은 없다고 답해야 한다.
+# (동작 구현은 스펙 ② 몫이다. 구현되는 대로 이 목록에서 뺀다)
+PENDING_CMDS = (P.CMD_SELF_TEST, P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP,
+                P.CMD_WORK_STOP)
 
 # 같은 곳에서 같은 사유로 거부가 반복되면 이 간격으로만 이벤트를 올린다.
 # 조종은 데드맨(400 ms) 때문에 클라이언트가 초당 10회 남짓 보낸다 — 관측자가
@@ -77,6 +91,28 @@ def _clip(s, n=DENY_WHY_MAX):
     """
     s = str(s)
     return s if len(s) <= n else s[:n] + "…"
+
+
+class _RegistryTap:
+    """레지스트리 껍질 — 라우터가 부른 dispatch 의 처리 여부를 코어가 다시 본다.
+
+    라우터는 cmd_id 가 있을 때만 결과(cmd_result)를 돌려준다. 그런데 지금 붙어
+    있는 대시보드는 cmd_id 를 안 붙이고, 그때도 "처리할 기능이 없는 명령"
+    이벤트는 예전처럼 화면에 떠야 한다. 그 한 가지를 위해 얇게 한 겹 씌운다 —
+    라우터의 반환 계약을 바꾸는 것보다 이쪽이 싸다.
+
+    handled 는 세 가지 상태다: None(아직 dispatch 까지 못 감 — 권한·미지원·
+    멱등 캐시에서 되돌아갔거나 예외), True(어떤 기능이 받았다), False(아무도
+    안 받았다).
+    """
+
+    def __init__(self, registry):
+        self._reg = registry
+        self.handled = None
+
+    def dispatch(self, cmd, payload):
+        self.handled = bool(self._reg.dispatch(cmd, payload))
+        return self.handled
 
 
 class RateMeter:
@@ -155,19 +191,26 @@ class ControlAgent(Node):
         self.bb.extra["mode"] = P.MODE_IDLE
         self.rate = dict(lidar=RateMeter(), imu=RateMeter(), lio=RateMeter())
 
-        self.buf = Buffer()
-        self._tf_buffer = self.buf          # 기능이 쓸 수 있게 노출
-        self.tfl = TransformListener(self.buf, self)
-        self.pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
+        # 센서 해석과 /cmd_vel 발행은 기체마다 다르다. 코어(안전·라우팅·계약)를
+        # 건드리지 않고 갈아끼울 수 있게 adapters/ 로 뺐다.
+        self.sensors = RosSensors(self)
+        self.buf = self.sensors.buf         # 기존 이름 유지 (기능이 쓸 수 있게 노출)
+        self._tf_buffer = self.buf
+        # 구동 한계 — 어느 기능도 이보다 빠른 값을 낼 수 없어야 한다. 마지막
+        # 그물이므로 기능별 상한 중 가장 큰 값으로 잡는다(정상 경로에서는
+        # 여기서 잘리지 않는다 — 잘린다면 기능이나 중재가 계약을 어긴 것이다).
+        self.drive = RosDrive(
+            self,
+            v_max=max(float(g("speed")), float(g("teleop_max_v"))),
+            w_max=max(float(g("turn_speed")), float(g("teleop_max_w"))))
         sqos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           history=HistoryPolicy.KEEP_LAST, depth=5)
-        self._cloud_n = 0
         self._blocked_since = None
         self._recover_until = 0.0       # 슬립 자율 복구 (후진) 종료 시각
         self._recover_tries = {}        # 웨이포인트 idx → 재시도 횟수
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
                                  self._on_cloud, sqos)
-        self._imu_R = None              # 기체 자세 (월드←바디) — 점군 수평화용
         self.create_subscription(Imu, "/imu", self._on_imu, sqos)
         self.create_subscription(Odometry, str(g("lio_odom_topic")), self._on_lio, 10)
 
@@ -175,7 +218,7 @@ class ControlAgent(Node):
         self.safety = SafetyArbiter(
             tilt_limit_deg=float(g("tilt_limit_deg")),
             on_event=self.event,
-            on_estop=lambda _r: self._write_cmd(0.0, 0.0))
+            on_estop=lambda _r: self.drive.stop())
 
         # 현장 확인(로컬 리셋) — 실기에서는 기체의 물리 리셋 버튼이 이 자리에 온다.
         # **링크를 타고 오지 않는다**: 관제가 아무리 승인해도 위험구역을 눈으로
@@ -229,6 +272,14 @@ class ControlAgent(Node):
         # protocol 은 로거를 모르므로 모아 뒀다가 적재가 끝난 지금 비운다.
         for w in P.take_role_warnings():
             self.get_logger().warn(f"명령 역할 등록: {w}")
+
+        # ── 명령 라우터 (코어) ──────────────────────────────────────────────
+        # 권한 재판정·cmd_id 멱등·cmd_result 발행을 맡는다. 안전 계통(비상정지
+        # 계열·현장 확인·ping)은 라우터 앞단에서 코어가 직접 처리한다 — 기능이
+        # 하나도 안 떠도, 기능이 통째로 터져도 그것만은 동작해야 한다.
+        self._disp = _RegistryTap(self.registry)
+        self.router = CommandRouter(self._disp, self._emit_cmd_result,
+                                    self._cmd_supported)
 
         self.create_timer(0.05, self.control_tick)      # 20 Hz — 코어 루프
         self.create_timer(0.05, self.telemetry_tick)
@@ -313,8 +364,7 @@ class ControlAgent(Node):
     # ═══════════════════════════════════════════════════════════════════════
     def _on_lio(self, msg):
         self.rate["lio"].tick(time.monotonic())
-        p = msg.pose.pose.position
-        self.bb.set(lio_pose=(p.x, p.y, p.z))
+        self.bb.set(lio_pose=self.sensors.feed_lio(msg))
 
     def _on_local_reset(self):
         """현장 확인 — 기체 곁의 사람이 위험구역을 보고 누른 것으로 간주한다."""
@@ -328,51 +378,22 @@ class ControlAgent(Node):
 
     def _on_imu(self, msg):
         self.rate["imu"].tick(time.monotonic())
-        q = msg.orientation
-        if q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w > 0.5:
-            self._imu_R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
-
-    def _level_points(self, p):
-        """점군을 기울기 보정한다 (요 제외 — 롤·피치만 편다).
-
-        경사에서 코가 숙으면 라이다가 지면을 '벽'으로 읽는다 — 실측: 남단
-        내리막(피치 −16°)에서 여유거리 0.25 m 로 읽혀 출구 도착이 3.5 m
-        조기 발동, 로봇이 열 끝 모서리에 쐐기로 박혔다(08-02). z 필터와
-        여유거리는 수평화된 점에서 재야 한다.
-        """
-        R = self._imu_R
-        if R is None:
-            return p
-        yaw = math.atan2(R[1, 0], R[0, 0])
-        c, s = math.cos(-yaw), math.sin(-yaw)
-        Rz = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-        return p @ (Rz @ R).T           # (요 제거한 기울기)로 점을 편다
+        self.sensors.feed_imu(msg)
 
     def _on_cloud(self, msg):
-        """점군에서 두 가지를 읽는다 — 전방 여유거리와 코앞 밀착률.
+        """점군에서 읽은 여유거리·밀착률을 블랙보드에 올리고 밀착이면 세운다.
 
-        여유거리(중앙 ±8° 원뿔의 하위 10% 거리)는 헤드랜드에서 둑까지의
-        거리다 — 임무 기능이 '벽 앞 도착' 판정에 쓴다. 밀착률(0.8 m 안
-        점 비율)이 높으면 코가 무언가에 박힌 것이다: 라이다가 흙만 보므로
-        로컬리제이션도 슬립 감지도 눈이 먼다(08-02 실측). 여기서만 잡을
-        수 있으니 여기서 세운다.
+        해석(원뿔·수평화·백분위)은 어댑터(RosSensors)가 한다. **세울지 말지는
+        여기서 정한다** — 안전 판단은 기체가 바뀌어도 같아야 하므로 코어에
+        남긴다. 밀착률이 높으면 코가 무언가에 박힌 것이다: 라이다가 흙만
+        보므로 로컬리제이션도 슬립 감지도 눈이 먼다(08-02 실측). 여기서만
+        잡을 수 있으니 여기서 세운다.
         """
         self.rate["lidar"].tick(time.monotonic())
-        self._cloud_n += 1
-        if self._cloud_n % 3:           # 10 Hz 입력을 3.3 Hz 로 솎는다
+        got = self.sensors.feed_cloud(msg)
+        if got is None:                 # 솎였거나 점이 모자란 프레임 — 직전 값 유지
             return
-        from orchard_sim.map_localizer import read_xyz
-        p = read_xyz(msg)
-        if len(p) < 200:
-            return
-        p = self._level_points(p)
-        r = np.hypot(p[:, 0], p[:, 1])
-        near_frac = float((r < 0.8).mean())
-        ang = np.abs(np.arctan2(p[:, 1], p[:, 0]))
-        cone = (ang < math.radians(8.0)) & (r > 1.6) \
-            & (p[:, 2] > -0.35) & (p[:, 2] < 0.9)   # 수관·자기반사 제외 (MID-360)
-        clearance = (float(np.percentile(r[cone], 10))
-                     if int(cone.sum()) >= 30 else float("inf"))
+        clearance, near_frac = got
         self.bb.set(clearance=clearance, near_frac=near_frac)
 
         # 밀착 정지 — 임무 중 2초 넘게 코앞이 막혀 있으면 박힌 것이다
@@ -384,7 +405,7 @@ class ControlAgent(Node):
             elif now - self._blocked_since > 2.0:
                 self._blocked_since = None
                 self.safety.set_paused(True)
-                self._write_cmd(0.0, 0.0)
+                self.drive.stop()
                 self.event("assistance",
                            f"전방 밀착 {near_frac:.0%} — 장애물 접촉으로 정지",
                            level="critical", code="OBSTACLE_FRONT")
@@ -398,9 +419,8 @@ class ControlAgent(Node):
         오도메트리만 쌓이고 기체는 제자리에서 갈린다. 재개는 사람이 한다 —
         박힌 원인(나무·진흙)을 치우지 않으면 재개해도 똑같이 박힌다.
         """
-        try:
-            d = json.loads(msg.data)
-        except (ValueError, TypeError):
+        d = self.sensors.feed_diag(msg)
+        if d is None:                   # JSON 이 아니다 — 조용히 버린다 (기존 동작)
             return
         kind, code = d.get("kind"), d.get("code", "")
         text = d.get("msg", "")
@@ -437,16 +457,6 @@ class ControlAgent(Node):
         elif kind == "resolved":
             self.event("resolved", text, level="info", code=code)
 
-    def _read_pose(self):
-        try:
-            tr = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
-        except Exception:
-            return None, 0.0
-        t, q = tr.transform.translation, tr.transform.rotation
-        R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
-        tilt = math.degrees(math.acos(max(-1.0, min(1.0, R[2, 2]))))
-        return (t.x, t.y, math.atan2(R[1, 0], R[0, 0])), tilt
-
     # ═══════════════════════════════════════════════════════════════════════
     # 관제 링크
     # ═══════════════════════════════════════════════════════════════════════
@@ -481,25 +491,41 @@ class ControlAgent(Node):
             self.get_logger().warn(f"{kind}: {msg}")
 
     def _on_ws_open(self, conn):
+        """접속 직후 1회 — 기체 정보·기하·기능 목록을 보낸다 (hello).
+
+        hello v2 는 **덧붙이기만 한다.** 기존 키는 이름도 값도 그대로 두고
+        site·capabilities·middleware 세 개를 얹는다. 지금 붙어 있는 관제
+        서버와 대시보드는 옛 키만 읽으므로 무수정으로 계속 동작하고, 새
+        관제는 현장 종류(site.type)로 화면을 고를 수 있게 된다.
+        """
         pr = lambda k, d=None: (self.get_parameter(k).value  # noqa: E731
                                 if self.has_parameter(k) else d)
         R = int(pr("rows", 10))
-        conn.send_json(P.envelope(
-            f"orchard/{self.robot_id}/hello",
-            dict(robot_id=self.robot_id, protocol=P.PROTOCOL_VERSION,
-                 rows=R, alleys=R - 1,
-                 row_spacing=float(pr("row_spacing", 3.5)),
-                 x0=-((R - 1) * float(pr("row_spacing", 3.5))) / 2.0,
-                 col_len=(int(pr("trees_per_row", 41)) - 1) * float(pr("tree_spacing", 1.5)),
-                 headland=float(pr("headland", 6.0)),
-                 limits=dict(speed=float(pr("speed", 0.7)),
-                             teleop_v=float(pr("teleop_max_v", 0.8)),
-                             teleop_w=float(pr("teleop_max_w", 1.2))),
-                 deadman_ms=P.TELEOP_DEADMAN_MS,
-                 link_loss_ms=P.LINK_LOSS_STOP_MS,
-                 # 대시보드가 이걸 보고 패널을 켜고 끈다 — 기능을 빼면 화면도 준다
-                 features=self.registry.describe()),
-            self.now_ns(), self.next_seq()))
+        geom = dict(rows=R, alleys=R - 1,
+                    row_spacing=float(pr("row_spacing", 3.5)),
+                    x0=-((R - 1) * float(pr("row_spacing", 3.5))) / 2.0,
+                    col_len=(int(pr("trees_per_row", 41)) - 1) * float(pr("tree_spacing", 1.5)),
+                    headland=float(pr("headland", 6.0)))
+        payload = dict(robot_id=self.robot_id, protocol=P.PROTOCOL_VERSION,
+                       **geom,
+                       limits=dict(speed=float(pr("speed", 0.7)),
+                                   teleop_v=float(pr("teleop_max_v", 0.8)),
+                                   teleop_w=float(pr("teleop_max_w", 1.2))),
+                       deadman_ms=P.TELEOP_DEADMAN_MS,
+                       link_loss_ms=P.LINK_LOSS_STOP_MS,
+                       # 대시보드가 이걸 보고 패널을 켜고 끈다 — 기능을 빼면 화면도 준다
+                       features=self.registry.describe())
+        # ── hello v2 (additive) ─────────────────────────────────────────────
+        # 기하를 site 안에 한 번 더 싣는다 — 옛 관제는 최상위를, 새 관제는
+        # site.geometry 를 읽는다. 같은 객체를 두 곳에서 가리키므로 값이
+        # 갈라질 수 없다(둘을 따로 조립하면 언젠가 반드시 어긋난다).
+        lim = self.drive.limits()
+        payload[P.HELLO_SITE] = dict(type=SITE_TYPE, geometry=geom)
+        payload[P.HELLO_CAPABILITIES] = dict(
+            drive=dict(v_max=lim.v_max, w_max=lim.w_max))
+        payload[P.HELLO_MIDDLEWARE] = dict(name="robomw", version="0.1")
+        conn.send_json(P.envelope(f"orchard/{self.robot_id}/hello", payload,
+                                  self.now_ns(), self.next_seq()))
         self.safety.note_client()
 
     def _deny(self, why, who, role, action=None):
@@ -595,6 +621,98 @@ class ControlAgent(Node):
             # 소비 시점에서도 '누가 시켰나'를 알 수 있어야 한다 (되받이 검사·감사).
             self.cmdq.put((role, conn.addr, payload))
 
+    # ── 명령 결과 (cmd_result) ──────────────────────────────────────────────
+    def _cmd_supported(self, cmd):
+        """이 기체가 실제로 **할 수 있는** 명령인가. 라우터가 묻는다.
+
+        계약에 이름이 있다는 것과 이 기체가 그 일을 할 수 있다는 것은 다르다.
+        못 하는 것은 못 한다고 답해야(UNSUPPORTED) 관제가 다음 수를 정한다.
+        """
+        return cmd not in PENDING_CMDS
+
+    def _emit_cmd_result(self, res):
+        """라우터가 올리는 것을 관제로 내보낸다 — cmd_result 와 내부오류 경보.
+
+        cmd_result 페이로드는 P.make_cmd_result 가 만든 그대로에 기존 이벤트
+        관례(t·level·msg)를 **덧붙인다.** 계약 키는 하나도 건드리지 않는다.
+        덧붙이는 이유: 지금 붙어 있는 대시보드의 이벤트 로그가 이 세 키로 줄을
+        그린다. 없으면 시각이 'Invalid Date' 로, 본문이 빈 줄로 찍힌다 —
+        새 기능을 켠 대가로 기존 화면이 망가지면 안 된다.
+
+        내부오류 승격(kind="assistance")은 개입 큐로 가야 하므로 기존 event()
+        경로(이벤트 목록·감사·로그)를 그대로 태운다.
+        """
+        if res.get("kind") == "assistance":
+            self.event("assistance", res.get("msg", ""),
+                       level=res.get("level", "warn"), code=res.get("code", ""))
+            return
+        e = dict(res)
+        e.setdefault("t", time.time())
+        e.setdefault("level",
+                     "info" if res.get("status") in ("accepted", "in_progress",
+                                                     "completed") else "warn")
+        code = res.get("code")
+        e.setdefault("msg", f"{res.get('cmd')} → {res.get('status')}"
+                            + (f" ({code})" if code and code != "OK" else ""))
+        self._emit("event", e)
+
+    def _core_result(self, payload, cmd, status, code="OK", data=None):
+        """코어가 직접 처리한 명령의 결과. cmd_id 가 없으면 아무것도 안 한다.
+
+        라우터를 타지 않는 명령(비상정지 계열·ping 등)도 결과를 돌려줘야
+        관제가 '보냈는데 어떻게 됐나'를 한 가지 방법으로 추적할 수 있다.
+        cmd_id 를 안 붙이고 보내던 기존 클라이언트에게는 예전과 똑같이
+        아무 결과 이벤트도 가지 않는다(하위 호환).
+        """
+        cmd_id = payload.get("cmd_id")
+        if not cmd_id:
+            return
+        self._emit_cmd_result(P.make_cmd_result(cmd_id, cmd, status, code, data))
+
+    def _handle_core_cmd(self, c, payload, who, role):
+        """코어가 직접 처리하는 명령 — 처리했으면 True.
+
+        비상정지 계열·현장 확인·ping 은 기능(플러그인)에 맡기지 않는다.
+        기능이 하나도 안 떠도, 기능이 통째로 터져도 이것만은 동작해야 한다.
+        """
+        if c == P.CMD_ESTOP:
+            self.safety.trigger(payload.get("reason", "관제 지시"))
+            self._core_result(payload, c, "completed")
+            return True
+        if c == P.CMD_CLEAR_ESTOP_REQUEST:
+            ok, why = self.safety.request_clear(who or "관제")
+            if ok and not self.safety.estop:          # 현장 확인이 이미 끝나 있었다
+                self.bb.extra["mode"] = P.MODE_IDLE
+            self._emit("event", dict(kind="estop_clear", msg=why,
+                                     level="warn", t=time.time()))
+            self._core_result(payload, c, "completed" if ok else "rejected",
+                              "OK" if ok else "BAD_PARAM", dict(reason=why))
+            return True
+        if c == P.CMD_CLEAR_ESTOP_CANCEL:
+            ok = self.safety.cancel_clear(who or "관제")
+            self._core_result(payload, c, "completed" if ok else "rejected",
+                              "OK" if ok else "BAD_PARAM",
+                              None if ok else dict(reason="비상정지 상태가 아닙니다"))
+            return True
+        if c == P.CMD_SET_SERVICE_MODE:
+            self.safety.set_service_mode(str(payload.get("mode", "")), who or "관제")
+            self._core_result(payload, c, "completed", "OK",
+                              dict(service_mode=self.safety.service_mode))
+            return True
+        if c == P.CMD_LOCAL_RESET:
+            # 링크로 온 '현장 확인'은 현장 확인이 아니다 — 절차의 존재 이유가
+            # 시야를 가진 사람이므로, 원격에서 두 단계를 다 눌러 버리면 무의미하다.
+            why = "현장 확인은 로봇에서만 가능합니다 (~/local_reset)"
+            self._deny(why, who, role, c)
+            self._core_result(payload, c, "rejected", "DENIED", dict(reason=why))
+            return True
+        if c == P.CMD_PING:
+            self._emit("event", dict(kind="pong", msg="pong", level="info",
+                                     t=time.time()))
+            self._core_result(payload, c, "completed")
+            return True
+        return False
+
     def _handle_cmd(self, role, addr, payload):
         c = payload.get("cmd")
         who = f"{addr[0]}:{addr[1]}" if addr else "큐"
@@ -605,45 +723,22 @@ class ControlAgent(Node):
         ok, why = P.authorize(role, c)
         if not ok:
             self._deny(why, who, role, c)     # 예전엔 미정의 이름(action)이라 NameError 였다
+            self._core_result(payload, c, "rejected", "DENIED", dict(reason=why))
             return
         # 비상정지 계열은 기능에 맡기지 않는다 — 코어가 직접 처리한다
-        if c == P.CMD_ESTOP:
-            self.safety.trigger(payload.get("reason", "관제 지시"))
+        if self._handle_core_cmd(c, payload, who, role):
             return
-        if c == P.CMD_CLEAR_ESTOP_REQUEST:
-            ok, why = self.safety.request_clear(who or "관제")
-            if ok and not self.safety.estop:          # 현장 확인이 이미 끝나 있었다
-                self.bb.extra["mode"] = P.MODE_IDLE
-            self._emit("event", dict(kind="estop_clear", msg=why,
-                                     level="warn", t=time.time()))
-            return
-        if c == P.CMD_CLEAR_ESTOP_CANCEL:
-            self.safety.cancel_clear(who or "관제")
-            return
-        if c == P.CMD_SET_SERVICE_MODE:
-            self.safety.set_service_mode(str(payload.get("mode", "")), who or "관제")
-            return
-        if c == P.CMD_LOCAL_RESET:
-            # 링크로 온 '현장 확인'은 현장 확인이 아니다 — 절차의 존재 이유가
-            # 시야를 가진 사람이므로, 원격에서 두 단계를 다 눌러 버리면 무의미하다.
-            self._deny("현장 확인은 로봇에서만 가능합니다 (~/local_reset)",
-                       who, role, c)
-            return
-        if c == P.CMD_PING:
-            self._emit("event", dict(kind="pong", msg="pong", level="info",
-                                     t=time.time()))
-            return
-        if not self.registry.dispatch(c, payload):
+        # 나머지는 라우터가 맡는다 (권한 3차 판정·cmd_id 멱등·결과 발행).
+        self._disp.handled = None
+        self.router.handle(c, payload, role)
+        if self._disp.handled is False:
+            # 라우터는 cmd_id 가 있을 때만 결과를 낸다. cmd_id 없이 보내던
+            # 기존 클라이언트도 '아무도 안 받은 명령'은 화면에서 봐야 한다.
             self.event("rejected", f"처리할 기능이 없는 명령: {c}", "warn")
 
     # ═══════════════════════════════════════════════════════════════════════
     # 코어 루프
     # ═══════════════════════════════════════════════════════════════════════
-    def _write_cmd(self, v, w):
-        m = Twist()
-        m.linear.x, m.angular.z = float(v), float(w)
-        self.pub_cmd.publish(m)
-
     def control_tick(self):
         while True:
             try:
@@ -656,7 +751,7 @@ class ControlAgent(Node):
                 self.get_logger().warn(f"명령 처리 실패: {e}")
 
         now = time.monotonic()
-        pose, tilt = self._read_pose()
+        pose, tilt = self.sensors.pose_tilt()
         self.bb.set(pose=pose, tilt_deg=tilt,
                     rates={k: m.hz(now) for k, m in self.rate.items()})
         self.bb.extra["clients"] = self.server.client_count()
@@ -668,13 +763,13 @@ class ControlAgent(Node):
         # 클라임 슬립비(0.3~0.5)가 감시 문턱(0.35)에 걸쳐 있어, 즉시 정지만
         # 하면 횡단 시도의 절반이 사람 손을 기다린다 (실측: 남단 4회 정지).
         if self._recover_until > now:
-            self._write_cmd(-0.3, 0.0)
+            self.drive.set_velocity(-0.3, 0.0)
             return
         requests = self.registry.tick(now)
         v, w, _why = self.safety.arbitrate(requests, now)
         if v == 0.0 and w == 0.0 and not self.idle_publish:
             return                       # 다른 주행 노드와 공존 관찰 모드
-        self._write_cmd(v, w)
+        self.drive.set_velocity(v, w)
 
     def telemetry_tick(self):
         if self.server.client_count() == 0:
@@ -686,7 +781,7 @@ class ControlAgent(Node):
     def destroy_node(self):
         try:
             self.registry.teardown()
-            self._write_cmd(0.0, 0.0)
+            self.drive.stop()
             self.server.stop()
         except Exception:
             pass
