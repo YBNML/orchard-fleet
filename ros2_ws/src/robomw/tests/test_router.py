@@ -45,3 +45,23 @@ def test_no_cmd_id_legacy_path():
     r, reg, events = mk()
     assert r.handle("mission_pause", {}, P.ROLE_OPERATOR) is None
     assert reg.calls == ["mission_pause"] and not events
+
+
+def test_dispatch_exception_becomes_internal():
+    class BoomReg:
+        def dispatch(self, cmd, payload): raise RuntimeError("boom")
+    events = []
+    r = CommandRouter(BoomReg(), events.append, lambda c: True)
+    res = r.handle("mission_pause", {"cmd_id": "c9"}, P.ROLE_OPERATOR)
+    assert res["status"] == "failed" and res["code"] == "INTERNAL"
+    assert any(e.get("kind") == "assistance" for e in events)
+
+
+def test_dispatch_exception_without_cmd_id_still_warns():
+    """cmd_id 가 없어도 경보는 올라가야 한다 — 조용히 죽는 것이 가장 나쁘다."""
+    class BoomReg:
+        def dispatch(self, cmd, payload): raise RuntimeError("boom")
+    events = []
+    r = CommandRouter(BoomReg(), events.append, lambda c: True)
+    assert r.handle("mission_pause", {}, P.ROLE_OPERATOR) is None
+    assert [e["kind"] for e in events] == ["assistance"]

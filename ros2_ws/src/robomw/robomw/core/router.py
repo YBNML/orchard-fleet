@@ -36,7 +36,19 @@ class CommandRouter:
                                 {"reason": reason}) if cmd_id else None
         if not self._supported(cmd):
             return self._result(cmd_id, cmd, "rejected", "UNSUPPORTED") if cmd_id else None
-        handled = self._reg.dispatch(cmd, payload)
+        try:
+            handled = self._reg.dispatch(cmd, payload)
+        except Exception as e:
+            # 어댑터·기능이 터져도 프로세스는 산다 (스펙 §5). 다만 **조용히
+            # 삼키지 않는다** — 명령이 안 먹은 것을 관제가 모르면 운전자는
+            # 로봇이 멈춘 줄 알고 걸어서 접근한다. 결과(INTERNAL)로 답하고,
+            # 같은 사실을 개입 큐로도 올린다(assistance/critical).
+            res = (self._result(cmd_id, cmd, "failed", "INTERNAL",
+                                {"reason": str(e)[:200]}) if cmd_id else None)
+            self._emit({"kind": "assistance",
+                        "msg": f"명령 처리 내부 오류: {cmd}",
+                        "level": "critical", "code": "CMD_INTERNAL"})
+            return res
         if cmd_id:
             if handled:
                 return self._result(cmd_id, cmd, "accepted", "OK")
