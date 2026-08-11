@@ -1,6 +1,8 @@
 """인증 코어 — Argon2 해시 + 역할 매트릭스(D9, fail-closed).
 
-로봇측 orchard_sim.link.protocol 의 매트릭스와 의미가 같아야 한다(2중 판정).
+로봇측 robomw.link.protocol(ROLE_REQUIRED) 의 매트릭스와 의미가 같아야 한다
+(2중 판정 — 명령 계약 자체는 robomw 가 소유하지만, 권한 문턱은 서버·로봇
+양쪽에서 각자 판정해야 한쪽이 뚫려도 다른 쪽이 막는다).
 차이: D9 반영으로 estop·stop_all 이 observer 까지 내려간다.
 """
 from __future__ import annotations
@@ -34,6 +36,14 @@ ROLE_REQUIRED = {
     "clear_estop_cancel": ROLE_ADMIN,
     "set_mode": ROLE_ADMIN,
     "set_service_mode": ROLE_ADMIN,
+
+    # v1 확장(robomw.link.protocol §2.4) — self_test·블랙박스 덤프·work 정지는
+    # 조종·임무와 같은 급(operator). relocalize 는 위치 추정 자체를 리셋해
+    # 임무 궤적을 깨뜨릴 수 있어 모드 변경과 같은 급(admin)으로 둔다.
+    "self_test": ROLE_OPERATOR,
+    "blackbox_dump": ROLE_OPERATOR,
+    "work_stop": ROLE_OPERATOR,
+    "relocalize": ROLE_ADMIN,
 }
 
 

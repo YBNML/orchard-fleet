@@ -1,8 +1,8 @@
 """레거시 로봇 어댑터 — M1 한시, M2 에서 Zenoh 로 교체(스펙 §9 M1).
 
 서버가 로봇의 기존 WebSocket 서버(ws://로봇:8080/ws?token=...)에 클라이언트로
-접속한다. 기존 봉투 {v, topic:"orchard/{robot}/{suffix}", ts_ns, seq, payload}
-를 fleet 채널로 매핑한다.
+접속한다. robomw.link.protocol 의 봉투 {v, topic:"orchard/{robot}/{suffix}",
+ts, seq, payload} 를 fleet 채널로 매핑한다(명령 계약은 robomw 가 정본).
 
 한계: 레거시 로봇에는 ack 채널이 없다 → send_command 는 소켓 기록 성공을
 "sent" 로 간주한다 (cmd_id 상관 응답은 M2).
@@ -15,6 +15,7 @@ import logging
 import time
 
 import websockets
+from robomw.link import protocol as P
 
 from .port import FleetPort, RobotStatus, TelemetryHandler
 from .presence import PresenceRegistry
@@ -99,8 +100,14 @@ class LegacyRobotLink:
         self._seq += 1
         suffix = "teleop" if action == "teleop" else "cmd"
         body = payload if action == "teleop" else {"cmd": action, **payload}
-        env = {"v": 1, "topic": f"orchard/{self.robot_id}/{suffix}",
-               "ts_ns": time.time_ns(), "seq": self._seq, "payload": body}
+        # 봉투 조립은 robomw.link.protocol 이 정본이다(관제·로봇 계약 단일화).
+        # 참고: 이전 손조립 봉투는 시각 키를 "ts_ns" 로 뒀는데, protocol.envelope()
+        # 는 정식 계약대로 "ts" 를 쓴다(값은 그대로 로봇 기준 나노초 정수).
+        # 로봇측 파서(P.parse())는 이 필드를 애초에 버리므로(control_agent
+        # 의 `t, payload, _, _ = P.parse(...)`) 기능상 영향은 없다 — v·topic·
+        # seq·payload 는 바이트 단위로 이전과 동일하다.
+        topic_str = P.topic("orchard", self.robot_id, suffix)
+        env = P.envelope(topic_str, body, time.time_ns(), self._seq)
         try:
             await ws.send(json.dumps(env))
             return True
