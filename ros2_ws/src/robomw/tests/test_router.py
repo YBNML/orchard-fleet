@@ -1,0 +1,47 @@
+from robomw.core.router import CommandRouter
+import robomw.link.protocol as P
+
+
+class FakeReg:
+    def __init__(self): self.calls = []
+    def dispatch(self, cmd, payload): self.calls.append(cmd); return True
+
+
+def mk(supported=lambda c: True):
+    events = []
+    reg = FakeReg()
+    r = CommandRouter(reg, events.append, supported)
+    return r, reg, events
+
+
+def test_accepted_result_and_dispatch():
+    r, reg, events = mk()
+    res = r.handle("mission_pause", {"cmd_id": "c1"}, P.ROLE_OPERATOR)
+    assert res["status"] == "accepted" and reg.calls == ["mission_pause"]
+    assert events and events[-1]["kind"] == "cmd_result"
+
+
+def test_denied_no_dispatch():
+    r, reg, events = mk()
+    res = r.handle("set_mode", {"cmd_id": "c2"}, P.ROLE_OBSERVER)
+    assert res["status"] == "rejected" and res["code"] == "DENIED" and not reg.calls
+
+
+def test_idempotent_replay():
+    r, reg, events = mk()
+    a = r.handle("mission_pause", {"cmd_id": "c3"}, P.ROLE_OPERATOR)
+    b = r.handle("mission_pause", {"cmd_id": "c3"}, P.ROLE_OPERATOR)
+    assert reg.calls == ["mission_pause"]          # 재실행 없음
+    assert b == a                                   # 직전 결과 재발행
+
+
+def test_unsupported():
+    r, reg, events = mk(supported=lambda c: c != P.CMD_SELF_TEST)
+    res = r.handle(P.CMD_SELF_TEST, {"cmd_id": "c4"}, P.ROLE_OPERATOR)
+    assert res["status"] == "rejected" and res["code"] == "UNSUPPORTED" and not reg.calls
+
+
+def test_no_cmd_id_legacy_path():
+    r, reg, events = mk()
+    assert r.handle("mission_pause", {}, P.ROLE_OPERATOR) is None
+    assert reg.calls == ["mission_pause"] and not events
