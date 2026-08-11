@@ -512,11 +512,9 @@ class ControlAgent(Node):
         with self._lock:
             self.events.append(e)
             self.events = self.events[-50:]
-            if kind == "assistance":
-                # 임무 완료 보고의 interventions. assistance 는 관제 개입 큐로
-                # 가는 사건이므로, 그 횟수가 곧 '사람 손이 필요했던 횟수'다.
-                # 세는 것은 호스트가 하고(이벤트가 여기로 모인다) 보고에 싣는
-                # 것은 임무 기능이 한다.
+            if kind == "assistance" and self._is_intervention(level):
+                # 임무 완료 보고의 interventions. 세는 것은 호스트가 하고
+                # (이벤트가 여기로 모인다) 보고에 싣는 것은 임무 기능이 한다.
                 self.bb.extra["mission_interventions"] = int(
                     self.bb.extra.get("mission_interventions", 0)) + 1
         self._emit("event", e)
@@ -525,6 +523,25 @@ class ControlAgent(Node):
             self.audit.event(kind, _clip(msg, 400), level)
         if level in ("warn", "critical"):
             self.get_logger().warn(f"{kind}: {msg}")
+
+    def _is_intervention(self, level):
+        """이 개입 요청이 **사람 손을 부른 것**인가 (완료 보고의 interventions).
+
+        개입 큐(assistance)로 가는 사건이 전부 개입은 아니다. 스스로 물러났다
+        다시 붙는 클라임 슬립 재시도나, 선회 구역에서 열이 안 보여 나는
+        '8초째 위치 보정 실패' 알림은 아무도 부르지 않고 지나간다 — 그걸 세면
+        아무 일 없이 완주한 임무가 '개입 3회'로 보고된다(실측: 통로 3개 무개입
+        완주에서 선회 구간마다 발생).
+
+        세는 것은 **로봇이 선 사건**이다: 스스로 멈춰 사람의 재개를 기다리는
+        상태가 곧 사람 손이 필요했다는 뜻이다. level 만으로는 못 가른다 —
+        로컬라이저의 격상(severity=critical) 경보는 로봇을 세우면서도 이벤트는
+        level="warn" 으로 나간다(_on_loc_diag). 그래서 두 갈래로 본다:
+        critical 로 올라온 것(밀착 정지·회전 슬립 감시·명령 내부오류)과,
+        올라온 시점에 이미 정지 상태인 것(로컬라이저 격상 정지).
+        """
+        s = getattr(self, "safety", None)        # 안전 조정자 생성 전에도 불린다
+        return level == "critical" or (s is not None and s.paused)
 
     def _on_ws_open(self, conn):
         """접속 직후 1회 — 기체 정보·기하·기능 목록을 보낸다 (hello).

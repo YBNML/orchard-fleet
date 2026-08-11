@@ -5,6 +5,9 @@
   <description>로봇측 미들웨어 — 명령 계약·안전·링크 (ROS 비의존 코어)</description>
   <maintainer email="rla1231013@gmail.com">myhome</maintainer>
   <license>MIT</license>
+  <!-- ROS 는 안 쓴다(검사로 강제). numpy 는 지도 격자 기능이 점 배열을 다루는
+       데 쓴다 — 기체가 아니라 자료구조 의존이라 코어 격리와 무관하다. -->
+  <exec_depend>python3-numpy</exec_depend>
   <test_depend>python3-pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

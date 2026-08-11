@@ -174,8 +174,9 @@ class DriveMission(Feature):
         self._report = dict(alleys_done=[], distance_m=0.0, t0=time.time(),
                             interventions=0)
         self._last_pose = None
-        # 개입 횟수는 호스트가 센다(assistance 이벤트마다 +1). 임무마다 0 에서
-        # 다시 시작해야 이번 임무의 숫자가 된다.
+        # 개입 횟수는 호스트가 센다(로봇을 세운 개입 요청마다 +1 — 판정은
+        # control_agent._is_intervention). 임무마다 0 에서 다시 시작해야
+        # 이번 임무의 숫자가 된다.
         self.ctx.bb.extra["mission_interventions"] = 0
 
     def _track_distance(self, m, p):
