@@ -450,7 +450,7 @@ class ControlAgent(Node):
                 return
             if must_stop and not self.safety.paused:
                 self.safety.set_paused(True)
-                self._write_cmd(0.0, 0.0)
+                self.drive.stop()
                 self.event("paused", f"로컬라이저 경보로 자동 정지 — {text}",
                            level="warn")
             self.event("assistance", text, level="warn", code=code)

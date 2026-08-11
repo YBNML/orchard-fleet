@@ -57,11 +57,23 @@ T_HELLO = topic("orchard", "{robot}", "hello")      # 접속 직후 1회  기체
 
 # hello v2 페이로드 키(스펙 ① 확장) — 다현장·다기종 대비. 기존 hello 페이로드
 # 필드는 그대로 두고 이 세 키를 additive 로 얹는다.
-HELLO_SITE = "site"                    # 이 로봇이 속한 현장 id (topic() 의 site_id 와 같은 값)
-HELLO_CAPABILITIES = "capabilities"    # 이 기체가 지원하는 기능군 목록 (CAPABILITY_FAMILIES 의 부분집합)
-HELLO_MIDDLEWARE = "middleware"        # 미들웨어 이름·버전 문자열 (진단용)
+# 값의 실제 형태는 셋 다 **사전**이다 (control_agent._on_ws_open 이 조립하는
+# 전선 형태 그대로 적는다 — 주석과 전선이 어긋나면 받는 쪽이 주석을 믿고
+# 잘못 파싱한다):
+#   site         {"type": "orchard", "geometry": {…기존 최상위 기하와 같은 값…}}
+#                type 은 topic() 의 site_id 와 같은 어휘를 쓴다. geometry 는
+#                기존 최상위 기하 키(rows·row_spacing·x0·col_len·headland…)를
+#                한 번 더 담은 것이다 — 옛 관제는 최상위를, 새 관제는 여기를 읽는다.
+#   capabilities {"drive": {"v_max": 0.8, "w_max": 1.2}, …}
+#                열쇠가 기능군 이름(CAPABILITY_FAMILIES 의 부분집합)이고 값은
+#                그 기능군의 제원 사전이다. 목록이 아니라 사전인 이유: 관제가
+#                "할 수 있나"만이 아니라 "얼마나"까지 알아야 화면을 그린다.
+#   middleware   {"name": "robomw", "version": "0.1"}
+HELLO_SITE = "site"                    # 현장 종류·기하 (사전)
+HELLO_CAPABILITIES = "capabilities"    # 기능군 → 제원 사전
+HELLO_MIDDLEWARE = "middleware"        # 미들웨어 이름·버전 (사전, 진단용)
 
-# capabilities 배열에 담기는 값의 어휘. drive/work/diag 는 지금 실제로 쓴다.
+# capabilities 의 **열쇠**로 쓰는 어휘. drive/work/diag 는 지금 실제로 쓴다.
 # legged·manipulation 은 예약이다 — 다리형 기체·매니퓰레이터 지원은 아직
 # 없고 이 프로젝트 범위 밖이다. 미리 이름을 박아두는 이유는 hello 를 보내는
 # 쪽·받는 쪽이 나중에 같은 어휘를 쓰게 하기 위해서다(오타로 갈라지는 것을 막는다).
