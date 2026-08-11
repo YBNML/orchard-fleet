@@ -8,6 +8,13 @@
 계단식 지형에서는 통로 사이를 직선으로 가로지를 수 없다(둑 경사 최대 60%).
 그래서 통로 간 이동은 반드시 선회 구간을 경유하도록 웨이포인트를 만든다 —
 이건 손으로 넣은 규칙이 아니라 지형 제약을 반영한 경로 설계다.
+
+**완료 보고.** 임무는 명령 하나가 수십 분 뒤에 끝나는 일이라, 받았다(accepted)
+와 끝났다(completed)가 다른 사건이다. 그래서 임무 내내 실적을 모아 두었다가
+끝나는 순간 mission_start 의 cmd_id 로 결과를 낸다 — 무엇을 얼마나 훑었는지
+(alleys_done·coverage), 얼마나 달렸는지(distance_m·duration_s), 사람 손이
+몇 번 필요했는지(interventions). 관제는 이 한 건으로 임무를 마감한다.
+보고 키는 계약(protocol.MISSION_REPORT_KEYS)이 정한다.
 """
 from __future__ import annotations
 
@@ -43,6 +50,8 @@ class DriveMission(Feature):
         self.col_l = (self.T - 1) * self.tsp
         self.mission = None
         self._align_key = None          # 회전 슬립 감시 — (wp idx, 시작 시각)
+        self._report = None             # 완료 보고 수집함 (임무 하나당 하나)
+        self._last_pose = None          # 주행거리 적분용 직전 위치
 
     # ── 경로 ────────────────────────────────────────────────────────────────
     def cross_y(self, sign):
@@ -82,20 +91,56 @@ class DriveMission(Feature):
         return wps
 
     # ── 명령 ────────────────────────────────────────────────────────────────
+    def _reject(self, payload, msg, code, reason=None):
+        """임무 시작 거부 — 화면 이벤트와 명령 결과를 **둘 다** 낸다.
+
+        예전에는 이벤트만 냈다. 그러면 cmd_id 를 붙여 보낸 관제에게는 라우터가
+        내는 accepted 만 도착한다 — 거부가 수락으로 보이고, 관제는 로봇이
+        임무를 도는 줄 알고 다음 절차로 넘어간다. 반대로 cmd_id 없이 보내던
+        옛 클라이언트에게는 예전 그대로 rejected 이벤트만 간다.
+        """
+        self.ctx.event("rejected", msg, "warn")
+        self.ctx.emit_cmd_result(payload.get("cmd_id"), P.CMD_MISSION_START,
+                                 "rejected", code=code,
+                                 data={"reason": reason or msg})
+        return True
+
     def on_command(self, cmd, payload):
         s = self.ctx.safety
         if cmd == P.CMD_MISSION_START:
             alleys = [int(v) for v in (payload.get("alleys") or [])
                       if 0 <= int(v) <= self.R - 2]
             if not alleys:
-                self.ctx.event("rejected", "유효한 통로가 없다", "warn")
-                return True
+                return self._reject(payload, "유효한 통로가 없다", "BAD_PARAM")
+            # work(작업기) 는 선택 필드다. 있으면 계약이 검사하고, 통과한 것만
+            # 블랙보드에 놓는다 — 실행(방제·예초 …)은 스펙 ② 몫이라 아직 없다.
+            # 검사부터 넣는 이유: 형식이 틀린 값을 받아만 두면, 나중에 실행이
+            # 붙는 날 현장에서 처음 터진다.
+            work = payload.get("work")
+            if work is not None:
+                ok, why = P.validate_work(work)
+                if not ok:
+                    return self._reject(payload, f"work 스키마 오류 — {why}",
+                                        "BAD_PARAM", why)
             if s.snapshot()["estop"]:
-                self.ctx.event("rejected", "비상정지 상태 — 임무 시작 불가", "warn")
-                return True
+                return self._reject(payload, "비상정지 상태 — 임무 시작 불가",
+                                    "ESTOPPED")
+            if self.ctx.bb.pose is None:
+                # 측위가 서기 전에는 임무를 만들지 않는다 (스펙 §5). 예전에는
+                # 임무만 만들어 놓고 포즈가 올 때까지 조용히 서 있었다 —
+                # 관제 화면에서는 '시작했다는데 안 간다'로만 보였고, 사람이
+                # 로봇에 걸어가 보게 만드는 종류의 침묵이다.
+                return self._reject(payload,
+                                    "측위 미준비 — 로컬라이저가 아직 위치를 내지 못했다",
+                                    "BUSY", "측위 미준비")
+            if work is not None:
+                self.ctx.bb.extra["work"] = work
             self.mission = dict(alleys=alleys, mode=payload.get("mode", "mapping"),
                                 wps=self.build_waypoints(alleys), idx=0,
-                                started=time.time())
+                                started=time.time(),
+                                # 완료 보고를 이 명령의 결과로 돌려주기 위한 상관 키
+                                cmd_id=payload.get("cmd_id"))
+            self._begin_report()
             s.set_paused(False)
             self.ctx.bb.extra["mode"] = P.MODE_MISSION
             self.ctx.event("mission_started",
@@ -116,10 +161,65 @@ class DriveMission(Feature):
             return True
         if cmd == P.CMD_MISSION_CANCEL:
             self.mission = None
+            self._report = None         # 중간에 끊긴 실적은 보고하지 않는다
+            self._last_pose = None
             self.ctx.bb.extra["mode"] = P.MODE_IDLE
             self.ctx.event("mission_cancelled", "임무 취소")
             return True
         return False
+
+    # ── 완료 보고 ───────────────────────────────────────────────────────────
+    def _begin_report(self):
+        """실적 수집을 연다. 임무 하나가 곧 보고 하나다."""
+        self._report = dict(alleys_done=[], distance_m=0.0, t0=time.time(),
+                            interventions=0)
+        self._last_pose = None
+        # 개입 횟수는 호스트가 센다(assistance 이벤트마다 +1). 임무마다 0 에서
+        # 다시 시작해야 이번 임무의 숫자가 된다.
+        self.ctx.bb.extra["mission_interventions"] = 0
+
+    def _track_distance(self, m, p):
+        """주행 거리 적분 (완료 보고의 distance_m).
+
+        한 틱(50 ms)에 0.5 m 을 넘는 변위는 실제 주행이 아니다 — 10 m/s 는 이
+        기체가 못 내는 속도다. 로컬라이저 재초기화·텔레포트가 위치를 통째로
+        옮긴 것이므로 버린다. 그대로 더하면 보고서의 주행거리가 수십 m 씩
+        부풀어, 거리로 커버리지를 가늠하는 판단이 통째로 어긋난다.
+        """
+        if m is None or p is None or self._report is None:
+            self._last_pose = None      # 임무 밖·측위 공백의 이동은 세지 않는다
+            return
+        q, self._last_pose = self._last_pose, (p[0], p[1])
+        if q is None:
+            return
+        dd = math.hypot(p[0] - q[0], p[1] - q[1])
+        if dd <= 0.5:
+            self._report["distance_m"] += dd
+
+    def _note_wp_done(self, wp):
+        """웨이포인트 하나 완료. traverse 를 마쳤다는 것이 곧 통로 완주다."""
+        if wp["kind"] == "traverse" and self._report is not None:
+            self._report["alleys_done"].append(wp["alley"])
+
+    def _finish(self, m):
+        """완료 보고를 명령 결과(completed)로 낸다.
+
+        키는 계약(P.MISSION_REPORT_KEYS)이 정한 다섯 개다 — 관제 UI 가 고정된
+        칸을 그리므로 하나라도 빠지면 화면에 빈칸이 남는다.
+        """
+        rp, self._report = self._report, None
+        self._last_pose = None
+        if rp is None:
+            return
+        done = list(rp["alleys_done"])
+        rp["interventions"] = int(self.ctx.bb.extra.get("mission_interventions", 0))
+        data = dict(alleys_done=done,
+                    distance_m=round(rp["distance_m"], 1),
+                    duration_s=round(time.time() - rp["t0"], 1),
+                    interventions=rp["interventions"],
+                    coverage=round(len(done) / (len(m["alleys"]) or 1), 3))
+        self.ctx.emit_cmd_result(m.get("cmd_id"), P.CMD_MISSION_START,
+                                 "completed", data=data)
 
     # ── 주행 ────────────────────────────────────────────────────────────────
     def speed_limit(self, y, dist):
@@ -140,6 +240,7 @@ class DriveMission(Feature):
         self._publish_status()
         m = self.mission
         p = self.ctx.bb.pose
+        self._track_distance(m, p)
         if m is None or p is None:
             return None
         if self.ctx.bb.extra.get("mode") != P.MODE_MISSION:
@@ -148,6 +249,7 @@ class DriveMission(Feature):
             self.mission = None
             self.ctx.bb.extra["mode"] = P.MODE_IDLE
             self.ctx.event("mission_done", "임무 완료")
+            self._finish(m)
             return None
         wp = m["wps"][m["idx"]]
         tx = p[0] if wp["x"] is None else wp["x"]
@@ -155,6 +257,7 @@ class DriveMission(Feature):
         dx, dy = tx - p[0], ty - p[1]
         dist = math.hypot(dx, dy)
         if dist < self.tol:
+            self._note_wp_done(wp)
             m["idx"] += 1
             return None
         # 축분리 조준 — 진행축은 3 m 룩어헤드로 자르고 횡축은 이득을 준다.
