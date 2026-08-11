@@ -33,17 +33,43 @@ from __future__ import annotations
 
 PROTOCOL_VERSION = 1
 
+
+def topic(site_id: str = "orchard", robot_id: str = "", kind: str = "") -> str:
+    """토픽 문자열 조립: "<site_id>/<robot_id>/<kind>".
+
+    기본 site_id 는 "orchard" — 지금까지는 현장이 하나(과수원)뿐이었어서
+    아래 T_* 상수들은 이 함수를 그 기본값으로 호출해 만든다(결과는 이전
+    하드코딩 문자열과 바이트 단위로 같다). 현장이 여러 곳이거나 기체 종류가
+    달라져도(예: factory7/biped01) 조립 지점은 이 함수 하나로 유지된다.
+    kind 자리에 "cmd"/"state"/"teleop" 등을 넣으면 cmd_name() 이 뽑아내는
+    마지막 구간과 그대로 맞아떨어진다 — 그 구조를 이 함수가 깨지 않는다.
+    """
+    return f"{site_id}/{robot_id}/{kind}"
+
+
 # ── 로봇 → 관제 ─────────────────────────────────────────────────────────────
-T_STATE = "orchard/{robot}/state"          # 5 Hz  포즈·속도·모드·배터리
-T_HEALTH = "orchard/{robot}/health"        # 1 Hz  센서 Hz, SLAM 표류, 경고
-T_MISSION = "orchard/{robot}/mission"      # 변경 시  임무 진행 상황
-T_MAP = "orchard/{robot}/map"              # 저빈도  누적 맵 요약 (점 다운샘플)
-T_EVENT = "orchard/{robot}/event"          # 발생 시  비상정지·전복·통신두절 등
-T_HELLO = "orchard/{robot}/hello"          # 접속 직후 1회  기체 정보·기하
+T_STATE = topic("orchard", "{robot}", "state")      # 5 Hz  포즈·속도·모드·배터리
+T_HEALTH = topic("orchard", "{robot}", "health")    # 1 Hz  센서 Hz, SLAM 표류, 경고
+T_MISSION = topic("orchard", "{robot}", "mission")  # 변경 시  임무 진행 상황
+T_MAP = topic("orchard", "{robot}", "map")          # 저빈도  누적 맵 요약 (점 다운샘플)
+T_EVENT = topic("orchard", "{robot}", "event")      # 발생 시  비상정지·전복·통신두절 등
+T_HELLO = topic("orchard", "{robot}", "hello")      # 접속 직후 1회  기체 정보·기하
+
+# hello v2 페이로드 키(스펙 ① 확장) — 다현장·다기종 대비. 기존 hello 페이로드
+# 필드는 그대로 두고 이 세 키를 additive 로 얹는다.
+HELLO_SITE = "site"                    # 이 로봇이 속한 현장 id (topic() 의 site_id 와 같은 값)
+HELLO_CAPABILITIES = "capabilities"    # 이 기체가 지원하는 기능군 목록 (CAPABILITY_FAMILIES 의 부분집합)
+HELLO_MIDDLEWARE = "middleware"        # 미들웨어 이름·버전 문자열 (진단용)
+
+# capabilities 배열에 담기는 값의 어휘. drive/work/diag 는 지금 실제로 쓴다.
+# legged·manipulation 은 예약이다 — 다리형 기체·매니퓰레이터 지원은 아직
+# 없고 이 프로젝트 범위 밖이다. 미리 이름을 박아두는 이유는 hello 를 보내는
+# 쪽·받는 쪽이 나중에 같은 어휘를 쓰게 하기 위해서다(오타로 갈라지는 것을 막는다).
+CAPABILITY_FAMILIES = ("drive", "work", "diag", "legged", "manipulation")
 
 # ── 관제 → 로봇 ─────────────────────────────────────────────────────────────
-T_CMD = "orchard/{robot}/cmd"              # 명령 (아래 CMD_*)
-T_TELEOP = "orchard/{robot}/teleop"        # 수동 조종 (데드맨 — 아래 참조)
+T_CMD = topic("orchard", "{robot}", "cmd")          # 명령 (아래 CMD_*)
+T_TELEOP = topic("orchard", "{robot}", "teleop")    # 수동 조종 (데드맨 — 아래 참조)
 
 CMD_ESTOP = "estop"                        # 즉시 정지 + 래치
 # 래치 해제는 2단계다 — 관제 승인과 현장 확인이 모두 있어야 풀린다.
@@ -64,6 +90,14 @@ CMD_MISSION_RESUME = "mission_resume"
 CMD_MISSION_CANCEL = "mission_cancel"
 CMD_SET_MODE = "set_mode"                  # {"mode":"idle"|"mission"|"teleop"}
 CMD_PING = "ping"
+
+# v1 확장(스펙 ①) — self_test 결과 보고, GNSS/랜드마크 재정위, 사고 후 원인
+# 분석용 블랙박스 덤프, work(작업기) 단독 정지. 넷 다 mission_* 과 별개다 —
+# 임무 진행 중이 아니어도(예: 점검 중 self_test) 부를 수 있어야 한다.
+CMD_SELF_TEST = "self_test"
+CMD_RELOCALIZE = "relocalize"          # 위치 추정을 리셋한다 — 오적용 시 임무 궤적이 깨져 admin 전용
+CMD_BLACKBOX_DUMP = "blackbox_dump"
+CMD_WORK_STOP = "work_stop"
 
 # ── 역할 기반 권한 ──────────────────────────────────────────────────────────
 # 지금까지는 토큰 하나가 곧 전권이었다. 붙기만 하면 누구나 로봇을 몰 수 있다는
@@ -133,6 +167,15 @@ ROLE_REQUIRED = {
     # 관측자에게 조종간을 줄 이유는 없다.
     ACT_TELEOP: ROLE_OPERATOR,
 
+    # ── v1 확장 명령 ────────────────────────────────────────────────────────
+    # self_test·블랙박스 덤프·work 정지는 조종·임무와 같은 급(operator).
+    # relocalize 는 위치 추정 자체를 리셋해 임무 궤적을 깨뜨릴 수 있어
+    # admin 전용으로 둔다(모드 변경과 같은 급).
+    CMD_SELF_TEST: ROLE_OPERATOR,
+    CMD_BLACKBOX_DUMP: ROLE_OPERATOR,
+    CMD_WORK_STOP: ROLE_OPERATOR,
+    CMD_RELOCALIZE: ROLE_ADMIN,
+
     # ── 무해한 것 ───────────────────────────────────────────────────────────
     # ping 은 링크 확인용이라 관측자도 쓸 수 있어야 한다. 오히려 관측자가
     # 링크 상태를 확인할 수단이 없으면 '멈춘 화면'과 '멈춘 로봇'을 구분 못 한다.
@@ -156,9 +199,42 @@ MODE_MISSION = "mission"
 MODE_TELEOP = "teleop"
 MODE_ESTOP = "estop"
 
+# ── work(작업기) 스키마 ─────────────────────────────────────────────────────
+# mission_start 는 "어디를(alleys) 어떤 모드로(mapping 등)" 다루고, work 는
+# "무엇을 하는 기체인가"를 다룬다 — 방제(spray)·예초(mow)·운반(transport) 등
+# 부착 작업기가 있는 기체로 확장하려고 additive 로 얹는다. 기존 mission_*
+# 명령·페이로드는 이 스키마와 무관하게 그대로 쓴다.
+WORK_TYPES = ("scout", "spray", "mow", "transport")
 
-def topic(template: str, robot: str) -> str:
-    return template.format(robot=robot)
+
+def validate_work(payload) -> tuple:
+    """work 시작 페이로드 검사: {"type": WORK_TYPES 중 하나, "params": dict(선택)}.
+
+    (허용 여부, 사유) 를 돌려준다 — authorize() 와 같은 관례다. 실패는
+    예외가 아니라 정상적인 거부이므로, 호출부가 거부 사유를 그대로 이벤트에
+    실어 보낼 수 있게 문자열로 준다.
+
+    params.speed_scale 은 선택 필드다(없으면 기본 속도). 0.1~1.0 범위로
+    닫아 둔 이유: 0 이하는 사실상 정지 명령을 work 스키마로 우회하는 것이고,
+    1.0 초과는 정격 속도를 넘어서는 값이라 이 계약 층에서 미리 막는다.
+    """
+    if not isinstance(payload, dict):
+        return False, "payload 가 객체가 아니다"
+    t = payload.get("type")
+    if t not in WORK_TYPES:
+        return False, f"알 수 없는 work 종류: {t!r} (허용: {', '.join(WORK_TYPES)})"
+    params = payload.get("params", {})
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        return False, "params 가 객체가 아니다"
+    if "speed_scale" in params:
+        s = params["speed_scale"]
+        if isinstance(s, bool) or not isinstance(s, (int, float)):
+            return False, "speed_scale 은 숫자여야 한다"
+        if not (0.1 <= s <= 1.0):
+            return False, f"speed_scale 범위 초과: {s} (허용 0.1~1.0)"
+    return True, ""
 
 
 def envelope(topic_str: str, payload: dict, ts_ns: int, seq: int) -> dict:
@@ -184,6 +260,37 @@ def parse(msg: dict):
 def cmd_name(topic_str: str) -> str:
     """orchard/<robot>/cmd → 'cmd' 처럼 마지막 구간만 뽑는다."""
     return topic_str.rsplit("/", 1)[-1]
+
+
+# ── 명령 실행 결과 (cmd_result) ─────────────────────────────────────────────
+# 명령은 즉시 끝나지 않는 것이 많다(mission_start 는 임무가 끝나야 결과가
+# 나온다). cmd_id 로 요청-결과를 상관시켜 관제가 "그 명령이 어떻게 됐는지"를
+# 추적할 수 있게 한다. status·code 모두 닫힌 집합이다 — ROLE_REQUIRED 와
+# 같은 이유로, 오타가 그대로 새 프로토콜 값이 되는 것을 막는다(fail-closed).
+_CMD_RESULT_STATUSES = ("accepted", "rejected", "in_progress", "completed", "failed")
+
+RESULT_CODES = ("OK", "DENIED", "BAD_PARAM", "BUSY", "ESTOPPED", "UNSUPPORTED",
+                 "TIMEOUT", "INTERNAL")
+
+# mission_* 결과 payload(data) 에 실리는 키 어휘. 값의 의미까지 이 계약이
+# 정하지는 않는다(그건 mission 기능의 몫) — 어떤 키가 있어야 관제 UI가
+# 고정된 필드를 그릴 수 있는지만 여기서 못박는다.
+MISSION_REPORT_KEYS = ("alleys_done", "distance_m", "duration_s", "interventions", "coverage")
+
+
+def make_cmd_result(cmd_id, cmd, status, code="OK", data=None) -> dict:
+    """명령 실행 결과를 이벤트 payload 로 만든다(kind="cmd_result").
+
+    status 나 code 가 닫힌 집합 밖이면 ValueError — 여기서 막지 않으면
+    잘못된 값이 그대로 관제 화면까지 흘러가 새 상태값처럼 보이게 된다.
+    """
+    if status not in _CMD_RESULT_STATUSES:
+        raise ValueError(f"알 수 없는 cmd_result 상태: {status!r} "
+                          f"(허용: {', '.join(_CMD_RESULT_STATUSES)})")
+    if code not in RESULT_CODES:
+        raise ValueError(f"알 수 없는 결과 코드: {code!r} (허용: {', '.join(RESULT_CODES)})")
+    return {"kind": "cmd_result", "cmd_id": cmd_id, "cmd": cmd, "status": status,
+            "code": code, "data": data if data is not None else {}}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
