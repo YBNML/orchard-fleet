@@ -136,9 +136,9 @@ class Work(ABC):                                               # v0.1: 인터페
     def stop(self) -> None: ...
     def status(self) -> WorkStatus: ...
 
-class Diag(ABC):                                                # v0.1: 인터페이스만, 미구현
-    def self_test(self, items: list[SelfTestItem]) -> None: ...
-    def blackbox_dump(self, window_s: float) -> dict: ...
+class Diag(ABC):
+    def self_test(self, items: list[str] | None = None) -> list[SelfTestItem]: ...  # None=전체 항목
+    def blackbox_dump(self, window_s: float) -> dict: ...        # v0.1: 인터페이스만, 미구현
 ```
 
 자료형(`robomw.sdk.types`): `Pose(x, y, yaw, quality=1.0)` ·
@@ -154,7 +154,7 @@ class Diag(ABC):                                                # v0.1: 인터�
 | `Localizer` | 구현됨 | `orchard_sim/adapters/ros_sensors.py::RosSensors` (Localizer+Perception 겸함) |
 | `Perception` | 구현됨 | 위와 동일 클래스 |
 | `Work` | **미구현** | hello.capabilities 에서 빠짐, `mission_start.work` 는 검증 후 저장만(실행은 스펙 ②) |
-| `Diag` | **미구현** | `self_test`/`relocalize`/`blackbox_dump`/`work_stop` 은 라우팅만 되고 UNSUPPORTED 로 거부됨 |
+| `Diag` | **부분 구현** | `orchard_sim/adapters/scout_diag.py::ScoutDiag` — `self_test`(lidar·imu·localizer·link·drive 5항목) 구현됨. `relocalize`/`blackbox_dump` 는 여전히 라우팅만 되고 UNSUPPORTED 로 거부됨(스펙 ② T3·T4) |
 
 즉 v0.1은 "SDK 5종 인터페이스는 계약으로 확정, scout는 그중 3종을 실제
 로봇으로 구현" 상태다. Work/Diag 구현은 스펙 ②의 범위다.
