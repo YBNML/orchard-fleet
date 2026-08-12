@@ -23,6 +23,9 @@ from collections import deque
 
 import numpy as np
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from orchard_sim import transforms as tfu
@@ -35,10 +38,19 @@ from robomw.sdk.types import Pose
 # 다 차기까지 느리다. 시간 창은 창 밖으로 나간 표본이 바로 빠져 반응이 빠르다.
 RATE_WINDOW_S = 3.0
 
+# 재정위 확인 — 요청을 낸 뒤 이 시간 안에 로컬라이저가 이 품질 이상을 보고해야
+# 성공으로 답한다. 문턱 0.3 은 ScoutDiag 의 localizer 자가진단과 같은 값이다
+# (같은 "측위가 살아 있다"는 판정을 두 곳이 다른 잣대로 재면 안 된다).
+REINIT_TIMEOUT_S = 2.0
+REINIT_MIN_QUALITY = 0.3
+LOC_DIAG_TOPIC = "/map_localizer/diagnostics"
+LOC_REINIT_TOPIC = "/map_localizer/reinit"
+
 
 class RosSensors(Localizer, Perception):
 
-    def __init__(self, node):
+    def __init__(self, node, reinit_topic=LOC_REINIT_TOPIC,
+                 diag_topic=LOC_DIAG_TOPIC):
         self._node = node
         self.buf = Buffer()
         self._tfl = TransformListener(self.buf, node)
@@ -51,6 +63,20 @@ class RosSensors(Localizer, Perception):
         # 수신 시각 카운터 — feed_cloud/feed_imu 가 호출될 때마다(솎기 전) 시각을
         # 남긴다. rates() 가 3초 창으로 Hz 를 낸다.
         self._rx_times = {"lidar": deque(), "imu": deque()}
+
+        # ── 재정위(reinit) 배선 ────────────────────────────────────────────
+        # 요청은 노드의 발행자로 나가지만, **응답은 이 클래스가 직접 받는다.**
+        # 다른 입력(feed_*)과 달리 reinit 은 동기 계약(bool 반환)이라 호출자가
+        # 답을 기다리는 동안 호스트 노드의 콜백은 돌지 못한다 — 그 노드의
+        # 실행기가 지금 이 함수 안에 갇혀 있기 때문이다. 그래서 진단만 받는
+        # 작은 전용 노드를 따로 두고 그 노드만 제 실행기로 돌린다. 호스트의
+        # 구독(_on_loc_diag)은 그대로고 이쪽은 순전히 대기용 귀다.
+        self._reinit_pub = node.create_publisher(String, reinit_topic, 10)
+        self._ack_node = Node(f"{node.get_name()}_relocalize_ack")
+        self._ack_node.create_subscription(String, diag_topic, self._on_ack, 10)
+        self._ack_exec = SingleThreadedExecutor()
+        self._ack_exec.add_node(self._ack_node)
+        self._ack_quality = None        # 마지막으로 받은 재정위 확인 품질
 
     def _note_rx(self, key, now=None):
         now = now if now is not None else time.monotonic()
@@ -183,15 +209,50 @@ class RosSensors(Localizer, Perception):
         xyt, _tilt = self.pose_tilt()
         return None if xyt is None else Pose(xyt[0], xyt[1], xyt[2])
 
-    def reinit(self, pose):
-        """포즈 재초기화(relocalize) — 아직 없다.
+    def _on_ack(self, msg):
+        """전용 노드의 진단 콜백 — 재정위 확인(quality)이 실린 것만 챙긴다.
 
-        계약(P.CMD_RELOCALIZE)에는 있지만 동작은 스펙 ② 몫이다. 조용히
-        성공한 척하면 관제는 재정위가 된 줄 알고 임무를 이어간다 — 그래서
-        예외로 드러낸다. 명령 경로에서는 여기 닿기 전에 UNSUPPORTED 로
-        돌아간다(control_agent._cmd_supported).
+        받은 payload 는 diagnostics() 스냅샷에도 그대로 반영한다. 실패를 보고할
+        때 관제가 보는 것이 바로 이 스냅샷이라, 재정위 직후의 최신 값이어야
+        "왜 못 잡았나"를 답할 수 있다.
         """
-        raise NotImplementedError("relocalize 미구현 — 스펙 ②")
+        d = self.feed_diag(msg)
+        if isinstance(d, dict) and "quality" in d:
+            try:
+                self._ack_quality = float(d["quality"])
+            except (TypeError, ValueError):
+                pass
+
+    def reinit(self, pose):
+        """포즈 재초기화(relocalize) — 요청을 보내고 **잡혔는지 확인해서** 답한다.
+
+        로컬라이저에게 새 자세를 주는 것(발행)은 즉시 끝나지만, 그것이 옳은
+        자세였는지는 다음 보정이 나와야 안다. 여기서 그 확인까지 기다리는
+        이유: 이 함수의 반환값이 관제 화면의 completed/failed 가 된다. 발행만
+        하고 True 를 돌려주면 "재정위 완료"라는 초록불 아래에서 로봇은 여전히
+        엉뚱한 곳을 자기 자리로 믿는다.
+
+        기다리는 동안 호스트 노드의 콜백은 멈춘다(그 실행기가 이 함수를 부른
+        장본인이다). 그래서 **주행 중에는 이 명령이 오지 않는다**는 전제가
+        중요하다 — 기능(maintenance)이 BUSY 로 먼저 막는다.
+
+        Returns:
+            bool: 한도(2초) 안에 품질 0.3 이상을 확인했으면 True.
+        """
+        # 밀려 있던 옛 진단부터 비운다 — 재정위 **이전**의 품질을 답으로
+        # 오인하면 엉뚱한 자세를 completed 로 보고한다.
+        for _ in range(50):
+            self._ack_exec.spin_once(timeout_sec=0.0)
+        self._ack_quality = None
+        self._reinit_pub.publish(String(data=json.dumps(
+            dict(x=float(pose.x), y=float(pose.y), yaw=float(pose.yaw)))))
+        deadline = time.monotonic() + REINIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            self._ack_exec.spin_once(timeout_sec=0.05)
+            q = self._ack_quality
+            if q is not None and q >= REINIT_MIN_QUALITY:
+                return True
+        return False
 
     def diagnostics(self):
         """마지막 로컬라이저 진단 payload 사본. 아직 없으면 빈 사전."""

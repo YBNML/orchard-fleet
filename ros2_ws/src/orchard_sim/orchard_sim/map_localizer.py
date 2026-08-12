@@ -23,6 +23,14 @@
     보정 이후 표류가 열 간격 절반을 넘었으면 그대로 오도메트리로 간다.
     틀린 보정은 보정을 안 하느니만 못하다. 그 상태가 오래 가면 정지 사유
     LOCALIZATION_LOST 로 개입을 요청한다 (관제의 개입 큐로 올라간다).
+
+사람이 되돌리는 길 (~/reinit)
+    그래도 위치를 잃으면 마지막 수단은 사람이다. `~/reinit` 로 JSON
+    {"x","y","yaw"} 을 받으면 **기동 때와 똑같은 절차**로 그 자세에서 다시
+    시작한다 (init_* 파라미터 경로와 같은 함수 _anchor_dead_reckoning 을 쓴다 —
+    복제하면 언젠가 갈라진다). 재정위 직후에는 보정을 한 번 곧바로 돌려 그
+    결과 품질을 ~/diagnostics 에 실어 보낸다: 명령을 내린 쪽이 "정말 잡혔는지"를
+    기다려 확인할 수 있어야 재정위가 복구 절차가 된다.
 """
 from __future__ import annotations
 
@@ -73,6 +81,12 @@ def inverse(a):
 
 def wrap(t):
     return (t + math.pi) % (2 * math.pi) - math.pi
+
+
+# 재정위 확인 창(초) — 이 동안 보정 한 번마다 품질을 ~/diagnostics 에 싣는다.
+# 명령을 낸 쪽(RosSensors.reinit)의 대기 한도 2초보다 넉넉해야 마지막 표본이
+# 잘리지 않는다.
+REINIT_ACK_S = 2.5
 
 
 class MapLocalizer(Node):
@@ -196,6 +210,9 @@ class MapLocalizer(Node):
                                  self._on_cloud, sqos)
         self.create_subscription(Odometry, str(g("odom_topic")), self._on_odom, 20)
         self.create_subscription(Imu, str(g("imu_topic")), self._on_imu, sqos)
+        # 운영자 재정위 — 관제 명령(relocalize)이 어댑터를 거쳐 여기로 온다.
+        self._reinit_ack_until = 0.0    # 이 시각까지 보정 품질을 진단에 싣는다
+        self.create_subscription(String, "~/reinit", self._on_reinit, 10)
         self.tfb = TransformBroadcaster(self)
         self.diag = self.create_publisher(String, "~/diagnostics", 10)
         self.create_timer(1.0 / max(float(g("publish_rate_hz")), 1.0), self._tick)
@@ -203,6 +220,65 @@ class MapLocalizer(Node):
         self.get_logger().info(
             f"초기 자세 map→odom = ({self.T_mo[0]:.2f}, {self.T_mo[1]:.2f}, "
             f"{math.degrees(self.T_mo[2]):.1f}°)")
+
+    # ── 초기화 ──────────────────────────────────────────────────────────────
+    def _anchor_dead_reckoning(self, raw):
+        """추측항법 프레임을 지금 이 오도메트리 원값에 묶고 자세를 init_pose 로 놓는다.
+
+        기동(첫 오도메트리)과 운영자 재정위(~/reinit)가 **같은 함수**를 쓴다.
+        절차가 여러 벌이면 언젠가 한쪽만 고쳐져 갈라진다 — 그 순간 재정위는
+        "자세는 옮겼는데 추측항법 기준점은 옛것"이 되어, 다음 오도메트리 한
+        번에 방금 준 자세가 통째로 날아간다.
+
+        raw 는 바퀴 오도메트리 원값 (x, y, yaw).
+        """
+        self._odom_prev = raw
+        self._imu_yaw0 = self._imu_yaw
+        self.T_ob = (0.0, 0.0, 0.0)          # 자체 프레임의 원점
+        self.T_mo = self.init_pose
+        self._have_odom = True
+
+    def _on_reinit(self, msg: String):
+        """운영자 재정위 — JSON {"x","y","yaw"} 자세로 다시 잡는다.
+
+        측위를 잃었을 때 사람이 눈으로 확인한 자리를 알려 주는 마지막 수단이다.
+        기동 절차(_anchor_dead_reckoning)를 그대로 부르고, **이전 자세를 전제로
+        쌓인 판단만** 함께 지운다. 그것을 남겨 두면 방금 준 자세가 곧바로 옛
+        자리로 되돌아간다 — 슬립 동결 중이면 _on_odom 이 매 오도메트리마다
+        T_mo 를 옛 앵커로 다시 계산하고(동결 분기), 표류 기준(drift_ref)이
+        옛 프레임이면 첫 보정부터 "표류 과다"로 전부 거부된다.
+
+        상실 래치(_lost_reported)는 **일부러 안 건드린다** — 다음 보정이
+        성공하면 기존 경로가 resolved 를 내보내 개입 큐를 닫는다.
+        """
+        try:
+            d = json.loads(msg.data)
+            pose = (float(d["x"]), float(d["y"]), float(d["yaw"]))
+        except (ValueError, TypeError, KeyError) as e:
+            self.get_logger().warning(f"재정위 요청 무시 — 형식 오류 ({e})")
+            return
+        self.init_pose = pose
+        if self._have_odom:
+            self._anchor_dead_reckoning(self._odom_raw)
+        else:
+            self.T_mo = self.init_pose   # 첫 오도메트리가 이 값으로 기준점을 잡는다
+        self.slip_active = False
+        self._slip_ref = None
+        self._slip_count = 0
+        self._slip_anchor = None
+        self.drift_ref = None            # 기동 직후와 같은 상태 (표류 0)
+        self._reacq_streak = 0
+        self._row_jump_streak = {}
+        self._tree_snap_streak = {}
+        self._anchor_big_streak = {}
+        now = time.monotonic()
+        self.last_ok_t = now
+        self.last_anchor_t = now
+        self.last_fix_t = 0.0            # 다음 틱에 곧바로 보정 — 품질을 새로 잰다
+        self._reinit_ack_until = now + REINIT_ACK_S
+        self.get_logger().warning(
+            f"재정위 — 자세를 ({pose[0]:+.2f}, {pose[1]:+.2f}, "
+            f"{math.degrees(pose[2]):+.1f}°) 로 다시 잡는다")
 
     # ── 입력 ────────────────────────────────────────────────────────────────
     def _on_imu(self, msg: Imu):
@@ -242,11 +318,7 @@ class MapLocalizer(Node):
         raw = (p.x, p.y, math.atan2(R[1, 0], R[0, 0]))
         self._odom_raw = raw
         if not self._have_odom:
-            self._odom_prev = raw
-            self._imu_yaw0 = self._imu_yaw
-            self.T_ob = (0.0, 0.0, 0.0)          # 자체 프레임의 원점
-            self.T_mo = self.init_pose
-            self._have_odom = True
+            self._anchor_dead_reckoning(raw)
             self.get_logger().info("추측항법 기준점 설정 (자이로 요 융합)")
             return
         dx, dy = raw[0] - self._odom_prev[0], raw[1] - self._odom_prev[1]
@@ -793,10 +865,10 @@ class MapLocalizer(Node):
             + (" · 슬립 동결 중" if self.slip_active else "")
             + (f" · 거부사유: {self.stat['gate']}" if self.stat["gate"] else ""))
 
-    def _emit(self, kind, code, msg, severity="warn"):
+    def _emit(self, kind, code, msg, severity="warn", **extra):
         self.diag.publish(String(data=json.dumps(
             dict(kind=kind, code=code, msg=msg, severity=severity,
-                 t=time.time()), ensure_ascii=False)))
+                 t=time.time(), **extra), ensure_ascii=False)))
 
     # ── 주기 ────────────────────────────────────────────────────────────────
     def _tick(self):
@@ -806,6 +878,16 @@ class MapLocalizer(Node):
         if now - self.last_fix_t >= self.fix_period:
             self.last_fix_t = now
             self._try_fix()
+            if now < self._reinit_ack_until:
+                # 재정위 확인 — 방금 잰 보정 품질을 그대로 실어 보낸다. 품질은
+                # 채택/거부와 무관하게 갱신되므로(_try_fix 의 stat.update) 게이트에
+                # 걸린 경우에도 "얼마나 맞아 보이는지"는 정직하게 나간다.
+                est = self.pose()
+                self._emit("relocalized", "RELOCALIZED",
+                           f"재정위 후 측위 품질 {self.stat['quality']:.2f}",
+                           severity="info", quality=self.stat["quality"],
+                           pose=[round(est[0], 3), round(est[1], 3),
+                                 round(est[2], 4)])
 
         # 오래 못 잡으면 개입 요청 — 관제의 개입 큐로 올라간다
         if (now - self.last_ok_t) > self.lost_timeout and not self._lost_reported:

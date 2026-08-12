@@ -87,9 +87,9 @@ ROBOT_WORK_TYPES = ("scout",)
 # 라우터가 UNSUPPORTED 로 되돌린다. 조용히 받아 삼키면 관제는 자진단이
 # 돌아간 줄 알고 다음 절차로 넘어간다 — 없는 기능은 없다고 답해야 한다.
 # (동작 구현은 스펙 ② 몫이다. 구현되는 대로 이 목록에서 뺀다.
-#  work_stop 은 T1 에서, self_test 는 T2 에서 구현됐다 —
+#  work_stop 은 T1 에서, self_test 는 T2 에서, relocalize 는 T3 에서 구현됐다 —
 #  mission.CMD_WORK_STOP·features.maintenance.MaintenanceFeature 참조)
-PENDING_CMDS = (P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP)
+PENDING_CMDS = (P.CMD_BLACKBOX_DUMP,)
 
 # 같은 곳에서 같은 사유로 거부가 반복되면 이 간격으로만 이벤트를 올린다.
 # 조종은 데드맨(400 ms) 때문에 클라이언트가 초당 10회 남짓 보낸다 — 관측자가
@@ -215,6 +215,16 @@ class ControlAgent(Node):
         # 없다 — 블랙보드가 그 경계를 넘는 유일한 통로다.
         self.bb.extra["work_types"] = ROBOT_WORK_TYPES
         self.bb.extra["sdk_work"] = SimWork(self.bb)
+        # 현장 격자 기하 — hello 의 site.geometry 로 나가는 **바로 그 사전**이다
+        # (_on_ws_open 이 이걸 그대로 싣는다). 기능(robomw)이 통로 번호를 좌표로
+        # 옮길 때도 이것만 본다: 관제 화면이 말한 통로와 로봇이 계산한 통로가
+        # 갈라지지 않으려면 출처가 하나여야 한다.
+        _R = int(g("rows", 10))
+        _S = float(g("row_spacing", 3.5))
+        self.bb.extra["site_geom"] = dict(
+            rows=_R, alleys=_R - 1, row_spacing=_S, x0=-((_R - 1) * _S) / 2.0,
+            col_len=(int(g("trees_per_row", 41)) - 1) * float(g("tree_spacing", 1.5)),
+            headland=float(g("headland", 6.0)))
         self.rate = dict(lidar=RateMeter(), imu=RateMeter(), lio=RateMeter())
 
         # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
@@ -223,6 +233,9 @@ class ControlAgent(Node):
         self.sensors = RosSensors(self)
         self.buf = self.sensors.buf         # 기존 이름 유지 (기능이 쓸 수 있게 노출)
         self._tf_buffer = self.buf
+        # Localizer SDK 어댑터 — sdk_work·sdk_diag 전례처럼 블랙보드로 건넨다.
+        # maintenance(robomw)의 relocalize 가 이 열쇠로 찾아 reinit 을 부른다.
+        self.bb.extra["sdk_loc"] = self.sensors
         # 구동 한계 — 어느 기능도 이보다 빠른 값을 낼 수 없어야 한다. 마지막
         # 그물이므로 기능별 상한 중 가장 큰 값으로 잡는다(정상 경로에서는
         # 여기서 잘리지 않는다 — 잘린다면 기능이나 중재가 계약을 어긴 것이다).
@@ -592,12 +605,9 @@ class ControlAgent(Node):
         """
         pr = lambda k, d=None: (self.get_parameter(k).value  # noqa: E731
                                 if self.has_parameter(k) else d)
-        R = int(pr("rows", 10))
-        geom = dict(rows=R, alleys=R - 1,
-                    row_spacing=float(pr("row_spacing", 3.5)),
-                    x0=-((R - 1) * float(pr("row_spacing", 3.5))) / 2.0,
-                    col_len=(int(pr("trees_per_row", 41)) - 1) * float(pr("tree_spacing", 1.5)),
-                    headland=float(pr("headland", 6.0)))
+        # 기하는 기동 때 한 번 조립해 블랙보드에 둔 그 사전이다(생성자 참조) —
+        # 여기서 다시 조립하면 기능이 쓰는 값과 관제에 알린 값이 갈라진다.
+        geom = self.bb.extra["site_geom"]
         payload = dict(robot_id=self.robot_id, protocol=P.PROTOCOL_VERSION,
                        **geom,
                        limits=dict(speed=float(pr("speed", 0.7)),
