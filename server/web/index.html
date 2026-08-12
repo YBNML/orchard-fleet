@@ -873,8 +873,10 @@ function sendCmd(robotId, action, payload) {
   const entry = {robot: robotId, cmd: action};
   entry.timer = setTimeout(() => {
     if (!pending.delete(cmd_id)) return;      // 이미 결과를 받았으면 아무것도 안 한다
-    toast("응답 없음", "err");
-    maintTimeout(action);
+    toast(`${robotId} · 응답 없음`, "err");
+    // 화면이 그새 다른 로봇으로 넘어갔으면 지금 보이는 카드는 그 로봇 것이 아니다 —
+    // 건드리지 않는다(리뷰 지적: 오귀속 방지).
+    if (robotId === selKey) maintTimeout(action);
   }, PENDING_TIMEOUT_MS);
   pending.set(cmd_id, entry);
   SRV.send(JSON.stringify({type: "cmd", action, robot: robotId,
@@ -908,8 +910,13 @@ function handleCmdResult(e) {
   clearTimeout(p.timer);
   pending.delete(e.cmd_id);
   const ok = !["rejected", "failed"].includes(e.status);
-  toast(ok ? "명령 완료" : `${e.code || "오류"} — ${e.data?.reason || e.msg || ""}`,
+  const who = `${p.robot} · `;         // 화면을 다른 로봇으로 넘긴 뒤에도 토스트만으로 출처를 알 수 있게
+  toast(ok ? `${who}명령 완료` : `${who}${e.code || "오류"} — ${e.data?.reason || e.msg || ""}`,
         ok ? "ok" : "err");
+  // 유지보수 카드는 지금 화면에 뜬 로봇(selKey) 것일 때만 건드린다 — 명령을 보낸
+  // 뒤 다른 로봇으로 화면을 돌렸다면, 그 카드는 이미 다른 로봇의 자리다(리뷰
+  // 지적: cmd_result 오귀속 — pending 이 들고 있는 robot 으로 가드한다).
+  if (p.robot !== selKey) return;
   // 유지보수 카드의 표시는 여기서 cmd 이름으로 분기한다(공통 토스트와 별개).
   if (e.cmd === "self_test") renderSelfTest(e);
   else if (e.cmd === "relocalize") renderReloc(e);
