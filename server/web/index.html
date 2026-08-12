@@ -361,6 +361,19 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
   border-bottom:1px solid var(--line-soft); font-size:13px}
 #users-list button{margin-left:auto; padding:5px 10px; font-size:12px}
 
+/* ── 토스트 — cmd_result 알림. sendCmd 로 보낸 명령의 결과(성공/실패/무응답)를
+   화면 한 귀퉁이에서 잠깐 보여준다. 유지보수 카드처럼 결과를 표로 박아 두는
+   자리가 없는 명령(비상정지 등)도 이걸로 "명령이 갔다/안 갔다"를 알 수 있다. */
+#toasts{position:fixed; right:16px; bottom:16px; z-index:70; display:flex;
+  flex-direction:column; gap:8px; pointer-events:none; max-width:min(340px,90vw)}
+.toast{pointer-events:auto; padding:11px 14px; border-radius:10px;
+  background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow);
+  font-size:13px; font-weight:600; border-left:4px solid var(--dim); color:var(--ink);
+  animation:toast-in .18s ease}
+.toast.ok{border-left-color:var(--leaf); color:var(--leaf)}
+.toast.err{border-left-color:var(--danger); color:var(--danger)}
+@keyframes toast-in{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
+
 /* ── 반응형: 태블릿·현장 ──────────────────────────────────────────────── */
 @media (max-width:1000px){
   main{grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr) auto}
@@ -477,6 +490,8 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
       <span class="ico">▤</span>임무</button>
     <button class="tab snav" data-tab="drive" aria-selected="false"
             data-min-role="operator"><span class="ico">✛</span>조종</button>
+    <button class="tab snav" data-tab="maint" aria-selected="false">
+      <span class="ico">⚒</span>정비</button>
     <button class="tab snav" data-tab="history" aria-selected="false">
       <span class="ico">▥</span>이력</button>
     <button class="tab snav" data-tab="info" aria-selected="false">
@@ -543,6 +558,15 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 
       <!-- 임무 -->
       <div class="pane on" id="pane-mission" data-needs="drive_mission" data-min-role="operator">
+        <h3>전체 정찰</h3>
+        <div class="dim" style="font-size:12.5px;margin-bottom:9px">
+          모든 통로를 자동으로 훑습니다. 속도 배율
+          <b id="scoutSpeedVal" class="num">1.0</b>
+        </div>
+        <input type="range" id="scoutSpeed" min="0.1" max="1.0" step="0.1" value="1.0"
+               style="margin-bottom:9px">
+        <button id="scoutStart" class="wide">전체 정찰 시작</button>
+
         <h3>오늘 돌 통로</h3>
         <div class="dim" style="font-size:12.5px;margin-bottom:11px">
           아래 통로 레일이나 지도에서 통로를 눌러 고르세요.
@@ -572,6 +596,31 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
           <kbd>Esc</kbd> 비상정지<br>
           손을 떼면 <b id="dmMs">400</b> ms 안에 스스로 멈춥니다.
         </div>
+      </div>
+
+      <!-- 유지보수 — hello.features 에 "maintenance" 가 있는 로봇에만 뜬다.
+           자가진단·재정위·블랙박스는 모두 오래 걸리지 않는 동기 명령이라
+           cmd_result 를 그 자리에서 표로 받는다(공통 토스트와 별개로). -->
+      <div class="pane" id="pane-maint" data-needs="maintenance">
+        <h3>자가진단</h3>
+        <button id="selfTestBtn" class="wide" data-min-role="operator">자가진단 실행</button>
+        <table id="selfTestTbl" style="width:100%;border-collapse:collapse;margin-top:9px;display:none">
+          <tbody id="selfTestBody"></tbody>
+        </table>
+
+        <h3>위치 재초기화</h3>
+        <div data-min-role="admin">
+          <div class="field"><label for="relAlley">통로</label><select id="relAlley"></select></div>
+          <div class="field"><label for="relEnd">단</label>
+            <select id="relEnd"><option value="north">북단</option><option value="south">남단</option></select>
+          </div>
+          <button id="relocBtn" class="wide">재초기화 실행</button>
+        </div>
+        <div id="relocResult" style="font-size:12.5px;margin-top:8px"></div>
+
+        <h3>블랙박스</h3>
+        <button id="blackboxBtn" class="wide" data-min-role="operator">덤프 저장</button>
+        <div id="blackboxResult" style="font-size:12.5px;margin-top:8px"></div>
       </div>
 
       <!-- 이력 -->
@@ -608,6 +657,8 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
   </div>
   <div id="log"></div>
 </div>
+
+<div id="toasts" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -809,10 +860,26 @@ function srvReady() {
   pushEvent("서버", "연결 안 됨 — 명령이 전송되지 않았습니다");
   return false;
 }
+// 명령 결과(cmd_result) 대기표 — cmd_id → {robot, cmd, timer}. sendCmd 가 심고
+// evt 채널에서 짝을 찾으면(handleCmdResult) 지운다. 5초를 넘기면 스스로 지우고
+// "응답 없음" 토스트를 낸다 — 로봇이 응답을 잃어버려도 화면이 계속 기다리는 채로
+// 남지 않는다.
+const pending = new Map();
+const PENDING_TIMEOUT_MS = 5000;
+
 function sendCmd(robotId, action, payload) {
-  if (!srvReady()) return;
+  if (!srvReady()) return null;
+  const cmd_id = "d" + Date.now();
+  const entry = {robot: robotId, cmd: action};
+  entry.timer = setTimeout(() => {
+    if (!pending.delete(cmd_id)) return;      // 이미 결과를 받았으면 아무것도 안 한다
+    toast("응답 없음", "err");
+    maintTimeout(action);
+  }, PENDING_TIMEOUT_MS);
+  pending.set(cmd_id, entry);
   SRV.send(JSON.stringify({type: "cmd", action, robot: robotId,
-                           cmd_id: "c" + Date.now(), payload: payload || {}}));
+                           cmd_id, payload: payload || {}}));
+  return cmd_id;
 }
 function sendTeleop(robotId, vx, wz) {
   if (!srvReady()) return;
@@ -823,11 +890,49 @@ function pushEvent(rid, msg) {
   logEvent(r, {level: "warn", t: Date.now()/1000, msg});
 }
 
+/* ── 토스트 ─────────────────────────────────────────────────────────── */
+function toast(msg, kind) {
+  const box = $("toasts");
+  const d = document.createElement("div");
+  d.className = "toast" + (kind ? " " + kind : "");
+  d.textContent = msg;
+  box.appendChild(d);
+  setTimeout(() => d.remove(), 4200);
+}
+
+// evt 채널로 온 cmd_result 를 sendCmd 의 대기표와 맞춘다. 우리가 보낸 적 없는
+// cmd_id(다른 관제 세션이 보냈거나, 서버 재기동 전 잔존 응답)는 조용히 무시한다.
+function handleCmdResult(e) {
+  const p = pending.get(e.cmd_id);
+  if (!p) return;
+  clearTimeout(p.timer);
+  pending.delete(e.cmd_id);
+  const ok = !["rejected", "failed"].includes(e.status);
+  toast(ok ? "명령 완료" : `${e.code || "오류"} — ${e.data?.reason || e.msg || ""}`,
+        ok ? "ok" : "err");
+  // 유지보수 카드의 표시는 여기서 cmd 이름으로 분기한다(공통 토스트와 별개).
+  if (e.cmd === "self_test") renderSelfTest(e);
+  else if (e.cmd === "relocalize") renderReloc(e);
+  else if (e.cmd === "blackbox_dump") renderBlackbox(e);
+}
+
+// 타임아웃(무응답)도 유지보수 카드가 낀 명령이면 표를 "응답 없음"으로 지운다 —
+// 안 그러면 지난 결과가 마치 지금 결과인 것처럼 남는다.
+function maintTimeout(action) {
+  if (action === "self_test") $("selfTestTbl").style.display = "none";
+  else if (action === "relocalize")
+    $("relocResult").innerHTML = '<span style="color:var(--danger)">응답 없음</span>';
+  else if (action === "blackbox_dump")
+    $("blackboxResult").innerHTML = '<span style="color:var(--danger)">응답 없음</span>';
+}
+
 /* ── 텔레메트리 반영 ───────────────────────────────────────────────── */
 function handleRobotMessage(r, suffix, payload){
   r.lastMsg = performance.now();
   if (suffix === "hello"){ r.geom = payload; r.features = payload.features || [];
-                           if (r.id === selKey){ buildAlleys(r); applyFeatures(r); }
+                           if (r.id === selKey){
+                             buildAlleys(r); applyFeatures(r); buildRelocAlleySelect(r);
+                           }
                            fitView(); renderFleet(); }
   else if (suffix === "state"){ r.state = payload; r.track = payload.track || r.track;
                                 r.cls = payload.estop ? "bad" :
@@ -837,7 +942,10 @@ function handleRobotMessage(r, suffix, payload){
                                 draw(); }
   else if (suffix === "health"){ r.health = payload; if (r.id === selKey) syncHealth(r); }
   else if (suffix === "map"){ r.mapCell = payload.cell; r.mapIJ = payload.ij || []; draw(); }
-  else if (suffix === "event") logEvent(r, payload);
+  else if (suffix === "event"){
+    logEvent(r, payload);
+    if (payload.kind === "cmd_result") handleCmdResult(payload);
+  }
 }
 
 /* ── 로봇 칩 ───────────────────────────────────────────────────────── */
@@ -857,7 +965,8 @@ function renderFleet(){
 function selectRobot(k){
   selKey = k; picked = new Set();
   const r = robots.get(k);
-  renderFleet(); buildAlleys(r); applyFeatures(r);
+  renderFleet(); buildAlleys(r); applyFeatures(r); buildRelocAlleySelect(r);
+  resetMaintPanels();
   syncPanels(); syncHealth(r); updateSec(); draw();
 }
 function updateSec(){
@@ -1339,6 +1448,24 @@ $("mStart").onclick = async () => {
     r.missionId = ms.id;
   } catch (e) { alert("임무를 시작하지 못했습니다: " + e.message); }
 };
+
+// 전체 정찰 — alleys 를 생략하면 로봇이 전 통로를 자동으로 순서대로 돈다
+// (서버는 이 payload 를 검증 없이 그대로 전달한다, 스펙②T5).
+$("scoutSpeed").oninput = () =>
+  { $("scoutSpeedVal").textContent = (+$("scoutSpeed").value).toFixed(1); };
+$("scoutStart").onclick = async () => {
+  const r = sel(); if (!r) return;
+  const v = +$("scoutSpeed").value;
+  if (!confirm(`${r.id} 전체 정찰을 시작합니다 (속도 배율 ${v.toFixed(1)}).\n\n` +
+              `모든 통로를 순서대로 자동으로 돕니다. 계속하시겠습니까?`))
+    return;
+  try {
+    const ms = await api("/missions", {method: "POST",
+      body: {robot_id: r.id, work: {type: "scout", params: {speed_scale: v}}}});
+    r.missionId = ms.id;
+  } catch (e) { alert("전체 정찰을 시작하지 못했습니다: " + e.message); }
+};
+
 async function missionVerb(verb){
   const r = sel();
   if (!r?.missionId) { pushEvent(r?.id || "?", "활성 임무 없음"); return; }
@@ -1348,6 +1475,82 @@ async function missionVerb(verb){
 $("mPause").onclick  = () => missionVerb("pause");
 $("mResume").onclick = () => missionVerb("resume");
 $("mCancel").onclick = () => missionVerb("cancel");
+
+/* ── 유지보수 ──────────────────────────────────────────────────────────
+   self_test·relocalize·blackbox_dump 는 모두 동기 명령이라(로봇이 바로
+   cmd_result 를 낸다) 결과를 카드에 그 자리에서 그린다 — handleCmdResult
+   가 evt 로 온 cmd_result 를 cmd 이름으로 갈라 아래 render* 를 부른다. */
+function buildRelocAlleySelect(r){
+  const box = $("relAlley");
+  box.innerHTML = "";
+  const n = r?.geom?.alleys || 0;
+  for (let k = 0; k < n; k++){
+    const o = document.createElement("option");
+    o.value = k; o.textContent = "통로 " + k;
+    box.appendChild(o);
+  }
+}
+function resetMaintPanels(){
+  $("selfTestTbl").style.display = "none"; $("selfTestBody").innerHTML = "";
+  $("relocResult").innerHTML = ""; $("blackboxResult").innerHTML = "";
+}
+
+$("selfTestBtn").onclick = () => { const r = sel(); r && sendCmd(r.id, "self_test", {}); };
+
+$("relocBtn").onclick = () => {
+  const r = sel(); if (!r) return;
+  const alley = +$("relAlley").value, end = $("relEnd").value;
+  const endName = end === "north" ? "북단" : "남단";
+  if (!confirm(`${r.id} 의 위치 추정을 통로 ${alley} ${endName}으로 다시 잡습니다.\n\n` +
+              `로봇이 실제로 그 자리에 서 있는지 눈으로 먼저 확인하세요 — 틀린 자리를 ` +
+              `주면 측위가 엉뚱한 곳을 믿게 됩니다.\n\n계속하시겠습니까?`))
+    return;
+  sendCmd(r.id, "relocalize", {alley, end});
+};
+
+$("blackboxBtn").onclick = () => { const r = sel(); r && sendCmd(r.id, "blackbox_dump", {}); };
+
+function renderSelfTest(e){
+  const tbl = $("selfTestTbl"), body = $("selfTestBody");
+  if (e.status !== "completed"){       // 실패·거부 토스트는 handleCmdResult 가 이미 냈다
+    tbl.style.display = "none";
+    return;
+  }
+  const items = e.data?.items || [];
+  body.innerHTML = items.map(it =>
+    `<tr style="border-bottom:1px solid var(--line-soft)">` +
+    `<td style="padding:5px 4px">${esc(it.name)}</td>` +
+    `<td style="padding:5px 4px;text-align:center;color:${it.ok ? "var(--leaf)" : "var(--danger)"}">` +
+    (it.ok ? "✓" : "✗") + `</td>` +
+    `<td style="padding:5px 4px;color:var(--dim);font-size:12px">${esc(it.detail || "")}</td>` +
+    `</tr>`).join("");
+  tbl.style.display = "";
+}
+
+function renderReloc(e){
+  const box = $("relocResult");
+  if (e.status === "completed"){
+    const q = e.data?.quality;
+    box.innerHTML = `<span style="color:var(--leaf)">완료</span>` +
+      (q != null ? ` · 품질 ${(+q).toFixed(2)}` : "");
+  } else {
+    box.innerHTML = `<span style="color:var(--danger)">${esc(e.code || "실패")}</span> — ` +
+      esc(e.data?.reason || e.msg || "");
+  }
+}
+
+function renderBlackbox(e){
+  const box = $("blackboxResult");
+  if (e.status === "completed"){
+    const d = e.data || {};
+    box.innerHTML = `<span style="color:var(--leaf)">저장됨</span> · ` +
+      `<span class="mono">${esc(d.path || "—")}</span> · ` +
+      `${((d.bytes || 0) / 1024).toFixed(1)} KB`;
+  } else {
+    box.innerHTML = `<span style="color:var(--danger)">${esc(e.code || "실패")}</span> — ` +
+      esc(e.data?.reason || e.msg || "");
+  }
+}
 
 $("teleopBtn").onclick = () => {
   const r = sel(); if (!r) return;
