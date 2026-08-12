@@ -41,7 +41,16 @@ class TelemetryState(Feature):
         mode = bb.extra.get("mode", "idle")
         if s["estop"]:
             mode = "estop"
-        return (("state", dict(
+        # work(작업기) — sdk_work 가 배선돼 있고 진행 중일 때만 키를 낸다.
+        # additive 계약: 작업기가 없거나 꺼져 있으면 아예 키가 없다(값이
+        # None 인 채로 두지 않는다 — 관제가 "키 존재"로 패널을 켜고 끈다).
+        sdk_work = bb.extra.get("sdk_work")
+        work = None
+        if sdk_work is not None:
+            ws = sdk_work.status()
+            if ws.active:
+                work = dict(type=ws.type, progress=round(ws.progress, 3))
+        state = dict(
             mode=mode, estop=s["estop"], estop_reason=s["estop_reason"],
             paused=s["paused"], gate=s["gate"],
             # 2단계 해제 — 관제 화면이 '무엇이 남았는지'를 그대로 보여준다
@@ -58,4 +67,7 @@ class TelemetryState(Feature):
             lio=(None if bb.lio_pose is None else
                  [round(v, 3) for v in bb.lio_pose]),
             mission=mission,
-            track=self.track[-1500:])),)
+            track=self.track[-1500:])
+        if work is not None:
+            state["work"] = work
+        return (("state", state),)

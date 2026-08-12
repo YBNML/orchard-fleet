@@ -52,7 +52,7 @@ from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import Empty
 from std_msgs.msg import String as StringMsg
 
-from orchard_sim.adapters import RosCloudWorld, RosDrive, RosSensors
+from orchard_sim.adapters import RosCloudWorld, RosDrive, RosSensors, SimWork
 from robomw.core.audit import R_ACCEPT, R_REJECT, AuditLog
 from robomw.core.base import Blackboard, Context
 from robomw.core.registry import Registry
@@ -77,12 +77,17 @@ LEGACY_FEATURES = {"drive_mission": "robomw.profiles.orchard.mission",
 # 어휘를 쓴다 — 관제가 화면(지도·패널)을 고르는 열쇠다.
 SITE_TYPE = "orchard"
 
+# 이 로봇이 실제로 갖춘 작업기 목록 (스펙 ② T1). mission(robomw)의 능력
+# 게이트(bb.extra["work_types"])와 hello 의 capabilities.work.types 가 이
+# 값을 그대로 쓴다 — 한 곳만 고치면 둘 다 맞는다. 지금은 정찰(scout)뿐이다.
+ROBOT_WORK_TYPES = ("scout",)
+
 # 계약(protocol)에는 있지만 이 기체에는 **아직 동작이 없는** 명령들.
 # 라우터가 UNSUPPORTED 로 되돌린다. 조용히 받아 삼키면 관제는 자진단이
 # 돌아간 줄 알고 다음 절차로 넘어간다 — 없는 기능은 없다고 답해야 한다.
-# (동작 구현은 스펙 ② 몫이다. 구현되는 대로 이 목록에서 뺀다)
-PENDING_CMDS = (P.CMD_SELF_TEST, P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP,
-                P.CMD_WORK_STOP)
+# (동작 구현은 스펙 ② 몫이다. 구현되는 대로 이 목록에서 뺀다.
+#  work_stop 은 T1 에서 구현됐다 — mission.CMD_WORK_STOP 참조)
+PENDING_CMDS = (P.CMD_SELF_TEST, P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP)
 
 # 같은 곳에서 같은 사유로 거부가 반복되면 이 간격으로만 이벤트를 올린다.
 # 조종은 데드맨(400 ms) 때문에 클라이언트가 초당 10회 남짓 보낸다 — 관측자가
@@ -200,6 +205,14 @@ class ControlAgent(Node):
         # ── 공통 상태 ───────────────────────────────────────────────────────
         self.bb = Blackboard()
         self.bb.extra["mode"] = P.MODE_IDLE
+        # work(작업기) SDK 어댑터 — cloud_sinks 전례처럼 블랙보드로 건넨다.
+        # 다만 방향은 반대다: cloud_sinks 는 기능이 콜백을 얹고 어댑터가
+        # 읽지만, 여기서는 호스트가 어댑터 인스턴스를 만들어 얹고 기능
+        # (mission)이 그 열쇠로 찾아 쓴다. mission 은 ROS 를 모르므로
+        # SimWork(ROS 에 안 닿지만 orchard_sim 소속) 를 직접 import 할 수
+        # 없다 — 블랙보드가 그 경계를 넘는 유일한 통로다.
+        self.bb.extra["work_types"] = ROBOT_WORK_TYPES
+        self.bb.extra["sdk_work"] = SimWork(self.bb)
         self.rate = dict(lidar=RateMeter(), imu=RateMeter(), lio=RateMeter())
 
         # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
@@ -591,7 +604,8 @@ class ControlAgent(Node):
         lim = self.drive.limits()
         payload[P.HELLO_SITE] = dict(type=SITE_TYPE, geometry=geom)
         payload[P.HELLO_CAPABILITIES] = dict(
-            drive=dict(v_max=lim.v_max, w_max=lim.w_max))
+            drive=dict(v_max=lim.v_max, w_max=lim.w_max),
+            work=dict(types=list(self.bb.extra.get("work_types", ()))))
         payload[P.HELLO_MIDDLEWARE] = dict(name="robomw", version="0.1")
         conn.send_json(P.envelope(f"orchard/{self.robot_id}/hello", payload,
                                   self.now_ns(), self.next_seq()))

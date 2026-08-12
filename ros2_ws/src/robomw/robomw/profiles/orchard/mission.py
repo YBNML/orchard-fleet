@@ -30,7 +30,7 @@ class DriveMission(Feature):
     version = "1.0"
     summary = "통로 목록 순회 (보스트로피돈)"
     commands = (P.CMD_MISSION_START, P.CMD_MISSION_PAUSE, P.CMD_MISSION_RESUME,
-                P.CMD_MISSION_CANCEL)
+                P.CMD_MISSION_CANCEL, P.CMD_WORK_STOP)
 
     def setup(self, ctx):
         super().setup(ctx)
@@ -52,6 +52,7 @@ class DriveMission(Feature):
         self._align_key = None          # 회전 슬립 감시 — (wp idx, 시작 시각)
         self._report = None             # 완료 보고 수집함 (임무 하나당 하나)
         self._last_pose = None          # 주행거리 적분용 직전 위치
+        self._speed_scale = 1.0         # work.params.speed_scale — 전진 요청에만 곱한다
 
     # ── 경로 ────────────────────────────────────────────────────────────────
     def cross_y(self, sign):
@@ -108,20 +109,34 @@ class DriveMission(Feature):
     def on_command(self, cmd, payload):
         s = self.ctx.safety
         if cmd == P.CMD_MISSION_START:
-            alleys = [int(v) for v in (payload.get("alleys") or [])
-                      if 0 <= int(v) <= self.R - 2]
-            if not alleys:
-                return self._reject(payload, "유효한 통로가 없다", "BAD_PARAM")
-            # work(작업기) 는 선택 필드다. 있으면 계약이 검사하고, 통과한 것만
-            # 블랙보드에 놓는다 — 실행(방제·예초 …)은 스펙 ② 몫이라 아직 없다.
-            # 검사부터 넣는 이유: 형식이 틀린 값을 받아만 두면, 나중에 실행이
-            # 붙는 날 현장에서 처음 터진다.
+            # work(작업기) 는 선택 필드다. 있으면 먼저 계약이 형식을 검사하고
+            # (스키마), 이어서 이 기체가 실제로 갖춘 작업기인지 본다(능력
+            # 게이트) — 순서가 중요하다. 형식부터 틀린 값은 "이 기체가 못
+            # 한다"가 아니라 "요청 자체가 잘못됐다"로 답해야 한다.
             work = payload.get("work")
             if work is not None:
                 ok, why = P.validate_work(work)
                 if not ok:
                     return self._reject(payload, f"work 스키마 오류 — {why}",
                                         "BAD_PARAM", why)
+                # 능력 게이트. bb.extra["work_types"] 는 호스트(어댑터)가 이
+                # 기체가 실제로 갖춘 작업기 목록을 얹어 둔다(hello 의
+                # capabilities.work.types 와 같은 값 — control_agent 참조).
+                # 그 키가 아예 없는 호스트는 게이트를 걸지 않는다: 능력을
+                # "선언한" 쪽만 강제한다(구버전·미배선 호스트에서 work 있는
+                # mission_start 가 갑자기 전부 막히면 안 된다).
+                wtypes = self.ctx.bb.extra.get("work_types")
+                if wtypes is not None and work.get("type") not in wtypes:
+                    return self._reject(payload, "미지원 작업 유형", "UNSUPPORTED")
+            raw_alleys = payload.get("alleys")
+            if work is not None and not raw_alleys:
+                # 정찰처럼 "어디를"이 뜻 없는 작업은 전 통로가 기본값이다.
+                alleys = list(range(self.R - 1))
+            else:
+                alleys = [int(v) for v in (raw_alleys or [])
+                          if 0 <= int(v) <= self.R - 2]
+            if not alleys:
+                return self._reject(payload, "유효한 통로가 없다", "BAD_PARAM")
             if s.snapshot()["estop"]:
                 return self._reject(payload, "비상정지 상태 — 임무 시작 불가",
                                     "ESTOPPED")
@@ -133,8 +148,11 @@ class DriveMission(Feature):
                 return self._reject(payload,
                                     "측위 미준비 — 로컬라이저가 아직 위치를 내지 못했다",
                                     "BUSY", "측위 미준비")
+            speed_scale = 1.0
             if work is not None:
                 self.ctx.bb.extra["work"] = work
+                speed_scale = float((work.get("params") or {}).get("speed_scale", 1.0))
+            self._speed_scale = speed_scale
             self.mission = dict(alleys=alleys, mode=payload.get("mode", "mapping"),
                                 wps=self.build_waypoints(alleys), idx=0,
                                 started=time.time(),
@@ -143,6 +161,10 @@ class DriveMission(Feature):
             self._begin_report()
             s.set_paused(False)
             self.ctx.bb.extra["mode"] = P.MODE_MISSION
+            if work is not None:
+                sdk_work = self.ctx.bb.extra.get("sdk_work")
+                if sdk_work is not None:
+                    sdk_work.start(work.get("type"), work.get("params") or {})
             self.ctx.event("mission_started",
                            f"임무 시작 — 통로 {alleys} · 웨이포인트 "
                            f"{len(self.mission['wps'])}개")
@@ -164,9 +186,25 @@ class DriveMission(Feature):
             self._report = None         # 중간에 끊긴 실적은 보고하지 않는다
             self._last_pose = None
             self.ctx.bb.extra["mode"] = P.MODE_IDLE
+            self._stop_work()
             self.ctx.event("mission_cancelled", "임무 취소")
             return True
+        if cmd == P.CMD_WORK_STOP:
+            # 작업기만 세운다 — 주행(임무)은 그대로 돈다. 정찰처럼 이동 자체가
+            # 작업인 경우 work_stop 이 임무까지 멈추면 "작업만 잠깐 끄고 계속
+            # 돌아라"를 표현할 수단이 없어진다.
+            self._stop_work()
+            self.ctx.event("work_stopped", "작업 중단")
+            self.ctx.emit_cmd_result(payload.get("cmd_id"), P.CMD_WORK_STOP,
+                                     "completed")
+            return True
         return False
+
+    def _stop_work(self):
+        """sdk_work 가 배선돼 있으면 중단시킨다. 없으면(어댑터 미배선) 조용히 넘어간다."""
+        sdk_work = self.ctx.bb.extra.get("sdk_work")
+        if sdk_work is not None:
+            sdk_work.stop()
 
     # ── 완료 보고 ───────────────────────────────────────────────────────────
     def _begin_report(self):
@@ -251,6 +289,7 @@ class DriveMission(Feature):
             self.ctx.bb.extra["mode"] = P.MODE_IDLE
             self.ctx.event("mission_done", "임무 완료")
             self._finish(m)
+            self._stop_work()
             return None
         wp = m["wps"][m["idx"]]
         tx = p[0] if wp["x"] is None else wp["x"]
@@ -333,7 +372,7 @@ class DriveMission(Feature):
         if wp["kind"] == "cross":
             want = 0.0 if dx > 0 else math.pi
             err_h = (want - p[2] + math.pi) % (2 * math.pi) - math.pi
-            return VelocityRequest(self.speed,
+            return VelocityRequest(self.speed * self._speed_scale,
                                    max(-0.4, min(0.4, 1.0 * err_h)),
                                    priority=5, reason="mission:cross-hold")
         v = self.speed_limit(p[1], dist)
@@ -345,15 +384,23 @@ class DriveMission(Feature):
             v = self.speed
         elif cross > 0.5:
             v = min(v, self.speed * 0.4)    # 선을 벗어났으면 느리게 복귀한다
-        return VelocityRequest(v * max(0.25, 1.0 - abs(err)), 1.4 * err,
-                               priority=5, reason="mission:follow")
+        # speed_scale 은 전진 요청에만 곱한다 — 회전(피벗)·슬립 복구 후진은
+        # 제외한다(안전 불변). 이 return 은 전진 추종이므로 곱한다.
+        return VelocityRequest(v * max(0.25, 1.0 - abs(err)) * self._speed_scale,
+                               1.4 * err, priority=5, reason="mission:follow")
 
     def _publish_status(self):
         m = self.mission
         if m is None:
             self.ctx.bb.extra["mission_status"] = None
+            self.ctx.bb.extra["mission_coverage"] = 0.0
             return
         wp = m["wps"][m["idx"]] if m["idx"] < len(m["wps"]) else None
+        # work SDK 어댑터(SimWork.status().progress)가 그대로 돌려주는 값 —
+        # 산식은 완료 보고(_finish)의 coverage 와 같다(done/총 통로 수), 다만
+        # 여기서는 임무 도중에도 매 틱 갱신한다.
+        done = len(self._report["alleys_done"]) if self._report else 0
+        self.ctx.bb.extra["mission_coverage"] = round(done / (len(m["alleys"]) or 1), 3)
         self.ctx.bb.extra["mission_status"] = dict(
             alleys=m["alleys"], mode=m["mode"], idx=m["idx"], total=len(m["wps"]),
             alley=wp["alley"] if wp else None,
