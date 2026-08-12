@@ -124,7 +124,7 @@ class Drive(ABC):
 
 class Localizer(ABC):
     def pose(self) -> Pose | None: ...                        # None = 미초기화/신호손실
-    def reinit(self, pose: Pose) -> None: ...
+    def reinit(self, pose: Pose) -> bool: ...                  # True = 재초기화 + 측위 회복 확인
     def diagnostics(self) -> dict: ...                         # 'bias_x' 등, 실수 또는 상태 문자열
 
 class Perception(ABC):

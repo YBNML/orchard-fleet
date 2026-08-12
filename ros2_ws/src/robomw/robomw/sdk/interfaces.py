@@ -45,11 +45,24 @@ class Localizer(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def reinit(self, pose: Pose) -> None:
-        """포즈 재초기화.
+    def reinit(self, pose: Pose) -> bool:
+        """포즈 재초기화 — 받았는지가 아니라 **잡혔는지**를 답한다.
+
+        운영자가 사람 눈으로 확인한 자리를 알려 주는 복구 절차(relocalize
+        명령)의 실행부다. 그래서 "요청을 보냈다"로 True 를 돌려주면 안 된다:
+        호출자(코어)는 이 값 하나로 관제에 completed/failed 를 답하고, 관제는
+        그것을 보고 임무를 재개할지 정한다. 성공을 참칭하면 로봇은 초록불
+        아래에서 엉뚱한 곳을 제자리로 믿는다.
 
         Args:
             pose: 새로운 포즈 (지도 프레임)
+
+        Returns:
+            bool: 재초기화를 적용했고 **그 뒤 측위가 살아 있음을 확인**했으면
+                True. 확인하지 못했으면(구현이 정한 한도 안에 품질 신호가
+                안 오면) False — 호출자는 이를 실패(TIMEOUT)로 보고한다.
+                구현마다 "확인"의 잣대는 다를 수 있으나, **확인 없이 True 를
+                돌려주지 않는다**는 것이 이 계약의 핵심이다.
         """
         pass
 
