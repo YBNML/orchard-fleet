@@ -10,5 +10,5 @@ setup(
     ],
     zip_safe=True,
     description="로봇측 미들웨어 — 명령 계약·안전·링크 (ROS 비의존 코어)",
-    license="MIT",
+    license="Apache-2.0",
 )
