@@ -1,12 +1,6 @@
 """
 유지보수 기능 — 자가진단(self_test)·재정위(relocalize)·블랙박스 덤프.
 
-지금 구현된 것은 **self_test 와 relocalize** 다. blackbox_dump 는 여전히
-control_agent._cmd_supported 의 PENDING_CMDS 에 남아 있어 라우터가 여기 닿기
-전에 UNSUPPORTED 로 되돌린다(T4 가 구현하며 그때 PENDING_CMDS 에서 뺀다).
-그래서 그 분기는 지금은 아무도 호출하지 않는 죽은 경로지만, 라우터가 먼저
-열어주는 순간 바로 기능이 반응하도록 자리만 잡아 둔다.
-
 self_test 는 **움직임을 만들지 않는다.** 이 파일에 구동 명령을 발행하는
 코드가 없다 — drive 항목의 판정은 SDK Drive.limits() 조회뿐이다(실제 판정은
 robomw ROS import 금지 원칙에 따라 bb.extra["sdk_diag"](ScoutDiag)가 한다).
@@ -14,6 +8,9 @@ robomw ROS import 금지 원칙에 따라 bb.extra["sdk_diag"](ScoutDiag)가 한
 relocalize 는 **위치 추정만** 바꾼다. 기체는 그대로 서 있고 추정이 그 자리로
 옮겨 갈 뿐이다 — 그래서 주행 중에는 거부한다(BUSY). 달리는 도중에 추정이
 도약하면 추종기가 방금까지 쫓던 웨이포인트를 딴 곳으로 알고 조향한다.
+
+blackbox_dump 는 **궤적·이벤트를 npz 덤프한다.** control_agent 의 1 Hz 타이머가
+포즈를 피드하고, event() 호출이 이벤트를 피드한다. 최대 900초 윈도우.
 
 robomw 는 ROS 를 모른다 — 이 파일이 아는 것은 블랙보드에 꽂힌 어댑터
 (bb.extra["sdk_diag"]·bb.extra["sdk_loc"])와 현장 기하(bb.extra["site_geom"])
@@ -25,7 +22,9 @@ robomw 는 ROS 를 모른다 — 이 파일이 아는 것은 블랙보드에 꽂
 """
 from __future__ import annotations
 
+import json
 import math
+import time
 
 from robomw.core.base import Feature
 from robomw.link import protocol as P
@@ -42,8 +41,8 @@ END_STANDOFF_M = 1.5
 
 class MaintenanceFeature(Feature):
     name = "maintenance"
-    version = "1.1"
-    summary = "자가진단·재정위·블랙박스 (blackbox_dump 는 미구현)"
+    version = "1.2"
+    summary = "자가진단·재정위·블랙박스 덤프"
     commands = (P.CMD_SELF_TEST, P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP)
     topics = ()
 
@@ -98,7 +97,7 @@ class MaintenanceFeature(Feature):
         if cmd == P.CMD_RELOCALIZE:
             return self._relocalize(payload)
         if cmd == P.CMD_BLACKBOX_DUMP:
-            return False       # 스펙 ② T4 — 지금은 라우터가 UNSUPPORTED 로 막는다
+            return self._blackbox_dump(payload)
         return False
 
     def _self_test(self, payload):
@@ -223,3 +222,34 @@ class MaintenanceFeature(Feature):
         self.ctx.emit_cmd_result(cmd_id, P.CMD_RELOCALIZE, "completed", "OK",
                                  {"quality": diag.get("quality")})
         return True
+
+    # ── 블랙박스 덤프 ────────────────────────────────────────────────────────
+    def _blackbox_dump(self, payload):
+        """궤적·이벤트 npz 덤프.
+
+        예외는 라우터가 INTERNAL 로 승격한다 (별도 try 불필요).
+        """
+        cmd_id = payload.get("cmd_id")
+        window_s = payload.get("window_s", 900.0)
+        diag = self._diag()
+        if diag is None:
+            self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "failed",
+                                     "INTERNAL", {"reason": "진단 어댑터 미배선"})
+            return True
+        try:
+            result = diag.blackbox_dump(window_s)
+            if not result or "path" not in result:
+                self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "failed",
+                                         "INTERNAL", {"reason": "블랙박스 덤프 실패"})
+                return True
+            data = dict(
+                path=result["path"],
+                bytes=result.get("bytes", 0),
+                events=result.get("events", 0),
+                poses=result.get("poses", 0))
+            self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "completed", "OK", data)
+            return True
+        except Exception as e:
+            self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "failed",
+                                     "INTERNAL", {"reason": str(e)})
+            return True

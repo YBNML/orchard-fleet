@@ -56,6 +56,7 @@ from orchard_sim.adapters import (RosCloudWorld, RosDrive, RosSensors,
                                   ScoutDiag, SimWork)
 from robomw.core.audit import R_ACCEPT, R_REJECT, AuditLog
 from robomw.core.base import Blackboard, Context
+from robomw.core.blackbox import Blackbox
 from robomw.core.registry import Registry
 from robomw.core.router import CommandRouter
 from robomw.core.safety import SafetyArbiter
@@ -87,9 +88,10 @@ ROBOT_WORK_TYPES = ("scout",)
 # 라우터가 UNSUPPORTED 로 되돌린다. 조용히 받아 삼키면 관제는 자진단이
 # 돌아간 줄 알고 다음 절차로 넘어간다 — 없는 기능은 없다고 답해야 한다.
 # (동작 구현은 스펙 ② 몫이다. 구현되는 대로 이 목록에서 뺀다.
-#  work_stop 은 T1 에서, self_test 는 T2 에서, relocalize 는 T3 에서 구현됐다 —
-#  mission.CMD_WORK_STOP·features.maintenance.MaintenanceFeature 참조)
-PENDING_CMDS = (P.CMD_BLACKBOX_DUMP,)
+#  work_stop 은 T1 에서, self_test 는 T2 에서, relocalize 는 T3 에서,
+#  blackbox_dump 는 T4 에서 구현됐다 — mission.CMD_WORK_STOP·
+#  features.maintenance.MaintenanceFeature 참조)
+PENDING_CMDS = ()
 
 # 같은 곳에서 같은 사유로 거부가 반복되면 이 간격으로만 이벤트를 올린다.
 # 조종은 데드맨(400 ms) 때문에 클라이언트가 초당 10회 남짓 보낸다 — 관측자가
@@ -270,8 +272,13 @@ class ControlAgent(Node):
         # 생성 직후)에서 만든다. maintenance(robomw) 는 ROS 를 모르므로
         # ScoutDiag(ROS 에 안 닿지만 orchard_sim 소속)를 직접 import 할 수
         # 없다 — 블랙보드가 그 경계를 넘는 유일한 통로다.
-        self.bb.extra["sdk_diag"] = ScoutDiag(self.sensors, self.safety,
-                                              self.drive, robot_id=self.robot_id)
+        # 블랙박스 인스턴스 (스펙 ② T4) — blackbox_dump 명령을 위해 미리 만들어
+        # ScoutDiag 에 주입한다.
+        self.blackbox = Blackbox(maxlen_s=900)
+        scout_diag = ScoutDiag(self.sensors, self.safety,
+                               self.drive, robot_id=self.robot_id)
+        scout_diag._blackbox = self.blackbox  # 블랙박스 인스턴스 주입
+        self.bb.extra["sdk_diag"] = scout_diag
 
         # 현장 확인(로컬 리셋) — 실기에서는 기체의 물리 리셋 버튼이 이 자리에 온다.
         # **링크를 타고 오지 않는다**: 관제가 아무리 승인해도 위험구역을 눈으로
@@ -345,6 +352,7 @@ class ControlAgent(Node):
 
         self.create_timer(0.05, self.control_tick)      # 20 Hz — 코어 루프
         self.create_timer(0.05, self.telemetry_tick)
+        self.create_timer(1.0, self._feed_blackbox_pose)  # 1 Hz — 블랙박스 포즈 피드
         self.get_logger().info(
             f"control_agent 시작 — robot_id={self.robot_id} · "
             f"기능 {len(self.registry.features)}개")
@@ -560,7 +568,8 @@ class ControlAgent(Node):
         영속 기록에 남겨야 한다. extra 로 정지 사유 코드(code=...) 등을 실으면
         관제 서버가 개입 큐로 바로 라우팅한다.
         """
-        e = dict(kind=kind, msg=msg, level=level, t=time.time(), **extra)
+        t = time.time()
+        e = dict(kind=kind, msg=msg, level=level, t=t, **extra)
         with self._lock:
             self.events.append(e)
             self.events = self.events[-50:]
@@ -569,6 +578,9 @@ class ControlAgent(Node):
                 # (이벤트가 여기로 모인다) 보고에 싣는 것은 임무 기능이 한다.
                 self.bb.extra["mission_interventions"] = int(
                     self.bb.extra.get("mission_interventions", 0)) + 1
+            # 블랙박스에 이벤트 피드 (스펙 ② T4)
+            if hasattr(self, "blackbox"):
+                self.blackbox.feed_event(e)
         self._emit("event", e)
         # SafetyArbiter 가 event 를 콜백으로 물고 있어 audit 생성 전에도 불릴 수 있다
         if getattr(self, "audit", None) and kind not in ("denied",):   # denied 는 _deny 가 이미 남긴다
@@ -898,6 +910,12 @@ class ControlAgent(Node):
         now = time.monotonic()
         for kind, payload in self.registry.telemetry(now):
             self._emit(kind, payload)
+
+    def _feed_blackbox_pose(self):
+        """1 Hz 로 포즈를 블랙박스에 공급한다 (스펙 ② T4)."""
+        pose = self.bb.pose
+        if pose is not None:
+            self.blackbox.feed_pose(time.time(), pose[0], pose[1], pose[2])
 
     def destroy_node(self):
         try:

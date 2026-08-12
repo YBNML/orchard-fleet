@@ -63,7 +63,12 @@ class ScoutDiag(Diag):
         return out
 
     def blackbox_dump(self, window_s: float) -> dict:
-        raise NotImplementedError("blackbox_dump 미구현 — 스펙 ② T4")
+        """블랙박스 데이터 덤프. core.blackbox 에서 호출해 온다."""
+        bb = getattr(self, "_blackbox", None)
+        if bb is None:
+            return {}
+        return bb.dump(f"/tmp/blackbox_{self.robot_id}_{int(__import__('time').time())}.npz",
+                       window_s=window_s)
 
     # ── 항목별 판정 ─────────────────────────────────────────────────────────
     def _check_lidar(self):
