@@ -52,7 +52,8 @@ from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import Empty
 from std_msgs.msg import String as StringMsg
 
-from orchard_sim.adapters import RosCloudWorld, RosDrive, RosSensors, SimWork
+from orchard_sim.adapters import (RosCloudWorld, RosDrive, RosSensors,
+                                  ScoutDiag, SimWork)
 from robomw.core.audit import R_ACCEPT, R_REJECT, AuditLog
 from robomw.core.base import Blackboard, Context
 from robomw.core.registry import Registry
@@ -65,7 +66,7 @@ from robomw.link.wsserver import ControlServer
 # 경로다 — 임무 엔진은 과수원 **현장 프로파일**이라 robomw.profiles 에 있다
 # (다른 현장에 이 기체를 보내면 이 한 줄만 바뀐다).
 DEFAULT_FEATURES = ["telemetry_state", "telemetry_health", "telemetry_map",
-                    "robomw.profiles.orchard.mission", "teleop"]
+                    "robomw.profiles.orchard.mission", "teleop", "maintenance"]
 
 # 이관(T7) 전 이름 → 새 모듈 경로. 런치 파일·파라미터·현장 설정에 옛 이름이
 # 남아 있어도 그대로 뜨게 한다. 기능의 name 은 안 바뀌므로(drive_mission·
@@ -86,8 +87,9 @@ ROBOT_WORK_TYPES = ("scout",)
 # 라우터가 UNSUPPORTED 로 되돌린다. 조용히 받아 삼키면 관제는 자진단이
 # 돌아간 줄 알고 다음 절차로 넘어간다 — 없는 기능은 없다고 답해야 한다.
 # (동작 구현은 스펙 ② 몫이다. 구현되는 대로 이 목록에서 뺀다.
-#  work_stop 은 T1 에서 구현됐다 — mission.CMD_WORK_STOP 참조)
-PENDING_CMDS = (P.CMD_SELF_TEST, P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP)
+#  work_stop 은 T1 에서, self_test 는 T2 에서 구현됐다 —
+#  mission.CMD_WORK_STOP·features.maintenance.MaintenanceFeature 참조)
+PENDING_CMDS = (P.CMD_RELOCALIZE, P.CMD_BLACKBOX_DUMP)
 
 # 같은 곳에서 같은 사유로 거부가 반복되면 이 간격으로만 이벤트를 올린다.
 # 조종은 데드맨(400 ms) 때문에 클라이언트가 초당 10회 남짓 보낸다 — 관측자가
@@ -249,6 +251,14 @@ class ControlAgent(Node):
             tilt_limit_deg=float(g("tilt_limit_deg")),
             on_event=self.event,
             on_estop=lambda _r: self.drive.stop())
+
+        # Diag SDK 어댑터 (스펙 ② T2) — sdk_work 전례처럼 블랙보드로 건넨다.
+        # sensors·safety·drive 가 다 있어야 5항목을 볼 수 있어 여기(안전 조정자
+        # 생성 직후)에서 만든다. maintenance(robomw) 는 ROS 를 모르므로
+        # ScoutDiag(ROS 에 안 닿지만 orchard_sim 소속)를 직접 import 할 수
+        # 없다 — 블랙보드가 그 경계를 넘는 유일한 통로다.
+        self.bb.extra["sdk_diag"] = ScoutDiag(self.sensors, self.safety,
+                                              self.drive, robot_id=self.robot_id)
 
         # 현장 확인(로컬 리셋) — 실기에서는 기체의 물리 리셋 버튼이 이 자리에 온다.
         # **링크를 타고 오지 않는다**: 관제가 아무리 승인해도 위험구역을 눈으로
@@ -603,9 +613,11 @@ class ControlAgent(Node):
         # 갈라질 수 없다(둘을 따로 조립하면 언젠가 반드시 어긋난다).
         lim = self.drive.limits()
         payload[P.HELLO_SITE] = dict(type=SITE_TYPE, geometry=geom)
+        sdk_diag = self.bb.extra.get("sdk_diag")
         payload[P.HELLO_CAPABILITIES] = dict(
             drive=dict(v_max=lim.v_max, w_max=lim.w_max),
-            work=dict(types=list(self.bb.extra.get("work_types", ()))))
+            work=dict(types=list(self.bb.extra.get("work_types", ()))),
+            diag=dict(items=list(getattr(sdk_diag, "ITEMS", ()))))
         payload[P.HELLO_MIDDLEWARE] = dict(name="robomw", version="0.1")
         conn.send_json(P.envelope(f"orchard/{self.robot_id}/hello", payload,
                                   self.now_ns(), self.next_seq()))

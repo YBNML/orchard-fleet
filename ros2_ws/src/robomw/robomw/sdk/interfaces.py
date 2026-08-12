@@ -117,11 +117,15 @@ class Diag(abc.ABC):
     """진단 인터페이스."""
 
     @abc.abstractmethod
-    def self_test(self, items: list[SelfTestItem]) -> None:
-        """자진단 항목 기록.
+    def self_test(self, items: list[str] | None = None) -> list[SelfTestItem]:
+        """자가진단을 실행하고 항목별 결과를 돌려준다.
 
         Args:
-            items: SelfTestItem 목록
+            items: 검사할 항목 이름 목록. None/빈 값이면 이 기체가 지원하는
+                전 항목을 검사한다.
+
+        Returns:
+            list[SelfTestItem]: 항목별 결과(name·ok·detail).
         """
         pass
 

@@ -11,10 +11,12 @@ robomw/tests/test_no_ros_imports.py). 그래서 rclpy·메시지 타입·tf2 에
     Perception → ros_sensors.RosSensors   (점군 여유거리·밀착률)
     (점군 공급) → ros_cloud.RosCloudWorld  (PointCloud2 → map 프레임 점 배열)
     Work       → sim_work.SimWork         (하드웨어 없음 — 상태 플래그만)
+    Diag       → scout_diag.ScoutDiag     (self_test 5항목 — sensors/safety/drive 재사용)
 """
 from orchard_sim.adapters.ros_cloud import RosCloudWorld
 from orchard_sim.adapters.ros_drive import RosDrive
 from orchard_sim.adapters.ros_sensors import RosSensors
+from orchard_sim.adapters.scout_diag import ScoutDiag
 from orchard_sim.adapters.sim_work import SimWork
 
-__all__ = ["RosCloudWorld", "RosDrive", "RosSensors", "SimWork"]
+__all__ = ["RosCloudWorld", "RosDrive", "RosSensors", "ScoutDiag", "SimWork"]

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import math
+import time
+from collections import deque
 
 import numpy as np
 import rclpy
@@ -26,6 +28,12 @@ from tf2_ros import Buffer, TransformListener
 from orchard_sim import transforms as tfu
 from robomw.sdk.interfaces import Localizer, Perception
 from robomw.sdk.types import Pose
+
+# 수신율 창(초) — self_test(ScoutDiag)의 lidar/imu 판정용. control_agent 의
+# RateMeter(표시용, 표본 개수 창)와 다르게 **시간 창**을 쓴다: 자가진단은
+# "지금 죽었나"를 즉시 답해야 하는데, 표본 개수 창은 저빈도 구간에서 창이
+# 다 차기까지 느리다. 시간 창은 창 밖으로 나간 표본이 바로 빠져 반응이 빠르다.
+RATE_WINDOW_S = 3.0
 
 
 class RosSensors(Localizer, Perception):
@@ -40,10 +48,41 @@ class RosSensors(Localizer, Perception):
         self._near_frac = 0.0
         self._diag = {}                 # 마지막 로컬라이저 진단 payload
         self._lio = None                # 마지막 LIO 위치 (x, y, z)
+        # 수신 시각 카운터 — feed_cloud/feed_imu 가 호출될 때마다(솎기 전) 시각을
+        # 남긴다. rates() 가 3초 창으로 Hz 를 낸다.
+        self._rx_times = {"lidar": deque(), "imu": deque()}
+
+    def _note_rx(self, key, now=None):
+        now = now if now is not None else time.monotonic()
+        dq = self._rx_times[key]
+        dq.append(now)
+        cutoff = now - RATE_WINDOW_S
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+    def rates(self):
+        """수신율(Hz) — self_test(ScoutDiag) 가 읽는다.
+
+        3초 창 안 도착 시각의 간격으로 잰다. 창 안에 표본이 2개 미만이면(막
+        시작했거나 완전히 끊긴 것) 0.0 — "모른다"가 아니라 "지금은 없다"로
+        답해야 자가진단이 센서 죽음을 놓치지 않는다.
+        """
+        now = time.monotonic()
+        out = {}
+        for key, dq in self._rx_times.items():
+            cutoff = now - RATE_WINDOW_S
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if len(dq) >= 2 and dq[-1] > dq[0]:
+                out[key] = (len(dq) - 1) / (dq[-1] - dq[0])
+            else:
+                out[key] = 0.0
+        return out
 
     # ── 입력 (노드 콜백이 흘려준다) ─────────────────────────────────────────
     def feed_imu(self, msg):
         """IMU 자세를 기억한다. 점군 수평화(_level_points)에만 쓴다."""
+        self._note_rx("imu")
         q = msg.orientation
         if q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w > 0.5:
             self._imu_R = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
@@ -82,6 +121,10 @@ class RosSensors(Localizer, Perception):
         건너뛰었으면 None — 호출부는 **직전 값을 그대로 유지**해야 한다
         (0 이나 inf 로 덮으면 임무가 없는 벽을 보거나 있는 벽을 못 본다).
         """
+        # 수신율은 솎기 전에 잰다 — self_test 의 lidar 판정은 "브리지가 살아
+        # 있는가"를 보는 것이지 "처리에 쓰는 프레임 수"가 아니다. 원본은
+        # ~10 Hz, 처리는 3.3 Hz 로 솎는데 판정 문턱(8 Hz)은 원본 기준이다.
+        self._note_rx("lidar")
         self._cloud_n += 1
         if self._cloud_n % 3:           # 10 Hz 입력을 3.3 Hz 로 솎는다
             return None
