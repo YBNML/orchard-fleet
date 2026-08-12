@@ -42,13 +42,29 @@ class FakeLocalizer:
         return dict(quality=self.quality, gate="", n_fix=12)
 
 
+class FakeSafety:
+    """SafetyArbiter 중 relocalize 가 보는 면(snapshot()["gate"])만 흉내낸다.
+
+    gate="" 는 "마지막 중재에서 속도 요청이 통과했다"(= 지금 구동 중),
+    "idle"/"paused"/"deadman" 등은 "0 을 냈다"는 뜻이다 — core/safety.py 참조.
+    """
+
+    def __init__(self, gate="idle"):
+        self._gate = gate
+
+    def snapshot(self):
+        return dict(estop=False, paused=False, gate=self._gate)
+
+
 class FakeCtx:
     """MaintenanceFeature.on_command 이 실제로 쓰는 면만 흉내낸다."""
 
-    def __init__(self, diag, in_mission, loc=None, geom=GEOM):
+    def __init__(self, diag, in_mission, loc=None, geom=GEOM,
+                 mode=None, gate="idle"):
         self.bb = Blackboard()
         self.bb.extra["sdk_diag"] = diag
         self.bb.extra["sdk_loc"] = loc
+        self.safety = FakeSafety(gate)
         if geom is not None:
             self.bb.extra["site_geom"] = dict(geom)
         # mission 존재의 bb 대리 — mission.py 가 매 틱 갱신하는
@@ -59,6 +75,8 @@ class FakeCtx:
         else:
             self.bb.extra["mode"] = P.MODE_IDLE
             self.bb.extra["mission_status"] = None
+        if mode is not None:
+            self.bb.extra["mode"] = mode
         self.events = []
         self.results = []
 
@@ -73,8 +91,9 @@ class FakeCtx:
         return res
 
 
-def mk_feature(diag=None, in_mission=False, loc=None, geom=GEOM):
-    ctx = FakeCtx(diag, in_mission, loc, geom)
+def mk_feature(diag=None, in_mission=False, loc=None, geom=GEOM,
+               mode=None, gate="idle"):
+    ctx = FakeCtx(diag, in_mission, loc, geom, mode, gate)
     f = MaintenanceFeature()
     f.setup(ctx)
     return f, ctx
@@ -139,6 +158,43 @@ def test_relocalize_busy_while_driving():
     assert loc.calls == []
     last = ctx.results[-1]
     assert last["status"] == "rejected" and last["code"] == "BUSY"
+
+
+def test_relocalize_busy_while_teleop():
+    """텔레옵도 주행이다 — 재정위 대기 중에는 데드맨도 안 돌아 기체가 계속 간다.
+
+    (리뷰 라운드 1 [High]: mode==MODE_MISSION 만 보던 게이트가 텔레옵을
+    통과시켰다. 유휴가 아니면 거부한다.)
+    """
+    loc = FakeLocalizer()
+    f, ctx = mk_feature(loc=loc, mode=P.MODE_TELEOP)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "r3t", "alley": 3, "end": "south"})
+    assert loc.calls == []
+    last = ctx.results[-1]
+    assert last["status"] == "rejected" and last["code"] == "BUSY"
+    assert last["data"]["state"] == "모드 teleop"
+
+
+def test_relocalize_busy_while_velocity_passing():
+    """모드가 유휴여도 중재가 속도 요청을 통과시키는 중이면 거부한다.
+
+    gate=="" 는 안전 조정자가 마지막 중재에서 아무것도 막지 않았다는 뜻 —
+    모드 표기가 늦는 창(mission_start 직후 50 ms)까지 이 두 번째 겹이 잡는다.
+    """
+    loc = FakeLocalizer()
+    f, ctx = mk_feature(loc=loc, gate="")
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "r3v", "alley": 3, "end": "south"})
+    assert loc.calls == []
+    assert ctx.results[-1]["code"] == "BUSY"
+
+
+def test_relocalize_allowed_when_idle_and_gated():
+    """유휴 + 중재가 0 을 내는 중이면 통과한다 (게이트가 과하게 막지 않는다)."""
+    loc = FakeLocalizer()
+    f, ctx = mk_feature(loc=loc, gate="paused")
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "r3i", "alley": 3, "end": "south"})
+    assert len(loc.calls) == 1
+    assert ctx.results[-1]["status"] == "completed"
 
 
 def test_relocalize_explicit_xy_yaw():

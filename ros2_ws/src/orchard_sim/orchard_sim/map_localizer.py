@@ -773,9 +773,15 @@ class MapLocalizer(Node):
             f"(일치율 {scores[best]:.2f} vs 현재 {scores[0]:.2f})")
 
     def _try_fix(self):
+        """보정 한 번. **품질을 새로 쟀으면** True (채택 여부와는 무관하다).
+
+        반환값은 재정위 확인(_tick)만 쓴다 — 점군이 없어 계산 자체를 못 한
+        경우와 계산했는데 게이트에 걸린 경우를 가려야, 라이다가 죽은 순간에
+        옛 품질을 '재정위 성공'으로 실어 보내지 않는다.
+        """
         pts = self.last_cloud
         if pts is None or len(pts) == 0:
-            return
+            return False                # stat['quality'] 는 옛 값 그대로다
         sp0 = rl.structure_points(pts)
         self._check_slip(sp0, pts)
         self._try_anchor(pts)
@@ -816,7 +822,7 @@ class MapLocalizer(Node):
                          lon_ok=fix.longitudinal_ok, at_end=fix.at_row_end)
         if not ok:
             self.stat["n_reject"] += 1
-            return
+            return True                 # 거부됐어도 품질은 방금 잰 값이다
 
         # 보정을 로봇 자세에 적용하고, 그만큼 map→odom 을 옮긴다.
         #   새 자세 = (로봇 위치를 중심으로 dyaw 회전) + (dx, dy 평행이동)
@@ -850,6 +856,7 @@ class MapLocalizer(Node):
             self._lost_reported = False
             self._lost_critical_reported = False
             self._emit("resolved", "LOCALIZATION_LOST", "위치를 다시 잡았습니다")
+        return True
 
     def _log_stat(self):
         p = self.pose()
@@ -877,17 +884,24 @@ class MapLocalizer(Node):
         now = time.monotonic()
         if now - self.last_fix_t >= self.fix_period:
             self.last_fix_t = now
-            self._try_fix()
+            measured = self._try_fix()
             if now < self._reinit_ack_until:
-                # 재정위 확인 — 방금 잰 보정 품질을 그대로 실어 보낸다. 품질은
-                # 채택/거부와 무관하게 갱신되므로(_try_fix 의 stat.update) 게이트에
-                # 걸린 경우에도 "얼마나 맞아 보이는지"는 정직하게 나간다.
+                # 재정위 확인. 품질은 **방금 잰 것일 때만** 싣는다 — 점군이 끊겨
+                # 계산을 못 했는데 옛 품질을 실어 보내면, 라이다가 죽은 순간의
+                # 재정위가 completed 로 답해진다(확인의 의미가 사라진다).
+                # 못 쟀으면 사유만 보내고 품질 키는 뺀다 → 호출측은 한도까지
+                # 기다리다 TIMEOUT 으로 실패를 답한다.
                 est = self.pose()
-                self._emit("relocalized", "RELOCALIZED",
-                           f"재정위 후 측위 품질 {self.stat['quality']:.2f}",
-                           severity="info", quality=self.stat["quality"],
-                           pose=[round(est[0], 3), round(est[1], 3),
-                                 round(est[2], 4)])
+                pose3 = [round(est[0], 3), round(est[1], 3), round(est[2], 4)]
+                if measured:
+                    self._emit("relocalized", "RELOCALIZED",
+                               f"재정위 후 측위 품질 {self.stat['quality']:.2f}",
+                               severity="info", quality=self.stat["quality"],
+                               pose=pose3)
+                else:
+                    self._emit("relocalized", "RELOCALIZED",
+                               "재정위 후 보정 미계산 — 점군 없음",
+                               severity="warn", pose=pose3)
 
         # 오래 못 잡으면 개입 요청 — 관제의 개입 큐로 올라간다
         if (now - self.last_ok_t) > self.lost_timeout and not self._lost_reported:

@@ -68,6 +68,30 @@ class MaintenanceFeature(Feature):
         return (bb.extra.get("mode") == P.MODE_MISSION
                 and bb.extra.get("mission_status") is not None)
 
+    def _moving(self):
+        """기체가 지금 움직이거나 곧 움직일 수 있는 상태인가. 아니면 None.
+
+        **임무만 보면 안 된다.** 재정위는 확인을 기다리는 동안 호스트의 제어
+        루프를 멈춰 세운다(어댑터 주석 참조) — 그 사이에는 속도 명령도,
+        데드맨도, 비상정지 큐 소비도 돌지 않는다. 기체의 구동부는 마지막
+        속도를 유지하므로(gz DiffDrive 에는 명령 만료가 없다) 텔레옵으로
+        0.8 m/s 로 가는 중에 재정위가 들어오면 로봇은 눈을 감은 채 1.6 m 를
+        더 간다. 그래서 '임무 중'이 아니라 **'유휴가 아니면'** 거부한다.
+
+        두 겹으로 본다:
+          mode  유휴가 아니면(임무·텔레옵) 언제든 바퀴가 돌 수 있다
+          gate  안전 조정자가 마지막 중재에서 어떤 요청도 막지 않았다면("")
+                방금 실제로 속도가 나갔다는 뜻이다 — 모드 표기가 늦거나
+                (mission_start 직후 50 ms) 기능이 모드를 안 세운 경로까지 잡는다
+        """
+        mode = self.ctx.bb.extra.get("mode", P.MODE_IDLE)
+        if mode != P.MODE_IDLE:
+            return f"모드 {mode}"
+        s = getattr(self.ctx, "safety", None)
+        if s is not None and s.snapshot().get("gate") == "":
+            return "속도 요청 통과 중"
+        return None
+
     def on_command(self, cmd, payload):
         if cmd == P.CMD_SELF_TEST:
             return self._self_test(payload)
@@ -151,12 +175,21 @@ class MaintenanceFeature(Feature):
         결과를 정직하게 답해야 한다: 어댑터가 재초기화 후 측위 품질이 살아난
         것을 확인하지 못하면 completed 가 아니라 failed(TIMEOUT)다. 여기서
         성공한 척하면 관제는 로봇이 제자리를 안다고 믿고 임무를 재개한다.
+
+        **completed 가 뜻하는 것의 한계.** 확인 잣대인 측위 품질은 스캔 구조의
+        위상 집중도라 요 오차에는 민감하지만 위치 오지정에는 둔감하다 — 과수원은
+        주기 구조라 한 통로 옆에서도 같은 값이 나온다(옆 통로 주기 모호성).
+        즉 completed 는 "재초기화 뒤 측위가 건강하다"이지 "운영자가 준 자세가
+        옳다"가 아니다. 자세가 옳은지는 사람이 눈으로 본 것이 근거다.
         """
         cmd_id = payload.get("cmd_id")
-        if self._in_mission():
-            self.ctx.event("rejected", "주행 중 — 재초기화 불가", "warn")
+        why_moving = self._moving()
+        if why_moving is not None:
+            self.ctx.event("rejected", f"주행 중 — 재초기화 불가 ({why_moving})",
+                           "warn")
             self.ctx.emit_cmd_result(cmd_id, P.CMD_RELOCALIZE, "rejected",
-                                     "BUSY", {"reason": "주행 중 재초기화 불가"})
+                                     "BUSY", {"reason": "주행 중 재초기화 불가",
+                                              "state": why_moving})
             return True
         loc = self._loc()
         if loc is None:
