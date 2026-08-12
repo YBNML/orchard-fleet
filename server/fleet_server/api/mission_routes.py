@@ -15,7 +15,8 @@ _csrf = Depends(csrf_protect)
 
 class MissionBody(BaseModel):
     robot_id: str
-    alleys: list[int]
+    alleys: list[int] | None = None             # 생략 시 로봇이 전 통로 자동 설정
+    work: dict | None = None                    # 검증 없이 로봇에 그대로 전달 (로봇이 BAD_PARAM/UNSUPPORTED 판정)
 
 
 def _scoped_robot(db, user, robot_id, *, action: str) -> Robot:
@@ -54,17 +55,27 @@ async def create_mission(body: MissionBody, request: Request, db=Depends(get_db)
                      detail=f"활성 임무 이미 존재 mission={existing.id}")
         raise HTTPException(409, "해당 로봇에 이미 활성 임무가 있습니다")
     fleet = request.app.state.fleet
+    spec: dict = {}
+    if body.alleys is not None:
+        spec["alleys"] = body.alleys
+    if body.work is not None:
+        spec["work"] = body.work
     ms = missions.create(db, robot_id=robot.id, farm_id=robot.farm_id,
-                         spec={"alleys": body.alleys}, created_by=user.id)
-    result = await fleet.send_command(robot.id, f"m{ms.id}", "mission_start",
-                                      {"alleys": body.alleys, "mission_id": ms.id})
+                         spec=spec, created_by=user.id)
+    payload: dict = {"mission_id": ms.id}
+    if body.alleys is not None:                # 생략 시 키 자체를 넣지 않음 — 로봇이 전 통로 자동
+        payload["alleys"] = body.alleys
+    if body.work is not None:                  # 서버는 검증하지 않고 그대로 전달
+        payload["work"] = body.work
+    result = await fleet.send_command(robot.id, f"m{ms.id}", "mission_start", payload)
     if result == "offline":                    # 오프라인 → 즉시 실패 + 잔재 제거
         missions.apply(db, ms, "cancel")
         audit.record(db, action="mission_start", result="rejected", user_id=user.id,
                      role=user.role, target=robot.id, detail="로봇 오프라인")
         raise HTTPException(409, "로봇이 오프라인입니다")
     audit.record(db, action="mission_start", result="accepted", user_id=user.id,
-                 role=user.role, target=robot.id, detail=f"alleys={body.alleys}")
+                 role=user.role, target=robot.id,
+                 detail=f"alleys={body.alleys} work={body.work}")
     return _mission_out(ms)
 
 

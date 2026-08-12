@@ -103,6 +103,36 @@ def test_duplicate_active_mission_409(client, app):
         assert len(active) == 1                    # 두 번째 요청이 실제로 임무를 만들지 않음
 
 
+def test_work_passed_through_and_alleys_omitted(client, app):
+    """work:{type:"scout"} 만 보내면(alleys 생략) 로봇으로 나가는 mission_start
+    payload 에 work 는 그대로 실리고 alleys 키는 아예 없어야 한다(전 통로 자동)."""
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    csrf = do_login(client, "op", "oppw")
+    h = {"X-CSRF": csrf}
+    r = client.post("/api/v1/missions", headers=h,
+                    json={"robot_id": "scout01", "work": {"type": "scout"}})
+    assert r.status_code == 200, r.text
+    sent_payload = app.state.fleet.sent[-1][3]
+    assert sent_payload["work"] == {"type": "scout"}
+    assert "alleys" not in sent_payload
+
+
+def test_alleys_omitted_key_absent_when_both_given_absent(client, app):
+    """alleys·work 둘 다 생략해도(로봇이 이후 BAD_PARAM 등으로 판정) 서버는
+    검증하지 않고 그대로 보내며, payload 에 alleys 키는 여전히 없어야 한다."""
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    csrf = do_login(client, "op", "oppw")
+    h = {"X-CSRF": csrf}
+    r = client.post("/api/v1/missions", headers=h, json={"robot_id": "scout01"})
+    assert r.status_code == 200, r.text
+    sent_payload = app.state.fleet.sent[-1][3]
+    assert "alleys" not in sent_payload
+    assert "work" not in sent_payload
+    assert sent_payload["mission_id"] == r.json()["id"]
+
+
 def test_verb_offline_409_state_unchanged(client, app):
     _seed_operator(client)
     app.state.fleet.feed("scout01", "tel/state", {})
