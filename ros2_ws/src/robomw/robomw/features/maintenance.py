@@ -236,20 +236,15 @@ class MaintenanceFeature(Feature):
             self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "failed",
                                      "INTERNAL", {"reason": "진단 어댑터 미배선"})
             return True
-        try:
-            result = diag.blackbox_dump(window_s)
-            if not result or "path" not in result:
-                self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "failed",
-                                         "INTERNAL", {"reason": "블랙박스 덤프 실패"})
-                return True
-            data = dict(
-                path=result["path"],
-                bytes=result.get("bytes", 0),
-                events=result.get("events", 0),
-                poses=result.get("poses", 0))
-            self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "completed", "OK", data)
-            return True
-        except Exception as e:
+        result = diag.blackbox_dump(window_s)
+        if not result or "path" not in result:
             self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "failed",
-                                     "INTERNAL", {"reason": str(e)})
+                                     "INTERNAL", {"reason": "블랙박스 덤프 실패"})
             return True
+        data = dict(
+            path=result["path"],
+            bytes=result.get("bytes", 0),
+            events=result.get("events", 0),
+            poses=result.get("poses", 0))
+        self.ctx.emit_cmd_result(cmd_id, P.CMD_BLACKBOX_DUMP, "completed", "OK", data)
+        return True

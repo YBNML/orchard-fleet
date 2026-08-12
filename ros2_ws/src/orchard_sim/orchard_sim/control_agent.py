@@ -352,7 +352,7 @@ class ControlAgent(Node):
 
         self.create_timer(0.05, self.control_tick)      # 20 Hz — 코어 루프
         self.create_timer(0.05, self.telemetry_tick)
-        self.create_timer(1.0, self._feed_blackbox_pose)  # 1 Hz — 블랙박스 포즈 피드
+        self._last_blackbox_pose_time = 0.0  # 1 Hz feed_pose 추적 (기존 텔레메트리 타이머에 편승)
         self.get_logger().info(
             f"control_agent 시작 — robot_id={self.robot_id} · "
             f"기능 {len(self.registry.features)}개")
@@ -910,12 +910,12 @@ class ControlAgent(Node):
         now = time.monotonic()
         for kind, payload in self.registry.telemetry(now):
             self._emit(kind, payload)
-
-    def _feed_blackbox_pose(self):
-        """1 Hz 로 포즈를 블랙박스에 공급한다 (스펙 ② T4)."""
-        pose = self.bb.pose
-        if pose is not None:
-            self.blackbox.feed_pose(time.time(), pose[0], pose[1], pose[2])
+        # 블랙박스 포즈 피드 — 1 Hz 주기로 (기존 텔레메트리 타이머에 편승, 스펙 ② T4)
+        if now - self._last_blackbox_pose_time >= 1.0:
+            self._last_blackbox_pose_time = now
+            pose = self.bb.pose
+            if pose is not None:
+                self.blackbox.feed_pose(time.time(), pose[0], pose[1], pose[2])
 
     def destroy_node(self):
         try:
