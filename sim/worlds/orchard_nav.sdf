@@ -19102,6 +19102,11 @@
       <uri>model://scout_mini_mid70</uri>
       <pose>-14.000 -33.000 0.914 0 0 1.5708</pose>
     </include>
+    <include>
+      <name>scout02</name>
+      <uri>model://scout_mini_mid70</uri>
+      <pose>14.000 -33.000 3.684 0 0 1.5708</pose>
+    </include>
 
   </world>
 </sdf>
