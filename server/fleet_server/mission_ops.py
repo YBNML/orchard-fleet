@@ -134,11 +134,25 @@ async def apply_verb(db, fleet, mission: Mission, verb: str) -> str:
                              f"mission={mission.id} 상태={mission.state} 전이불가")
     result = await fleet.send_command(mission.robot_id, f"m{mission.id}-{verb}",
                                       EVENT_BY_VERB[verb], {"mission_id": mission.id})
-    if result == "offline":
-        if verb != "cancel":
-            raise MissionOpError(409, "로봇이 오프라인입니다",
-                                 f"mission={mission.id} 로봇 오프라인")
+    if result == "offline" and verb != "cancel":
+        raise MissionOpError(409, "로봇이 오프라인입니다",
+                             f"mission={mission.id} 로봇 오프라인")
+    _apply_or_conflict(db, mission, verb)     # "sent" 확인 후에만 상태 전이 커밋
+    return "not_sent" if result == "offline" else result
+
+
+def _apply_or_conflict(db, mission: Mission, verb: str) -> None:
+    """전이를 적용하되, 경합에서 진 경우를 409 로 번역한다.
+
+    위의 사전 검사와 이 전이 사이에는 `await send_command` 가 있다. 그 사이
+    로봇 보고(mission_done·cmd_result)가 다른 세션에서 먼저 커밋하면 낙관적
+    가드가 InvalidTransition 을 던진다 — 그것이 그대로 올라가면 조작자에게
+    500 이 뜬다. 서버 결함이 아니라 "이미 끝난 임무였다"는 정상적인 경합
+    결과이므로 409 로 알린다(임무의 실제 상태는 그대로 둔다 — 먼저 온 종착이
+    이긴다).
+    """
+    try:
         missions.apply(db, mission, verb)
-        return "not_sent"
-    missions.apply(db, mission, verb)                 # "sent" 확인 후에만 상태 전이 커밋
-    return result
+    except missions.InvalidTransition as e:
+        raise MissionOpError(409, str(e),
+                             f"mission={mission.id} 동시 전이 경합 — {e}") from None

@@ -35,8 +35,15 @@ _ROBOT_STATE_EVENT = {"running": "start", "paused": "pause", "done": "complete",
 # — 그래서 _sync_mission 만 있던 시절 실기 임무는 QUEUED 에서 영영 못 벗어났고
 # (임무 14~21 전부 started_at NULL), 완료가 없으니 AlleyLock 도 안 풀렸다.
 # 이 매핑이 그 구멍을 로봇 계약 변경 없이 서버 쪽에서 메운다.
-_EVT_KIND_EVENT = {"mission_started": "start", "mission_done": "complete",
-                   "mission_cancelled": "cancel"}
+#
+# **`mission_cancelled` 는 일부러 뺐다(리뷰 I-3).** 취소는 언제나 서버가 먼저
+# 아는 사건이다 — REST·BT 는 apply_verb 로 전이를 커밋한 뒤에 명령을 보낸다.
+# 그러니 이 kind 로 새로 얻는 것은 없는데, 상관 키가 없어 지연 도착하면
+# "그 로봇의 최신 활성 임무" = **직후에 발진한 다음 임무**를 취소해 버린다
+# (QUEUED 에서 cancel 은 합법 전이라 조용히 성공하고 통로 잠금까지 풀린다).
+# 얻는 것 없이 잃을 것만 있는 매핑이라 넣지 않는다 — 취소 종착은 서버 주도
+# apply_verb 와 cmd_result 상관 경로가 이미 맡는다.
+_EVT_KIND_EVENT = {"mission_started": "start", "mission_done": "complete"}
 
 # cmd_result(cmd="mission_start") 의 status → 임무 전이. 이쪽은 cmd_id 가
 # 상관 키라 휴리스틱이 필요 없다(서버가 f"m{id}" 로 짓는다 — I4 와 같은 규약).
@@ -145,11 +152,34 @@ class FleetService:
             ev_payload = dict(data)
         try:
             missions.apply(db, ms, event, payload=ev_payload)
+            return
         except missions.InvalidTransition:
-            # 이미 그 상태다 — 중복 신호(evt kind 가 먼저 왔거나 재전송)라 전이는
-            # 없던 일로 한다. 다만 완료 보고(운행 실적)까지 버리면 안 된다.
-            if event == "complete" and data:
-                self._record_report(db, ms, data)
+            pass
+        # 여기부터는 전이가 불가했던 경우다. 두 갈래가 있다.
+        if event == "complete" and ms.state == "QUEUED" and self._catch_up(db, ms, ev_payload):
+            return
+        # 이미 그 상태다 — 중복 신호(evt kind 가 먼저 왔거나 재전송)라 전이는
+        # 없던 일로 한다. 다만 완료 보고(운행 실적)까지 버리면 안 된다.
+        if event == "complete" and data:
+            self._record_report(db, ms, data)
+
+    @staticmethod
+    def _catch_up(db, ms: Mission, ev_payload: dict) -> bool:
+        """수락 신호를 놓친 임무의 완료 보고를 받아 따라잡는다.
+
+        실기에서 실제로 났다(임무 23): 로봇의 accepted 가 수집 단계에서
+        유실돼(§11 seq 중복 판정) 서버 임무는 QUEUED 인데 완주 보고만 도착했다.
+        QUEUED→complete 는 불가 전이라 임무는 그대로 굳고 통로 잠금을 영원히
+        쥔다 — Action 도 영원히 running 이다. **cmd_id 로 정확히 상관된** 완료
+        보고는 그 임무의 것이 확실하므로, 잃어버린 start 를 먼저 적용한 뒤
+        종착시킨다(둘 다 관문 경유 — 잠금 해제 훅을 탄다). 상관 키가 없는
+        kind 경로에는 이 권한을 주지 않는다."""
+        try:
+            missions.apply(db, ms, "start", payload={"catch_up": "수락 신호 유실"})
+            missions.apply(db, ms, "complete", payload=ev_payload)
+            return True
+        except missions.InvalidTransition:
+            return False
 
     @staticmethod
     def _record_report(db, ms: Mission, data: dict) -> None:

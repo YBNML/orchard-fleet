@@ -17,10 +17,10 @@ import contextlib
 import datetime as dt
 import logging
 
-from .. import audit, mission_ops
+from .. import audit, mission_ops, missions
 from ..missions import InvalidTransition
 from ..mission_ops import MissionOpError
-from ..models import BTInstance, Mission, Robot
+from ..models import BTInstance, Mission, Robot, Track
 from ..traffic import AlleyLocks, conflict
 from . import nodes, presets
 
@@ -114,12 +114,20 @@ class EngineCtx:
 class BTEngine:
     """`BTEngine(session_factory, fleet)` — create/cancel + 1 Hz 틱 태스크."""
 
-    def __init__(self, session_factory, fleet, *, period_s: float = 1.0):
+    def __init__(self, session_factory, fleet, *, period_s: float = 1.0,
+                 max_tick_errors: int = 5, stall_ticks: int = 30):
         self._factory = session_factory
         self.fleet = fleet                      # lifespan 이 레거시 포트로 교체할 수 있다
         self.period_s = period_s
+        self.max_tick_errors = max_tick_errors  # 연속 틱 예외 한계(넘으면 종착)
+        self.stall_ticks = stall_ticks          # 좀비 임무 판정 연속 틱 수
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()             # 틱과 취소를 직렬화
+        # 연속 실패/정체 누적기는 메모리에만 둔다. 목적이 "폭주 차단"이라 재기동에
+        # 초기화돼도 해롭지 않고(다시 관찰하면 된다), 컬럼 추가는 이 저장소에
+        # 마이그레이션 기구가 없어 기존 배포본 DB 를 깨뜨린다(T4 이연 항목).
+        self._tick_errors: dict[int, int] = {}
+        self._stalled: dict[int, int] = {}
 
     # ── 생성·취소 ───────────────────────────────────────────────────────────
     def create(self, preset: str, params: dict, *, created_by: int) -> list[int]:
@@ -184,24 +192,101 @@ class BTEngine:
                        .order_by(BTInstance.id).all()]
             for iid in ids:
                 await self._tick_instance(iid)
+            try:
+                self._sweep_stalled_missions()
+            except Exception:                   # 감시가 터져도 인스턴스 틱은 계속돈다
+                log.exception("좀비 임무 감시 실패")
 
     async def _tick_instance(self, instance_id: int) -> None:
+        """인스턴스 한 번 틱. 예외는 **이번 틱의 실패**일 뿐 종착이 아니다.
+
+        예전에는 예외를 곧장 FAILED 로 종착시켰는데, 그러면 이미 발진한 임무가
+        QUEUED 인 채 통로 잠금을 쥐고 남고(로봇은 달리고 있을 수도 있다) BT
+        cancel 은 그 인스턴스가 RUNNING 이 아니라 아무것도 회수하지 못했다.
+        게다가 tree_json 저장이 try 안이라 방금 붙인 mission_id 까지 유실됐다.
+        지금은 진행 상태를 어떤 경로에서도 저장하고, 연속 실패가 한계를 넘을
+        때만 종착시킨다(그때도 tree_json 은 보존 — 사람이 회수할 근거다).
+        """
         with self._factory() as db:
             inst = db.get(BTInstance, instance_id)
             if inst is None or inst.state != _ACTIVE:
                 return                          # 그 사이 취소됨
-            note = ""
             try:
                 tree = nodes.from_state(inst.tree_json)
+            except Exception as e:              # 트리를 못 읽는다 — 재시도해도 같다
+                log.exception("BT#%s 트리 복원 실패", instance_id)
+                inst.state = "FAILED"
+                inst.note = f"트리 복원 실패: {e}"[:160]
+                inst.updated_at = dt.datetime.now(dt.UTC)
+                db.commit()
+                return
+            result: str | None = None
+            try:
                 result = await tree.tick(EngineCtx(db, self.fleet, inst))
-                inst.tree_json = tree.to_state()
             except Exception as e:              # 한 인스턴스의 사고로 큐 전체가 멈추면 안 된다
                 log.exception("BT#%s 틱 실패", instance_id)
-                result, note = "failure", f"엔진 예외: {e}"[:160]
-            inst.state = _RESULT_STATE.get(result, _ACTIVE)
-            inst.note = note or inst.note
+                errors = self._tick_errors.get(instance_id, 0) + 1
+                self._tick_errors[instance_id] = errors
+                inst.note = f"엔진 예외({errors}/{self.max_tick_errors}): {e}"[:160]
+                if errors >= self.max_tick_errors:
+                    inst.state = "FAILED"       # 폭주 차단 — 여기서만 종착시킨다
+            else:
+                self._tick_errors.pop(instance_id, None)
+                inst.state = _RESULT_STATE.get(result, _ACTIVE)
+            inst.tree_json = tree.to_state()    # 예외 경로에서도 진행 상태 보존
             inst.updated_at = dt.datetime.now(dt.UTC)
             db.commit()
+
+    # ── 좀비 임무 감시 ──────────────────────────────────────────────────────
+    def _sweep_stalled_missions(self) -> None:
+        """RUNNING 인데 로봇이 들고 있지 않은 임무를 종착시킨다.
+
+        로봇이 임무 도중 재기동하면 완료/취소 보고가 영영 오지 않는다 — 서버
+        임무는 RUNNING 으로 굳고, 통로 잠금은 잡힌 채, BT Action 은 영원히
+        running 이다(출구는 사람의 REST cancel 뿐이었다). 서버가 이미 받고 있는
+        텔레메트리로 그 괴리를 보고 정리한다:
+
+          로봇이 오프라인 **또는** 최신 텔레메트리 mode 가 idle → 정체 1틱.
+          연속 stall_ticks 틱이면 관문 경유 fail(잠금 해제 훅이 그 안에 있다).
+
+        보수적으로 잡은 이유: 완료 보고가 조금 늦거나(수집 유실 포함) 링크가
+        잠깐 끊긴 것을 임무 실패로 오귀속하면 안 된다. 기본 30틱 = 30초다.
+        QUEUED(아직 로봇이 수락하지 않음)는 대상이 아니다 — 그 구간의 idle 은
+        정상이다.
+        """
+        with self._factory() as db:
+            rows = db.query(Mission).filter(Mission.state == "RUNNING").all()
+            live_ids = {ms.id for ms in rows}
+            for mid in list(self._stalled):
+                if mid not in live_ids:
+                    del self._stalled[mid]      # 종착한 임무의 누적은 버린다
+            for ms in rows:
+                why = self._robot_lost_mission(db, ms)
+                if why is None:
+                    self._stalled.pop(ms.id, None)
+                    continue
+                n = self._stalled.get(ms.id, 0) + 1
+                self._stalled[ms.id] = n
+                if n < self.stall_ticks:
+                    continue
+                reason = f"로봇이 임무를 들고 있지 않음 — {why} {n}틱 연속"
+                try:
+                    missions.apply(db, ms, "fail", payload={"reason": reason,
+                                                            "source": "bt_watchdog"})
+                    log.warning("임무 %s 좀비 판정 — FAILED (%s)", ms.id, reason)
+                except InvalidTransition:
+                    pass                        # 그 사이 정상 종착 — 무시
+                self._stalled.pop(ms.id, None)
+
+    def _robot_lost_mission(self, db, ms: Mission) -> str | None:
+        """이 임무를 로봇이 더는 들고 있지 않다고 볼 근거(사유 문자열) 또는 None."""
+        if not self.fleet.robot_status(ms.robot_id).online:
+            return "링크 단절"                   # 종착 신호가 올 길이 없다
+        row = (db.query(Track).filter(Track.robot_id == ms.robot_id)
+               .order_by(Track.ts.desc()).first())
+        if row is None:
+            return None                         # 아직 아무 보고도 없다 — 판단 보류
+        return "로봇 mode=idle" if str(row.mode or "") == "idle" else None
 
     # ── 수명주기(서버 lifespan) ─────────────────────────────────────────────
     def restore(self) -> int:

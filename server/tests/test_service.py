@@ -166,6 +166,35 @@ def test_evt_completed_finishes_mission_and_records_report(factory):
                for p in payloads)
 
 
+def test_evt_completed_catches_up_a_lost_accept(factory):
+    """실기 확인(임무 23) — 수락 신호가 수집에서 유실되면 서버 임무는 QUEUED 인데
+    완료 보고만 도착한다. 그러면 종착 전이가 불가라 임무는 QUEUED 로 굳고 통로
+    잠금을 영원히 쥔다. cmd_id 로 정확히 상관된 완료는 그 임무의 것이 확실하니
+    잃어버린 start 를 따라잡은 뒤 종착시킨다(둘 다 관문 경유)."""
+    from fleet_server.traffic import AlleyLocks
+    ms_id = _seed_mission(factory)
+    with factory() as db:
+        ms = db.get(m.Mission, ms_id)
+        AlleyLocks.acquire(db, ms.robot_id, ms.id, [0], ms.farm_id)
+        db.commit()
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _completed(ms_id), seq=1)      # accepted 없이 완료만
+    with factory() as db:
+        ms = db.get(m.Mission, ms_id)
+        assert ms.state == "DONE"
+        assert ms.started_at is not None and ms.ended_at is not None
+        assert AlleyLocks.list_active(db) == []
+
+
+def test_evt_done_kind_does_not_catch_up_queued_mission(factory):
+    """따라잡기는 **상관 키가 있는** 경로만의 권한이다. kind 경로는 어느 임무의
+    완료인지 확신할 수 없으므로 QUEUED 임무를 종착시키지 않는다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "mission_done", "msg": "임무 완료"}, seq=1)
+    assert _state(factory, ms_id) == "QUEUED"
+
+
 def test_evt_mission_done_kind_finishes_mission(factory):
     ms_id = _seed_mission(factory)
     fp, _ = _svc(factory)
@@ -188,12 +217,32 @@ def test_evt_done_then_completed_still_records_report(factory):
                    for e in db.query(m.MissionEvent).filter_by(mission_id=ms_id))
 
 
-def test_evt_mission_cancelled_kind_cancels_mission(factory):
+def test_evt_mission_cancelled_kind_is_not_mapped(factory):
+    """I-3 — mission_cancelled 는 kind 경로에서 뺐다.
+
+    취소는 언제나 서버가 먼저 아는 사건이다(REST/BT 가 apply_verb 로 전이를
+    커밋한 뒤에 명령이 나간다). 그러니 이 kind 로 얻을 것은 없고, 상관 키가
+    없어 지연 도착 시 **직후에 발진한 다음 임무**를 취소해 버릴 수 있다
+    (QUEUED 에서 cancel 은 합법 전이다) — 잠금까지 함께 풀린다."""
     ms_id = _seed_mission(factory)
     fp, _ = _svc(factory)
     fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
     fp.feed("scout01", "evt", {"kind": "mission_cancelled", "msg": "임무 취소"}, seq=2)
-    assert _state(factory, ms_id) == "CANCELED"
+    assert _state(factory, ms_id) == "RUNNING"          # 상태를 건드리지 않는다
+
+
+def test_delayed_cancel_evt_does_not_kill_the_next_mission(factory):
+    """I-3 회귀 — 앞 임무를 취소하고 곧바로 새 임무를 발진한 뒤, 뒤늦게 도착한
+    mission_cancelled 가 새 임무를 죽이면 안 된다."""
+    from fleet_server import missions
+    first = _seed_mission(factory)
+    with factory() as db:
+        missions.apply(db, db.get(m.Mission, first), "cancel")
+        second = missions.create(db, robot_id="scout01", farm_id=1,
+                                 spec={"alleys": [1]}, created_by=1).id
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "mission_cancelled", "msg": "임무 취소"}, seq=9)
+    assert _state(factory, second) == "QUEUED"          # 방금 발진한 임무는 무사하다
 
 
 def test_evt_lifecycle_releases_alley_lock(factory):

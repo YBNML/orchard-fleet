@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+from fastapi.testclient import TestClient
 
 from tests.conftest import _test_settings, do_login
 
@@ -364,6 +365,60 @@ class _SlowFleetPort:
     async def send_command(self, robot_id, cmd_id, action, payload):
         await asyncio.sleep(0.02)
         return await self._inner.send_command(robot_id, cmd_id, action, payload)
+
+
+class _RaceOnVerbPort:
+    """검증 동사(pause/resume/cancel)의 await 구간에 로봇 보고가 끼어드는 상황.
+
+    send_command 안에서 콜백을 불러 **다른 세션이 임무를 먼저 종착**시킨다 —
+    실기에서는 링크에 명령을 쓰는 동안 도착한 mission_done/cmd_result 가
+    FleetService 세션으로 그 일을 한다."""
+
+    def __init__(self):
+        from fleet_server.fleet.port import InMemoryFleetPort
+        self._inner = InMemoryFleetPort()
+        self.on_verb = None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def send_command(self, robot_id, cmd_id, action, payload):
+        if self.on_verb is not None and action != "mission_start":
+            self.on_verb()
+        return await self._inner.send_command(robot_id, cmd_id, action, payload)
+
+
+def test_verb_losing_race_returns_409_not_500(tmp_path):
+    """I-1 — await 구간에 임무가 먼저 종착하면 재개된 apply 가 InvalidTransition 을
+    던진다. 그것이 그대로 올라가면 조작자에게 500 이 뜬다(서버 오류처럼 보이지만
+    실제로는 '이미 끝난 임무'라는 정상적인 경합 결과다) — 409 여야 한다."""
+    from fleet_server import missions
+    from fleet_server.app import create_app
+    from fleet_server.models import Mission
+
+    fleet = _RaceOnVerbPort()
+    app = create_app(_test_settings(db_url=f"sqlite:///{tmp_path}/race.db"), fleet=fleet)
+    client = TestClient(app)
+    csrf = do_login(client)
+    h = {"X-CSRF": csrf}
+    fa = client.post("/api/v1/farms", json={"name": "농장A"}, headers=h).json()
+    client.post("/api/v1/robots", headers=h,
+                json={"id": "scout01", "farm_id": fa["id"], "name": "r"})
+    fleet._inner.feed("scout01", "tel/state", {})
+    ms = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout01", "alleys": [0]}).json()
+
+    def _robot_finishes_first():                # 다른 세션 — 로봇 보고 경로를 흉내
+        with app.state.session_factory() as db:
+            row = db.get(Mission, ms["id"])
+            missions.apply(db, row, "start")
+            missions.apply(db, row, "complete")
+
+    fleet.on_verb = _robot_finishes_first
+    r = client.post(f"/api/v1/missions/{ms['id']}/cancel", headers=h)
+    assert r.status_code == 409, r.text
+    with app.state.session_factory() as db:
+        assert db.get(Mission, ms["id"]).state == "DONE"   # 먼저 온 종착이 이긴다
 
 
 async def _alogin(ac, login="admin", pw="admpw"):
