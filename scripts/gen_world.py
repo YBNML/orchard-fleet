@@ -159,6 +159,51 @@ def sdf_footer():
     return "\n  </world>\n</sdf>\n"
 
 
+# ── 로봇 스폰 (단수/복수 공용) ────────────────────────────────────────────────
+ROBOT_MODEL = "scout_mini_mid70"   # --robots 항목은 이 모델 고정 (설계서 다중 로봇은 동종 편대)
+
+
+def robot_include(name, model, x, y, z, yaw_rad):
+    return f"""    <include>
+      <name>{name}</name>
+      <uri>model://{model}</uri>
+      <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw_rad:.4f}</pose>
+    </include>
+"""
+
+
+def parse_robots(spec):
+    """"이름:x,y,yaw도" 공백 구분 문자열 → [(name, x, y, yaw_rad), ...].
+
+    형식·중복 오류는 사용자에게 바로 보이도록 SystemExit 로 죽는다(조용히 잘못된
+    월드를 만들지 않는다). yaw 는 도(度) 입력을 라디안으로 변환해 pose 에 쓴다.
+    """
+    out = []
+    seen = set()
+    for tok in spec.split():
+        if ":" not in tok:
+            raise SystemExit(
+                f"[gen_world] ✘ --robots 항목 형식 오류 (이름:x,y,yaw 필요): {tok!r}")
+        name, coords = tok.split(":", 1)
+        name = name.strip()
+        if not name:
+            raise SystemExit(f"[gen_world] ✘ --robots 항목에 이름이 없습니다: {tok!r}")
+        parts = coords.split(",")
+        if len(parts) != 3:
+            raise SystemExit(
+                f"[gen_world] ✘ --robots 항목 좌표 개수 오류 (x,y,yaw 3개 필요, "
+                f"{len(parts)}개 받음): {tok!r}")
+        try:
+            x, y, yaw_deg = (float(p) for p in parts)
+        except ValueError:
+            raise SystemExit(f"[gen_world] ✘ --robots 항목 숫자 파싱 실패: {tok!r}")
+        if name in seen:
+            raise SystemExit(f"[gen_world] ✘ --robots 이름 중복: {name!r}")
+        seen.add(name)
+        out.append((name, x, y, math.radians(yaw_deg)))
+    return out
+
+
 def bg_tree_include(name, model, x, y, z, yaw):
     """배경목: tree_full(과실 구워넣음) 모델을 통째로 <include>.
 
@@ -873,7 +918,14 @@ def main():
     ap.add_argument("--posts", action="store_true",
                     help="(구버전 호환) --detail 1 이상과 동일")
     ap.add_argument("--robot", default=None,
-                    help="스폰할 로봇 모델명 (예: scout_mini_mid70). 통로 시작점에 배치")
+                    help="(단수, 구버전 호환) 스폰할 로봇 모델명 (예: scout_mini_mid70). "
+                         "통로 시작점에 자동 배치 — --robots 목록의 단일 항목과 동치. "
+                         "--robots 와 동시 지정 불가")
+    ap.add_argument("--robots", default=None,
+                    help='다중 로봇 배치. "이름:x,y,yaw도" 공백 구분 목록, 예: '
+                         '"scout01:-14.0,-33.0,90 scout02:14.0,-33.0,90". '
+                         f'각 항목을 {ROBOT_MODEL} 모델로 그 이름·자세에 배치(z 는 지형 '
+                         '안착 로직 재사용). --robot 과 동시 지정 불가')
     ap.add_argument("--step-size", type=float, default=0.002,
                     help="물리 스텝 s. 4ms 를 넘기면 휠 접촉이 불안정해진다")
     ap.add_argument("--collision-detector", default="bullet",
@@ -995,17 +1047,25 @@ def main():
         stats["headland"] = len(hl)
 
     # 로봇 스폰 — 첫 통로(0열과 1열 사이) 시작점, 선회 구간에서 진입
-    robot_block = ""
-    if args.robot:
+    # --robots 목록이 우선. --robot 은 구버전 호환 — 목록의 단일 항목(자동 배치)과 동치.
+    if args.robot and args.robots:
+        raise SystemExit(
+            "[gen_world] ✘ --robot 과 --robots 를 동시에 지정할 수 없습니다 "
+            "(다중 로봇은 --robots 목록 하나로 쓰세요).")
+
+    robot_specs = []   # (name, model, x, y, yaw_rad)
+    if args.robots:
+        for name, rx, ry, yaw_rad in parse_robots(args.robots):
+            robot_specs.append((name, ROBOT_MODEL, rx, ry, yaw_rad))
+    elif args.robot:
         spawn_x = x0 + cfg["row_spacing"] / 2          # 0열과 1열 사이 통로 중앙
         spawn_y = y0 - cfg["headland"] / 2             # 선회 구간
-        spawn_z = zf(spawn_x, spawn_y) + 0.20          # 경사면 위 + 여유
-        robot_block = f"""    <include>
-      <name>{args.robot}</name>
-      <uri>model://{args.robot}</uri>
-      <pose>{spawn_x:.3f} {spawn_y:.3f} {spawn_z:.3f} 0 0 1.5708</pose>
-    </include>
-"""
+        robot_specs.append((args.robot, args.robot, spawn_x, spawn_y, math.radians(90)))
+
+    robot_block = ""
+    for name, model, rx, ry, yaw_rad in robot_specs:
+        rz = zf(rx, ry) + 0.20                          # 경사면 위 + 여유
+        robot_block += robot_include(name, model, rx, ry, rz, yaw_rad)
 
     world_name = f"orchard_{R}x{T}"
     out = os.path.abspath(args.out)
@@ -1038,6 +1098,10 @@ def main():
     if stats.get("env"):
         print(f"[gen_world]   환경 오브젝트 모델 {stats['env']} "
               f"(방풍림·울타리·창고·물탱크·농기계·컨테이너·전신주·돌무더기·진입로)")
+    if robot_specs:
+        names = ", ".join(f"{n}@({rx:.1f},{ry:.1f},{math.degrees(yw):.0f}°)"
+                          for n, _, rx, ry, yw in robot_specs)
+        print(f"[gen_world]   로봇 {len(robot_specs)}대: {names}")
     if terrain.ok:
         # 통로(테라스) 중심의 지면 높이 — 계단이 실제로 생겼는지 바로 보인다
         centers = [zf(x0 + (k + 0.5) * cfg["row_spacing"], 0.0) for k in range(R - 1)]
