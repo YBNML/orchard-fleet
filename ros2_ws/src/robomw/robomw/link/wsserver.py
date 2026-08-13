@@ -32,6 +32,28 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 OP_CONT, OP_TEXT, OP_BIN, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
 
+# 한 프레임을 이 시간 안에 소켓으로 밀어내지 못하면 그 관제를 끊는다.
+#
+# **시한이 없으면 안 된다.** 관제가 읽기를 멈추면(asyncio 루프 정체 등) 커널
+# 송신 버퍼가 차고 sendall 이 무기한 막힌다. 브로드캐스트는 ROS 실행기
+# 스레드에서 도니까, 그 순간 텔레메트리도 제어 틱도 통째로 선다.
+#
+# 프레임만 버리고 링크는 살리는 절충은 두지 않았다. 버퍼가 찬 상태에서
+# 시한을 넘기면 프레임이 **반쯤 나간** 경우가 대부분인데(우리 프레임은
+# 수십 KB 라 한 번에 안 들어간다), 반만 나간 WebSocket 프레임은 이어 붙일
+# 수 없다 — 그 스트림은 이미 깨졌다. 그러니 정직하게 끊고 재접속시킨다.
+# 건강한 관제는 랜/루프백에서 한 프레임을 밀리초 안에 받는다. 2초를 못
+# 받는 관제는 이미 관제가 아니다.
+SEND_TIMEOUT_S = 2.0
+
+# 커널에 거는 send 한 번의 시한(SO_SNDTIMEO). 전체 시한을 이 조각으로 나눠
+# 재시도한다 — 조각마다 돌아와야 SEND_TIMEOUT_S 를 시험이 갈아 끼워도 듣는다.
+SEND_SLICE_S = 0.2
+
+# 수신 루프가 PONG 을 보내려고 송신 락을 기다리는 한도. 링크 두절 판정
+# (P.LINK_LOSS_STOP_MS=1.5초)보다 훨씬 짧아야 한다 — Conn.pong 주석 참조.
+PONG_LOCK_WAIT_S = 0.2
+
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".json": "application/json",
         ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
@@ -58,6 +80,22 @@ def encode_frame(payload: bytes, opcode: int = OP_TEXT, mask: bool = False) -> b
         head += key
         payload = bytes(b ^ key[i % 4] for i, b in enumerate(payload))
     return bytes(head) + payload
+
+
+def _set_send_timeout(sock, seconds: float) -> bool:
+    """소켓의 **송신에만** 시한을 건다 (SO_SNDTIMEO). 실패해도 조용히 넘어간다.
+
+    못 걸면 예전 동작(무기한 차단)으로 되돌아갈 뿐이라 연결을 막지는 않는다 —
+    이 옵션 하나 때문에 관제가 아예 안 붙는 쪽이 더 나쁘다.
+    """
+    try:
+        sec = int(seconds)
+        usec = int(round((seconds - sec) * 1_000_000))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
+                        struct.pack("ll", sec, usec))
+        return True
+    except Exception:
+        return False
 
 
 def _recv_exact(sock, n):
@@ -115,15 +153,68 @@ class Conn:
         self.opened = time.time()
         self.sent = 0
         self.dropped = 0
+        self.deferred_pongs = 0
+        # 송신 락을 못 잡아 미뤄 둔 PONG (다음 송신에 얹어 보낸다 — Conn.pong 참조).
+        self._pending_pong = None
+        self._pong_lock = threading.Lock()
+        _set_send_timeout(sock, SEND_SLICE_S)
+
+    def _send_locked(self, data: bytes, timeout=None) -> None:
+        """락을 쥔 채 한 프레임을 보낸다. 시한을 넘기면 TimeoutError.
+
+        sock.sendall 도, settimeout 도, select 도 쓰지 않는다 — 셋 다 여기서는
+        안 듣는다.
+
+          sendall      : 상대가 안 읽으면 무기한 매달린다(이 결함의 원인).
+          settimeout   : 소켓 하나에 양방향으로 걸린다. recv 는 다음 프레임을
+                         무기한 기다려야 하는데(수신 루프) 시한이 걸리면
+                         멀쩡한 연결이 주기적으로 끊긴다.
+          select       : **차단 소켓의 send 는 사실상 sendall 이다** — 쓸 공간이
+                         생길 때까지 기다렸다 전량을 큐잉하고 돌아온다. 그래서
+                         "쓸 수 있을 때만 send" 로는 시한이 안 걸린다(실측).
+
+        남는 것이 SO_SNDTIMEO 다. 방향별 옵션이라 recv 는 그대로 두고 send 만
+        제한한다(실측: recv 는 1.5초 뒤에도 정상 대기). 커널은 조각 시한마다
+        보낸 만큼을 돌려주거나 EAGAIN 을 던지므로, 전체 시한까지 재시도한다.
+        """
+        timeout = SEND_TIMEOUT_S if timeout is None else timeout
+        view = memoryview(data)
+        end = time.monotonic() + timeout
+        while view:
+            if time.monotonic() >= end:
+                raise TimeoutError("송신 시한 초과 — 관제가 읽지 않는다")
+            try:
+                n = self.sock.send(view)
+            except (BlockingIOError, TimeoutError):
+                continue                    # 조각 시한 안에 한 바이트도 못 냈다
+            except InterruptedError:
+                continue
+            if n <= 0:
+                raise ConnectionError("송신 실패")
+            view = view[n:]
+
+    def _flush_pong_locked(self) -> None:
+        """송신 락을 쥔 상태에서, 미뤄 둔 PONG 이 있으면 **먼저** 내보낸다."""
+        with self._pong_lock:
+            data, self._pending_pong = self._pending_pong, None
+        if data is not None:
+            self._send_locked(data)
 
     def send_text(self, s: str) -> bool:
         if not self.alive:
             return False
         try:
             with self.lock:
-                self.sock.sendall(encode_frame(s.encode("utf-8"), OP_TEXT))
+                self._flush_pong_locked()
+                self._send_locked(encode_frame(s.encode("utf-8"), OP_TEXT))
             self.sent += 1
             return True
+        except TimeoutError:
+            # 시한 안에 못 밀어냈다. 프레임이 반쯤 나갔을 수 있어 스트림을
+            # 믿을 수 없다 — 끊고 재접속시킨다(SEND_TIMEOUT_S 주석 참조).
+            self.dropped += 1
+            self.alive = False
+            return False
         except Exception:
             self.alive = False
             return False
@@ -131,10 +222,52 @@ class Conn:
     def send_json(self, obj) -> bool:
         return self.send_text(json.dumps(obj, separators=(",", ":")))
 
+    def pong(self, data: bytes) -> bool:
+        """PING 에 답한다. **송신 락을 무기한 기다리지 않는다.**
+
+        여기서 락을 그냥 기다리면(예전 코드) 느린 관제 하나 때문에 수신
+        루프가 통째로 선다: 브로드캐스트가 그 관제의 소켓에서 막힌 동안
+        락을 쥐고 있으므로, 같은 연결의 수신 스레드는 PING 을 받은 자리에서
+        멈춘다. 그러면 뒤따르는 명령·하트비트를 읽지 못해 note_client 가
+        끊기고, 로봇은 **접속이 살아 있는 링크**를 두절로 오판해 임무를
+        세운다(2026-08-13 실측: 관제 어댑터만 2~4초 주기로 플랩. 라이브러리
+        keepalive 를 안 쓰는 단순 클라이언트는 TEXT 경로가 락을 안 잡아
+        멀쩡했다 — 그 비대칭이 이 결함의 지문이다).
+
+        그렇다고 **버리면 안 된다.** 클라이언트(websockets)는 자기가 보낸 ping
+        하나에 대한 pong 을 ping_timeout 동안 기다리다 없으면 1011 로 끊는다 —
+        pong 을 거르는 것만으로 우리가 고치려던 플랩이 그대로 다시 난다
+        (실측: 거르기만 했더니 link_lost 는 사라졌는데 keepalive timeout 이 남았다).
+
+        그래서 **미뤄 둔다**: 락을 못 잡으면 들고 있다가 다음 송신에 얹어
+        보낸다(_flush_pong_locked). 수신 루프는 즉시 돌아가고, pong 은 다음
+        프레임 경계에서 나간다(5 Hz 텔레메트리면 0.2초 안).
+
+        미뤄 둔 것이 이미 있으면 **최신 것만** 남긴다 — RFC 6455 §5.5.3 이
+        명시적으로 허용하고(밀린 ping 여러 개에 대해 마지막 것만 답해도 된다),
+        websockets 도 나중 pong 하나로 앞선 ping 들을 함께 해소한다.
+        """
+        if not self.alive:
+            return False
+        if not self.lock.acquire(timeout=PONG_LOCK_WAIT_S):
+            with self._pong_lock:
+                self._pending_pong = data
+            self.deferred_pongs += 1
+            return False
+        try:
+            self._flush_pong_locked()
+            self._send_locked(data)
+            return True
+        except Exception:
+            self.alive = False
+            return False
+        finally:
+            self.lock.release()
+
     def ping(self):
         try:
             with self.lock:
-                self.sock.sendall(encode_frame(b"", OP_PING))
+                self._send_locked(encode_frame(b"", OP_PING))
         except Exception:
             self.alive = False
 
@@ -142,7 +275,8 @@ class Conn:
         self.alive = False
         try:
             with self.lock:
-                self.sock.sendall(encode_frame(b"", OP_CLOSE))
+                # 닫는 길에서 오래 붙들지 않는다 — 이미 못 읽는 상대다.
+                self._send_locked(encode_frame(b"", OP_CLOSE), timeout=0.2)
         except Exception:
             pass
         try:
@@ -435,8 +569,8 @@ class ControlServer:
                         if op == OP_CLOSE:
                             break
                         if op == OP_PING:
-                            with conn.lock:
-                                sock.sendall(encode_frame(data, OP_PONG))
+                            # 락을 기다리며 여기 멈추면 안 된다 — Conn.pong 참조.
+                            conn.pong(encode_frame(data, OP_PONG))
                             continue
                         if op == OP_PONG:
                             continue
