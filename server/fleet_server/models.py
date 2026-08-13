@@ -79,14 +79,21 @@ class AlleyLock(Base):
 
     pads_json 은 alleys_json 에서 파생되는 값이지만(traffic.pads) 조회·복원
     시 재계산을 피하려고 함께 저장한다 — JSON 은 튜플을 못 담으므로 [a,b]
-    리스트로 직렬화한다.
+    리스트로 직렬화한다. alleys_json/pads_json 이 null 이면 "와일드카드"(통로
+    생략 임무 — 로봇이 전 통로를 돈다)로, 그 farm 의 모든 잠금과 충돌한다.
+
+    farm_id 는 리뷰 라운드 1(I5)에서 추가 — 처음 설계(alley_locks 테이블
+    (robot_id, alleys_json, pads_json, mission_id, ts))에는 없었는데, 그 결과
+    서로 다른 농장(별개 과수원)의 통로 번호가 같으면 충돌 검사에 걸려 무관한
+    농장끼리 서로 막아섰다. 충돌 검사는 이제 같은 farm 안에서만 한다.
     """
     __tablename__ = "alley_locks"
     id: Mapped[int] = mapped_column(primary_key=True)
     mission_id: Mapped[int] = mapped_column(ForeignKey("missions.id"), unique=True)
     robot_id: Mapped[str] = mapped_column(ForeignKey("robots.id"))
-    alleys_json: Mapped[list] = mapped_column(JSON, default=list)
-    pads_json: Mapped[list] = mapped_column(JSON, default=list)
+    farm_id: Mapped[int] = mapped_column(ForeignKey("farms.id"))
+    alleys_json: Mapped[list | None] = mapped_column(JSON, default=None)
+    pads_json: Mapped[list | None] = mapped_column(JSON, default=None)
     ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

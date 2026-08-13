@@ -372,6 +372,7 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
   animation:toast-in .18s ease}
 .toast.ok{border-left-color:var(--leaf); color:var(--leaf)}
 .toast.err{border-left-color:var(--danger); color:var(--danger)}
+.toast.warn{border-left-color:var(--gold); color:var(--gold)}
 @keyframes toast-in{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
 
 /* ── 반응형: 태블릿·현장 ──────────────────────────────────────────────── */
@@ -820,10 +821,14 @@ async function loadRobots() {
 // 새로고침하면 비어서 pause/resume/cancel 이 무증상 no-op 이 된다 — 부팅 시
 // 서버의 활성 임무 목록에서 복구한다. /missions 는 최신순이라 로봇당 첫
 // 활성 항목이 곧 최신(진행 중) 임무다.
+// QUEUED_LOCK 도 활성으로 친다(리뷰 라운드 1 I7) — 아니면 새로고침 후 그
+// 임무의 missionId 를 못 채워 취소 버튼이 무증상 no-op 이 된다.
+const ACTIVE_MISSION_STATES = ["QUEUED", "QUEUED_LOCK", "RUNNING", "PAUSED"];
+
 async function restoreMissions() {
   const list = await api("/missions");
   for (const m of list) {
-    if (!["QUEUED", "RUNNING", "PAUSED"].includes(m.state)) continue;
+    if (!ACTIVE_MISSION_STATES.includes(m.state)) continue;
     const r = robots.get(m.robot_id);
     if (r && !r.missionId) r.missionId = m.id;
   }
@@ -1446,13 +1451,25 @@ $("clearEstop").onclick = () => {
               `확인하고 기체의 리셋을 눌러야 최종 해제됩니다.\n\n승인하시겠습니까?`))
     sendCmd(r.id, "clear_estop_request");
 };
+// mission_start 가 200 을 반환해도 state:"QUEUED_LOCK" 이면 실제로는 로봇에
+// 나가지 않았다(통로 잠금 충돌 대기) — 성공 토스트로 오인되지 않게 구분
+// 표시한다(리뷰 라운드 1 I7). missionId 는 그래도 채운다 — 취소 버튼이
+// 이 임무를 잡아야 하기 때문이다.
+function noteMissionCreated(r, ms) {
+  r.missionId = ms.id;
+  if (ms.state === "QUEUED_LOCK") {
+    const reason = ms.lock_reason || "겹치는 임무가 끝나야 시작합니다";
+    toast(`${r.id} · 통로 잠금 대기 — ${reason}`, "warn");
+  }
+}
+
 $("mStart").onclick = async () => {
   const r = sel(); if (!r) return;
   const a = [...picked].sort((x,y) => x-y);
   if (!a.length) return alert("통로를 하나 이상 고르세요.");
   try {
     const ms = await api("/missions", {method:"POST", body:{robot_id: r.id, alleys: a}});
-    r.missionId = ms.id;
+    noteMissionCreated(r, ms);
   } catch (e) { alert("임무를 시작하지 못했습니다: " + e.message); }
 };
 
@@ -1469,7 +1486,7 @@ $("scoutStart").onclick = async () => {
   try {
     const ms = await api("/missions", {method: "POST",
       body: {robot_id: r.id, work: {type: "scout", params: {speed_scale: v}}}});
-    r.missionId = ms.id;
+    noteMissionCreated(r, ms);
   } catch (e) { alert("전체 정찰을 시작하지 못했습니다: " + e.message); }
 };
 

@@ -5,6 +5,7 @@ mission 채널 payload {"state": ...} 는 임무 상태기계로 동기화한다
 """
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 from .. import ingest, missions
@@ -12,6 +13,14 @@ from ..models import Mission
 
 _ROBOT_STATE_EVENT = {"running": "start", "paused": "pause", "done": "complete",
                       "canceled": "cancel", "failed": "fail"}
+
+# 리뷰 라운드 1 (I4) — mission_start 의 cmd_id 는 mission_routes.create_mission
+# 이 항상 f"m{mission.id}" 로 짓는다(검증 동사 cmd_id 는 "m{id}-{verb}" 라
+# 대시가 있어 이 정규식에 안 걸린다 — mission_start 만 골라낸다). 이 관례를
+# 파싱해 mission_id 를 되찾는다 — 재기동으로 잃어도 되는 인메모리 상관표
+# 대신 이미 존재하는 결정적 규약을 재사용한 것(재기동 후 유실되는 경우는
+# C3 의 로컬 cancel 로 회수 가능하다).
+_MSTART_CMD_ID_RE = re.compile(r"^m(\d+)$")
 
 
 class FleetService:
@@ -41,6 +50,7 @@ class FleetService:
                 fresh = ingest.event(db, robot_id, channel, seq, payload)
                 if fresh:
                     self._route_intervention(db, robot_id, payload)
+                    self._maybe_fail_rejected_mission_start(db, robot_id, payload)
         elif channel == "mission":
             self._sync_mission(robot_id, payload)
         for cb in list(self._subs):
@@ -70,6 +80,27 @@ class FleetService:
             msg=str(payload.get("msg", ""))[:256],
             severity=str(payload.get("severity", "warn")),
             context={k: payload[k] for k in ("x", "y", "alley") if k in payload})
+
+    def _maybe_fail_rejected_mission_start(self, db, robot_id: str, payload: dict) -> None:
+        """로봇이 mission_start 자체를 거부하면(BUSY·BAD_PARAM·ESTOPPED·
+        UNSUPPORTED) 서버 쪽 임무는 로봇의 "running" 보고를 영영 못 받아
+        QUEUED 에 멈춘다 — AlleyLock 을 쓰는 지금은 그 잠금도 함께 고착된다.
+        cmd_id 로 임무를 되찾아 FAILED 로 종착시켜 잠금을 해제한다."""
+        if payload.get("kind") != "cmd_result":
+            return
+        if payload.get("cmd") != "mission_start" or payload.get("status") != "rejected":
+            return
+        m = _MSTART_CMD_ID_RE.match(str(payload.get("cmd_id", "")))
+        if not m:
+            return
+        ms = db.get(Mission, int(m.group(1)))
+        if ms is None or ms.robot_id != robot_id:
+            return
+        reason = (payload.get("data") or {}).get("reason") or payload.get("code") or "거부"
+        try:
+            missions.apply(db, ms, "fail", payload={"reason": reason, "code": payload.get("code")})
+        except missions.InvalidTransition:
+            pass                                # 이미 종착 상태 등 — 무시
 
     def _sync_mission(self, robot_id: str, payload: dict) -> None:
         ev = _ROBOT_STATE_EVENT.get(str(payload.get("state", "")).lower())
