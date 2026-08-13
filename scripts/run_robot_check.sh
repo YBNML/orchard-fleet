@@ -4,20 +4,26 @@
 #   bash scripts/run_robot_check.sh          # 주행용 월드 (RTF 높음)
 #   bash scripts/run_robot_check.sh gt       # 정답 라벨용 월드 (과실 인스턴스 포함)
 #   bash scripts/run_robot_check.sh nav rviz-off
+#   bash scripts/run_robot_check.sh nav rviz-on scout02   # 2호기
+#
+# 세 번째 인자는 로봇 인스턴스 이름(기본 scout01)이다 — 월드의 <include><name>
+# 이자 ROS 네임스페이스이자 TF 접두다 (orchard_sim/gz_topics.py 참조).
 #
 # 띄운 뒤 조작은 별도 터미널에서:
 #   source /opt/ros/jazzy/setup.bash && source ~/YBNML/ros2_ws/install/setup.bash
-#   ros2 run teleop_twist_keyboard teleop_twist_keyboard
+#   ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+#     --ros-args -r /cmd_vel:=/scout01/cmd_vel
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WHICH="${1:-nav}"
 RVIZ="${2:-rviz-on}"
+ROBOT="${3:-scout01}"
 
 case "$WHICH" in
   nav) WORLD="$ROOT/sim/worlds/orchard_nav.sdf" ;;
   gt)  WORLD="$ROOT/sim/worlds/orchard_gt.sdf" ;;
-  *)   echo "사용법: $0 [nav|gt] [rviz-on|rviz-off]"; exit 2 ;;
+  *)   echo "사용법: $0 [nav|gt] [rviz-on|rviz-off] [로봇이름]"; exit 2 ;;
 esac
 [ -f "$WORLD" ] || { echo "월드가 없습니다: $WORLD"; echo "  python3 scripts/gen_world.py ... 로 먼저 생성하세요"; exit 2; }
 
@@ -55,12 +61,15 @@ echo "  ✔ 씬 로드 완료"
 
 echo "▶ Stage-0 스택 기동 (브리지 + 참값 로컬라이저 + Livox 계약)"
 setsid nohup ros2 launch orchard_sim stage0.launch.py world_name:="$WORLD_NAME" \
+  robot_id:="$ROBOT" ns:="$ROBOT" \
   > /tmp/rc_stage0.log 2>&1 < /dev/null &
 disown
 
 echo "  참값 로컬라이저 대기"
 DEADLINE=$(( $(date +%s) + 90 ))
-until ros2 node list 2>/dev/null | grep -q '^/gt_localizer$'; do
+# 노드가 로봇 네임스페이스 아래로 들어갔다(/scout01/gt_localizer). 접두 없이
+# 찾으면 정상 스택인데도 영영 매칭되지 않아 90초 뒤 exit 1 이 된다.
+until ros2 node list 2>/dev/null | grep -qx "/${ROBOT}/gt_localizer"; do
   sleep 3
   [ "$(date +%s)" -lt "$DEADLINE" ] || {
     echo "  ✗ Stage-0 스택이 안 올라옵니다 — tail /tmp/rc_stage0.log"; exit 1; }
@@ -69,7 +78,15 @@ echo "  ✔ Stage-0 스택 준비"
 
 if [ "$RVIZ" = "rviz-on" ]; then
   echo "▶ RViz 기동"
-  setsid nohup rviz2 -d "$ROOT/ros2_ws/src/orchard_sim/config/robot_check.rviz" \
+  # 설정 파일은 1호기 이름으로 커밋돼 있다. 다른 로봇이면 그 자리만 바꿔
+  # 임시 사본을 만든다 — 로봇마다 .rviz 를 복제해 두면 언젠가 갈라진다.
+  RVIZ_CFG="$ROOT/ros2_ws/src/orchard_sim/config/robot_check.rviz"
+  if [ "$ROBOT" != "scout01" ]; then
+    RVIZ_CFG="/tmp/robot_check_${ROBOT}.rviz"
+    sed "s#scout01#${ROBOT}#g" \
+      "$ROOT/ros2_ws/src/orchard_sim/config/robot_check.rviz" > "$RVIZ_CFG"
+  fi
+  setsid nohup rviz2 -d "$RVIZ_CFG" \
     --ros-args -p use_sim_time:=true > /tmp/rc_rviz.log 2>&1 < /dev/null &
   disown
   DEADLINE=$(( $(date +%s) + 60 ))
@@ -89,12 +106,13 @@ echo
 echo " 키보드 주행 — 새 터미널에서:"
 echo "   source /opt/ros/jazzy/setup.bash"
 echo "   source $ROOT/ros2_ws/install/setup.bash"
-echo "   ros2 run teleop_twist_keyboard teleop_twist_keyboard"
+echo "   ros2 run teleop_twist_keyboard teleop_twist_keyboard \\"
+echo "     --ros-args -r /cmd_vel:=/$ROBOT/cmd_vel"
 echo "     i 전진 / , 후진 / j 좌회전 / l 우회전 / k 정지"
 echo "     q,z 속도 조절.  통로 촬영 속도는 0.6 m/s 입니다"
 echo
 echo " 상태 확인:"
-echo "   ros2 topic hz /livox/lidar          점군 발행률"
+echo "   ros2 topic hz /$ROBOT/livox/lidar   점군 발행률"
 echo "   ros2 run tf2_tools view_frames      TF 트리 PDF 저장"
 echo "   gz topic -e -t /world/$WORLD_NAME/stats -n 3 | grep real_time"
 echo

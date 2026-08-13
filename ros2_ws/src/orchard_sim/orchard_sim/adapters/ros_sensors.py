@@ -32,15 +32,22 @@ from orchard_sim import transforms as tfu
 from robomw.sdk.interfaces import Localizer, Perception
 from robomw.sdk.types import Pose
 
-# 수신율 창(초) — self_test(ScoutDiag)의 lidar/imu 판정용. control_agent 의
-# RateMeter(표시용, 표본 개수 창)와 다르게 **시간 창**을 쓴다: 자가진단은
-# "지금 죽었나"를 즉시 답해야 하는데, 표본 개수 창은 저빈도 구간에서 창이
-# 다 차기까지 느리다. 시간 창은 창 밖으로 나간 표본이 바로 빠져 반응이 빠르다.
+# 수신율 창(초). **이 클래스가 로봇의 유일한 수신율 계측이다** — self_test
+# (ScoutDiag)와 health 텔레메트리(telemetry_health)가 같은 값을 읽는다. 예전에는
+# control_agent 가 RateMeter 로 따로 한 벌 더 쟀는데, 시간 기준이 갈리면서
+# "self_test 는 all_ok 인데 health 는 저조 경고"가 동시에 뜨는 모순이 났다
+# (2026-08-14 리뷰 지적). 계측이 하나면 갈라질 수가 없다.
+#
+# 표본 개수 창이 아니라 **시간 창**을 쓴다: 자가진단은 "지금 죽었나"를 즉시
+# 답해야 하는데, 표본 개수 창은 저빈도 구간에서 창이 다 차기까지 느리다.
 RATE_WINDOW_S = 3.0
-# 시뮬이 통째로 멈춘 것(= sim time 정지)을 "정상"으로 오판하지 않기 위한 벽시계
+# 시계가 멈춘 것(시뮬 정지 등)을 "정상"으로 오판하지 않기 위한 **단조시계**
 # 안전망. 정상 운용의 최저 RTF 에서도 라이다 한 프레임(0.1 s sim)이 이 안에는
 # 들어온다 — RTF 0.02 까지 견딘다.
 STALE_WALL_S = 5.0
+# 창 정리를 rates() 로 미룬 대신 걸어 두는 표본 상한. 200 Hz IMU 의 3초
+# 창(600개)에 여유를 둔 값 — 구독이 끊겨도 메모리가 늘지 않게 한다.
+RX_MAX_SAMPLES = 2000
 
 # 재정위 확인 — 요청을 낸 뒤 이 시간 안에 로컬라이저가 이 품질 이상을 보고해야
 # 성공으로 답한다. 문턱 0.3 은 ScoutDiag 의 localizer 자가진단과 같은 값이다
@@ -71,9 +78,10 @@ class RosSensors(Localizer, Perception):
         self._near_frac = 0.0
         self._diag = {}                 # 마지막 로컬라이저 진단 payload
         self._lio = None                # 마지막 LIO 위치 (x, y, z)
-        # 수신 시각 카운터 — feed_cloud/feed_imu 가 호출될 때마다(솎기 전) 시각을
-        # 남긴다. rates() 가 3초 창으로 Hz 를 낸다.
-        self._rx_times = {"lidar": deque(), "imu": deque()}
+        # 수신 시각 카운터 — feed_cloud/feed_imu/feed_lio 가 호출될 때마다
+        # (솎기 전) 시각을 남긴다. rates() 가 3초 창으로 Hz 를 낸다.
+        # lio 는 telemetry_health 의 min_lio_hz 판정이 읽는다.
+        self._rx_times = {"lidar": deque(), "imu": deque(), "lio": deque()}
 
         # ── 재정위(reinit) 배선 ────────────────────────────────────────────
         # 요청은 노드의 발행자로 나가지만, **응답은 이 클래스가 직접 받는다.**
@@ -93,46 +101,63 @@ class RosSensors(Localizer, Perception):
         self._ack_exec.add_node(self._ack_node)
         self._ack_quality = None        # 마지막으로 받은 재정위 확인 품질
 
+    def _sim_time(self):
+        """이 노드가 sim time 을 쓰는가. rclpy 가 use_sim_time 을 항상 선언한다."""
+        try:
+            return bool(self._node.get_parameter("use_sim_time").value)
+        except Exception:          # 파라미터가 없는 가짜 노드(시험용)
+            return False
+
     def _now(self):
-        """(ROS 시각, 벽시계) — 둘 다 필요하다. 아래 rates() 주석 참조."""
+        """(ROS 시각, 단조시계) 쌍. 어느 쪽으로 Hz 를 낼지는 rates() 가 고른다."""
         return (self._node.get_clock().now().nanoseconds * 1e-9, time.monotonic())
 
-    def _note_rx(self, key, now=None):
-        t = self._now() if now is None else (now, now)
+    def _note_rx(self, key):
         dq = self._rx_times[key]
-        dq.append(t)
-        cutoff = t[0] - RATE_WINDOW_S
-        while dq and dq[0][0] < cutoff:
+        dq.append(self._now())
+        # 창 정리는 rates() 가 그때의 기준 시계로 한다. 여기서 한쪽 시계로 미리
+        # 잘라 두면 기준이 엇갈릴 때 표본이 사라진다 — 상한만 걸어 둔다.
+        while len(dq) > RX_MAX_SAMPLES:
             dq.popleft()
 
     def rates(self):
-        """수신율(Hz) — self_test(ScoutDiag) 가 읽는다.
+        """수신율(Hz). **로봇의 유일한 수신율 계측**이다 — self_test(ScoutDiag)와
+        health 텔레메트리(telemetry_health)가 이 한 값을 같이 읽는다.
 
-        **ROS 시각(시뮬에서는 sim time)으로 잰다.** 예전에는 벽시계로 쟀는데,
-        시뮬 센서가 벽시계로 내는 빈도는 `사양 Hz × RTF` 라서 RTF 가 떨어지면
-        멀쩡한 라이다가 "죽었다"로 찍힌다 — 판정 문턱(8 Hz / 80 Hz)은 실기
-        기준(사양의 80%·40%)이므로 RTF 0.8 밑에서는 무조건 오탐이었다.
-        실측(2026-08-14): 이 월드의 gz 단독 RTF 0.40 → 벽시계 라이다 4.4 Hz.
-        sim time 으로 재면 RTF 와 무관하게 10 Hz / 200 Hz 가 나오고, 실기에서는
-        ROS 시각이 곧 벽시계라 판정이 그대로 유지된다.
+        어느 시계로 재는가:
 
-        벽시계도 같이 들고 있는 이유: gz 가 멈추면 sim time 도 멈춰 창이 비지
-        않는다 — 그러면 죽은 시뮬을 "정상"으로 보고하게 된다. 마지막 표본이
-        벽시계로 STALE_WALL_S 넘게 오래됐으면 0.0 으로 답한다.
+        * **시뮬(use_sim_time=true) → ROS 시각(sim time).** 시뮬 센서가 벽시계로
+          내는 빈도는 `사양 Hz × RTF` 라, 벽시계로 재면 RTF 가 낮을 때 멀쩡한
+          라이다가 "죽었다"로 찍힌다. 판정 문턱(self_test 8/80 Hz, health
+          min_lidar_hz·min_imu_hz)은 전부 **실기 사양 기준**이라 RTF 0.8 밑에서는
+          구조적 오탐이었다. 실측(2026-08-14): 이 월드 RTF 0.40 → 벽시계 라이다
+          4.4 Hz vs sim time 10.0 Hz(사양 그대로).
+        * **실기(use_sim_time=false) → 단조시계(time.monotonic).** 이때 ROS 시각은
+          시스템 시계(CLOCK_REALTIME)라 NTP 스텝에 취약하다: 앞으로 뛰면 창이
+          통째로 비어 0.0, 뒤로 뛰면 span 이 음수라 또 0.0 — 멀쩡한 센서를
+          자가진단이 사망 보고한다. 단조시계는 그런 점프가 없다.
 
-        3초(sim) 창 안 도착 시각의 간격으로 잰다. 창 안에 표본이 2개 미만이면
-        (막 시작했거나 완전히 끊긴 것) 0.0 — "모른다"가 아니라 "지금은 없다"로
+        실기에서는 두 시계가 같은 속도로 흐르므로 판정값도 예전 그대로다.
+
+        시계가 멈춘 경우(시뮬 정지·gz 사망)에는 sim time 창이 영영 안 비어
+        "정상"으로 오판하게 된다. 그래서 **마지막 표본의 나이는 항상 단조시계로**
+        본다 — STALE_WALL_S 를 넘겼으면 0.0.
+
+        창 안에 표본이 2개 미만이면 0.0 — "모른다"가 아니라 "지금은 없다"로
         답해야 자가진단이 센서 죽음을 놓치지 않는다.
         """
+        use_sim = self._sim_time()
+        i = 0 if use_sim else 1         # 튜플에서 Hz 계산에 쓸 시계
         sim_now, wall_now = self._now()
+        base_now = sim_now if use_sim else wall_now
         out = {}
         for key, dq in self._rx_times.items():
-            cutoff = sim_now - RATE_WINDOW_S
-            while dq and dq[0][0] < cutoff:
+            cutoff = base_now - RATE_WINDOW_S
+            while dq and dq[0][i] < cutoff:
                 dq.popleft()
-            if (len(dq) >= 2 and dq[-1][0] > dq[0][0]
+            if (len(dq) >= 2 and dq[-1][i] > dq[0][i]
                     and wall_now - dq[-1][1] <= STALE_WALL_S):
-                out[key] = (len(dq) - 1) / (dq[-1][0] - dq[0][0])
+                out[key] = (len(dq) - 1) / (dq[-1][i] - dq[0][i])
             else:
                 out[key] = 0.0
         return out
@@ -147,6 +172,7 @@ class RosSensors(Localizer, Perception):
 
     def feed_lio(self, msg):
         """LIO 오도메트리 위치를 기억하고 (x, y, z) 로 돌려준다."""
+        self._note_rx("lio")
         p = msg.pose.pose.position
         self._lio = (p.x, p.y, p.z)
         return self._lio

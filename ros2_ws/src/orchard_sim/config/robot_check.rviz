@@ -35,7 +35,7 @@ Visualization Manager:
       Name: MID-70 점군
       Enabled: true
       Topic:
-        Value: /livox/lidar
+        Value: /scout01/livox/lidar
         Depth: 5
         Durability Policy: Volatile
         Reliability Policy: Best Effort
@@ -52,7 +52,7 @@ Visualization Manager:
       Name: 좌 수관 카메라
       Enabled: true
       Topic:
-        Value: /cam/left/image
+        Value: /scout01/cam/left/image
         Depth: 2
         Durability Policy: Volatile
         Reliability Policy: Best Effort
@@ -61,7 +61,7 @@ Visualization Manager:
       Name: 우 수관 카메라
       Enabled: false
       Topic:
-        Value: /cam/right/image
+        Value: /scout01/cam/right/image
         Depth: 2
         Durability Policy: Volatile
         Reliability Policy: Best Effort
@@ -70,7 +70,7 @@ Visualization Manager:
       Name: 오도메트리
       Enabled: true
       Topic:
-        Value: /odom
+        Value: /scout01/odom
         Depth: 10
         Durability Policy: Volatile
         Reliability Policy: Reliable
@@ -106,7 +106,7 @@ Visualization Manager:
         X: 0
         Y: 0
         Z: 0
-      Target Frame: base_link
+      Target Frame: scout01/base_link
       Near Clip Distance: 0.05
     Saved: ~
 Window Geometry:

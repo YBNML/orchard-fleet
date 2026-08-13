@@ -151,27 +151,6 @@ class _RegistryTap:
         return self.handled
 
 
-class RateMeter:
-    """토픽 수신 주기 추정. 센서가 죽은 걸 관제에서 바로 보이게 하기 위한 것."""
-
-    def __init__(self, window=30):
-        self.t = []
-        self.window = window
-        self.last = 0.0
-
-    def tick(self, now):
-        self.t.append(now)
-        if len(self.t) > self.window:
-            self.t.pop(0)
-        self.last = now
-
-    def hz(self, now):
-        if len(self.t) < 2 or now - self.last > 2.0:
-            return 0.0
-        span = self.t[-1] - self.t[0]
-        return (len(self.t) - 1) / span if span > 1e-6 else 0.0
-
-
 class ControlAgent(Node):
 
     def __init__(self):
@@ -257,7 +236,6 @@ class ControlAgent(Node):
             rows=_R, alleys=_R - 1, row_spacing=_S, x0=-((_R - 1) * _S) / 2.0,
             col_len=(int(g("trees_per_row", 41)) - 1) * float(g("tree_spacing", 1.5)),
             headland=float(g("headland", 6.0)))
-        self.rate = dict(lidar=RateMeter(), imu=RateMeter(), lio=RateMeter())
 
         # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
         # 센서 해석과 /cmd_vel 발행은 기체마다 다르다. 코어(안전·라우팅·계약)를
@@ -469,7 +447,6 @@ class ControlAgent(Node):
     # 공통 상태 수집
     # ═══════════════════════════════════════════════════════════════════════
     def _on_lio(self, msg):
-        self.rate["lio"].tick(time.monotonic())
         self.bb.set(lio_pose=self.sensors.feed_lio(msg))
 
     def _on_local_reset(self):
@@ -483,7 +460,6 @@ class ControlAgent(Node):
                                result=("수락" if ok else "거부"))
 
     def _on_imu(self, msg):
-        self.rate["imu"].tick(time.monotonic())
         self.sensors.feed_imu(msg)
 
     def _on_cloud(self, msg):
@@ -495,7 +471,6 @@ class ControlAgent(Node):
         보므로 로컬리제이션도 슬립 감지도 눈이 먼다(08-02 실측). 여기서만
         잡을 수 있으니 여기서 세운다.
         """
-        self.rate["lidar"].tick(time.monotonic())
         # 지도 격자용 공급 — 예전에는 지도 기능이 이 토픽을 따로 구독했다.
         # 두 콜백의 순서는 원래도 정해져 있지 않았으므로 여기서 먼저 넘겨도
         # 밀착 판단이 받는 지연은 예전 그대로다. 솎인 프레임도 지도에는 쓴다.
@@ -927,8 +902,12 @@ class ControlAgent(Node):
 
         now = time.monotonic()
         pose, tilt = self.sensors.pose_tilt()
-        self.bb.set(pose=pose, tilt_deg=tilt,
-                    rates={k: m.hz(now) for k, m in self.rate.items()})
+        # 수신율은 **어댑터 한 곳에서만** 잰다. 예전에는 여기서 RateMeter 로
+        # 한 벌 더 쟀는데(벽시계), self_test 가 읽는 RosSensors.rates()(시뮬에서는
+        # sim time)와 기준이 갈려 "self_test all_ok + health 저조 경고"가 동시에
+        # 뜨는 모순이 났다 — RTF 만큼 두 수치가 어긋났다. 계측이 하나면
+        # 갈라질 수가 없다 (adapters/ros_sensors.py rates() 머리말).
+        self.bb.set(pose=pose, tilt_deg=tilt, rates=self.sensors.rates())
         self.bb.extra["clients"] = self.server.client_count()
 
         self.safety.check_attitude(tilt if pose is not None else None)

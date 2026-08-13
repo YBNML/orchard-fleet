@@ -40,7 +40,7 @@ import numpy as np
 sys.path.insert(0, "ros2_ws/src/orchard_sim")
 
 from orchard_sim.adapters.ros_cloud import RosCloudWorld     # noqa: E402
-from orchard_sim.control_agent import ControlAgent, RateMeter  # noqa: E402
+from orchard_sim.control_agent import ControlAgent  # noqa: E402
 from robomw.core.base import Blackboard                       # noqa: E402
 from robomw.core.safety import SafetyArbiter                  # noqa: E402
 from robomw.link import protocol as P                         # noqa: E402
@@ -75,7 +75,6 @@ class Drive:
 def make_agent(feed):
     """`_on_cloud` 가 쓰는 면만 갖춘 가짜 self. 코어 부품은 진짜를 쓴다."""
     a = SimpleNamespace()
-    a.rate = {"lidar": RateMeter()}
     a.cloud_world = SimpleNamespace(feed=feed)
     a.sensors = SimpleNamespace(feed_cloud=lambda msg: (0.4, 0.95))  # 코앞 밀착
     a.bb = Blackboard()
