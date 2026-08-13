@@ -27,6 +27,11 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     ("PAUSED", "resume"): "RUNNING",
     ("PAUSED", "cancel"): "CANCELED",
     ("PAUSED", "fail"): "FAILED",
+    # AlleyLock 교통관리(스펙 ③ §2) — additive. 발진 전 잠금 획득에 실패하면
+    # 로봇 미발진인 채 QUEUED_LOCK 으로 옮긴다. 정리는 cancel 하나뿐이다(대기
+    # 중이던 요청을 재시도할 별도 API 는 v1 범위 밖).
+    ("QUEUED", "lock_conflict"): "QUEUED_LOCK",
+    ("QUEUED_LOCK", "cancel"): "CANCELED",
 }
 _TERMINAL = {"DONE", "CANCELED", "FAILED"}
 
@@ -74,5 +79,8 @@ def apply(db, mission: Mission, event: str, *, payload: dict | None = None) -> M
         setattr(mission, k, v)
     db.add(MissionEvent(mission_id=mission.id, kind=event,
                         payload_json=payload or {}))
+    if new in _TERMINAL:                        # DONE/CANCELED/FAILED — 통로 잠금 해제
+        from . import traffic                   # 지연 임포트: 순환 임포트 회피
+        traffic.AlleyLocks.release(db, mission.id)
     db.commit()
     return mission

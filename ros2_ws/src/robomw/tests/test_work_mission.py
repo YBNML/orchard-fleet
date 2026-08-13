@@ -102,3 +102,20 @@ def test_work_stop_keeps_mission():
     m.on_command(P.CMD_WORK_STOP, {"cmd_id": "w5"})
     assert m.mission is not None                      # 주행은 계속
     assert ctx.bb.extra["sdk_work"].stopped == 1
+
+
+def test_double_start_rejected_busy():
+    """임무 진행 중 mission_start 가 다시 오면 예전처럼 조용히 교체하지 않고
+    BUSY 로 거부해야 한다 — 기존 임무는 그대로 유지된다(스펙 ③ §5 이월 1건)."""
+    m, ctx = mk_mission()
+    m.on_command(P.CMD_MISSION_START, {"alleys": [0, 1], "cmd_id": "m1"})
+    first = m.mission
+    assert first is not None
+
+    m.on_command(P.CMD_MISSION_START, {"alleys": [3, 4], "cmd_id": "m2"})
+
+    assert m.mission is first                          # 교체되지 않았다
+    last = ctx.results[-1]
+    assert last["cmd_id"] == "m2"
+    assert last["status"] == "rejected" and last["code"] == "BUSY"
+    assert last["data"]["reason"] == "임무 진행 중"

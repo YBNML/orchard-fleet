@@ -31,6 +31,11 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     Base.metadata.create_all(engine)
     session_factory = make_session_factory(engine)
 
+    from .traffic import AlleyLocks
+    with session_factory() as db:               # 재기동 시 RUNNING 임무 잠금 정합 확인
+        AlleyLocks.restore(db)
+        db.commit()
+
     use_legacy = fleet is None                  # 운영: lifespan 에서 레거시 기동
 
     @contextlib.asynccontextmanager

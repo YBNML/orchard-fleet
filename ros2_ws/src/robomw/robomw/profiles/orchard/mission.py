@@ -109,6 +109,13 @@ class DriveMission(Feature):
     def on_command(self, cmd, payload):
         s = self.ctx.safety
         if cmd == P.CMD_MISSION_START:
+            if self.mission is not None:
+                # 이중시작 가드(스펙 ③ §5) — 예전에는 여기서 조용히 새 임무로
+                # 교체했다. 관제(또는 BT)가 첫 요청의 accepted 만 보고 로봇이
+                # 도는 줄 알았는데 실제로는 알려지지 않은 통로를 돌고 있는
+                # 사고가 났다. 지금은 거부하고 기존 임무를 그대로 둔다 —
+                # 교체하려면 cancel 후 다시 start 해야 한다.
+                return self._reject(payload, "임무 진행 중", "BUSY", "임무 진행 중")
             # work(작업기) 는 선택 필드다. 있으면 먼저 계약이 형식을 검사하고
             # (스키마), 이어서 이 기체가 실제로 갖춘 작업기인지 본다(능력
             # 게이트) — 순서가 중요하다. 형식부터 틀린 값은 "이 기체가 못

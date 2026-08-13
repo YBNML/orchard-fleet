@@ -74,6 +74,22 @@ class Mission(Base):
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
+class AlleyLock(Base):
+    """AlleyLock — 임무 단위 통로 점유(스펙 ③ §2). 임무 하나당 행 하나.
+
+    pads_json 은 alleys_json 에서 파생되는 값이지만(traffic.pads) 조회·복원
+    시 재계산을 피하려고 함께 저장한다 — JSON 은 튜플을 못 담으므로 [a,b]
+    리스트로 직렬화한다.
+    """
+    __tablename__ = "alley_locks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    mission_id: Mapped[int] = mapped_column(ForeignKey("missions.id"), unique=True)
+    robot_id: Mapped[str] = mapped_column(ForeignKey("robots.id"))
+    alleys_json: Mapped[list] = mapped_column(JSON, default=list)
+    pads_json: Mapped[list] = mapped_column(JSON, default=list)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class MissionEvent(Base):
     __tablename__ = "mission_events"
     id: Mapped[int] = mapped_column(primary_key=True)

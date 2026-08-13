@@ -133,6 +133,54 @@ def test_alleys_omitted_key_absent_when_both_given_absent(client, app):
     assert sent_payload["mission_id"] == r.json()["id"]
 
 
+def test_overlapping_mission_becomes_queued_lock_and_not_dispatched(client, app):
+    """AlleyLock 교통관리 — 통로가 겹치는 임무는 로봇에 나가지 않고 QUEUED_LOCK
+    으로 남는다. cancel 로 정리할 수 있다(스펙 ③ §2)."""
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    app.state.fleet.feed("scout02", "tel/state", {})
+    csrf = do_login(client)                      # admin — 두 농장 다 본다
+    h = {"X-CSRF": csrf}
+    r1 = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout01", "alleys": [0, 1]})
+    assert r1.status_code == 200, r1.text
+    sent_before = len(app.state.fleet.sent)
+
+    r2 = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout02", "alleys": [1, 2]})   # 통로 1 공유
+    assert r2.status_code == 200, r2.text
+    ms2 = r2.json()
+    assert ms2["state"] == "QUEUED_LOCK"
+    assert len(app.state.fleet.sent) == sent_before   # mission_start 가 로봇으로 나가지 않았다
+
+    locks = client.get("/api/v1/alley-locks", headers=h).json()
+    assert len(locks) == 1
+    assert locks[0] == {"mission_id": r1.json()["id"], "robot_id": "scout01",
+                        "alleys": [0, 1]}
+
+    cr = client.post(f"/api/v1/missions/{ms2['id']}/cancel", headers=h)
+    assert cr.status_code == 200, cr.text
+    assert cr.json()["state"] == "CANCELED"
+
+
+def test_lock_released_on_cancel_allows_next_overlapping_mission(client, app):
+    _seed_operator(client)
+    app.state.fleet.feed("scout01", "tel/state", {})
+    app.state.fleet.feed("scout02", "tel/state", {})
+    csrf = do_login(client)
+    h = {"X-CSRF": csrf}
+    ms1 = client.post("/api/v1/missions", headers=h,
+                      json={"robot_id": "scout01", "alleys": [0, 1]}).json()
+    assert client.post(f"/api/v1/missions/{ms1['id']}/cancel",
+                       headers=h).status_code == 200
+    assert client.get("/api/v1/alley-locks", headers=h).json() == []
+
+    r2 = client.post("/api/v1/missions", headers=h,
+                     json={"robot_id": "scout02", "alleys": [0, 1]})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["state"] == "QUEUED"          # 잠금이 풀려 정상 발진된다
+
+
 def test_verb_offline_409_state_unchanged(client, app):
     _seed_operator(client)
     app.state.fleet.feed("scout01", "tel/state", {})

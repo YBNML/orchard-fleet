@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import audit, missions
+from .. import audit, missions, traffic
 from ..deps import csrf_protect, current_user, farm_scope, get_db, require_min_role
 from ..models import Mission, Robot, User
 from ..timeutil import iso_utc
@@ -62,6 +62,13 @@ async def create_mission(body: MissionBody, request: Request, db=Depends(get_db)
         spec["work"] = body.work
     ms = missions.create(db, robot_id=robot.id, farm_id=robot.farm_id,
                          spec=spec, created_by=user.id)
+    if body.alleys is not None:                 # 통로 없는(work 전 통로 자동) 임무는 잠금 대상 아님
+        ok, reason = traffic.AlleyLocks.acquire(db, robot.id, ms.id, body.alleys)
+        if not ok:                              # 잠금 없이 나가는 임무는 없다 — 발진 대신 QUEUED_LOCK
+            ms = missions.apply(db, ms, "lock_conflict", payload={"reason": reason})
+            audit.record(db, action="mission_start", result="rejected", user_id=user.id,
+                         role=user.role, target=robot.id, detail=reason)
+            return _mission_out(ms)
     payload: dict = {"mission_id": ms.id}
     if body.alleys is not None:                # 생략 시 키 자체를 넣지 않음 — 로봇이 전 통로 자동
         payload["alleys"] = body.alleys
@@ -128,3 +135,8 @@ def list_missions(farm_id: int | None = None, robot_id: str | None = None,
     if robot_id is not None:
         q = q.filter(Mission.robot_id == robot_id)
     return [_mission_out(ms) for ms in q.order_by(Mission.id.desc()).limit(200)]
+
+
+@router.get("/alley-locks")
+def list_alley_locks(db=Depends(get_db), user: User = Depends(current_user)):
+    return traffic.AlleyLocks.list_active(db)
