@@ -66,10 +66,10 @@ Registry·CommandRouter)을 조립하고, ROS 콜백에서 그 부품들을 호�
 | `mission_pause`/`resume`/`cancel` | operator | `{mission_id?, cmd_id?}` | cancel은 완료 보고 없음(중간 실적 ≠ 마감) |
 | `teleop`(별도 topic) | operator | `{v,w}` | 데드맨 400ms, 큐 우회, priority 10 |
 | `ping` | observer | `{}` | 관측자도 링크 확인은 해야 한다 |
-| `self_test` | operator | `{items?:[...]}` | v0.1: 라우팅+UNSUPPORTED만 (동작은 스펙 ②) |
-| `relocalize` | admin | `{x,y,yaw}` 또는 `{alley:k, end:...}` | 동일 — admin 인 이유: 위치 리셋 오적용은 임무 궤적을 깬다 |
-| `blackbox_dump` | operator | `{window_s?:600}` | 동일 |
-| `work_stop` | operator | `{}` | 동일 |
+| `self_test` | operator | `{items?:[...]}` | 구현됨(스펙 ②) — lidar·imu·localizer·link·drive 5항목, 움직임 없음 |
+| `relocalize` | admin | `{x,y,yaw}` 또는 `{alley:k, end:...}` | 구현됨(스펙 ②) — admin 인 이유: 위치 리셋 오적용은 임무 궤적을 깬다 |
+| `blackbox_dump` | operator | `{window_s?:600}` | 구현됨(스펙 ②) — 궤적·이벤트 npz 덤프(900초 상한) |
+| `work_stop` | operator | `{}` | 구현됨(스펙 ②) — 작업만 중단, 주행(임무)은 계속 |
 
 안전 상수(불변): `HEARTBEAT_MS=1000` · `TELEOP_DEADMAN_MS=400` ·
 `LINK_LOSS_STOP_MS=1500`. estop 해제 후 자동 재개 없음 — 해제와 재개는
@@ -104,10 +104,10 @@ Registry·CommandRouter)을 조립하고, ROS 콜백에서 그 부품들을 호�
  "middleware":{"name":"robomw","version":"0.1"}}
 ```
 
-`capabilities` 는 로봇이 실제로 구현한 SDK만 싣는다 — v0.1 scout 프로파일은
-`drive` 만 싣는다(Work/Diag 미구현, 아래 §4). 능력군 이름공간
-(`CAPABILITY_FAMILIES`)에는 `legged`·`manipulation` 도 예약돼 있다(정의만,
-구현 없음).
+`capabilities` 는 로봇이 실제로 구현한 SDK만 싣는다 — scout 프로파일은
+스펙 ② 부터 `drive`·`work`(`{"types":["scout"]}`)·`diag`(`{"items":[...]}`)
+셋을 싣는다(아래 §4). 능력군 이름공간(`CAPABILITY_FAMILIES`)에는
+`legged`·`manipulation` 도 예약돼 있다(정의만, 구현 없음).
 
 ## 3. SDK 5종 (`robomw.sdk.interfaces`)
 
@@ -131,14 +131,14 @@ class Perception(ABC):
     def clearance(self) -> float: ...                          # 전방 개활거리 m (inf 가능)
     def near_frac(self) -> float: ...                          # 0~1, 근처 점 비율
 
-class Work(ABC):                                               # v0.1: 인터페이스만, 미구현
+class Work(ABC):                                               # 구현됨(스펙 ②) — scout: SimWork
     def start(self, type_: str, params: dict) -> None: ...
     def stop(self) -> None: ...
     def status(self) -> WorkStatus: ...
 
 class Diag(ABC):
     def self_test(self, items: list[str] | None = None) -> list[SelfTestItem]: ...  # None=전체 항목
-    def blackbox_dump(self, window_s: float) -> dict: ...        # v0.1: 인터페이스만, 미구현
+    def blackbox_dump(self, window_s: float) -> dict: ...        # 구현됨(스펙 ②) — scout: ScoutDiag
 ```
 
 자료형(`robomw.sdk.types`): `Pose(x, y, yaw, quality=1.0)` ·
@@ -153,11 +153,12 @@ class Diag(ABC):
 | `Drive` | 구현됨 | `orchard_sim/adapters/ros_drive.py::RosDrive` |
 | `Localizer` | 구현됨 | `orchard_sim/adapters/ros_sensors.py::RosSensors` (Localizer+Perception 겸함) |
 | `Perception` | 구현됨 | 위와 동일 클래스 |
-| `Work` | **미구현** | hello.capabilities 에서 빠짐, `mission_start.work` 는 검증 후 저장만(실행은 스펙 ②) |
-| `Diag` | **부분 구현** | `orchard_sim/adapters/scout_diag.py::ScoutDiag` — `self_test`(lidar·imu·localizer·link·drive 5항목) 구현됨. `relocalize`/`blackbox_dump` 는 여전히 라우팅만 되고 UNSUPPORTED 로 거부됨(스펙 ② T3·T4) |
+| `Work` | **구현됨** | `orchard_sim/adapters/sim_work.py::SimWork` — `mission_start.work:{type:"scout"}` 로 부스트로피돈 정찰(전 통로 자동·부분 정찰·speed_scale), hello.capabilities.work.types=["scout"] |
+| `Diag` | **구현됨** | `orchard_sim/adapters/scout_diag.py::ScoutDiag` — `self_test`(lidar·imu·localizer·link·drive 5항목) · `relocalize`(격자/좌표 재정위, admin) · `blackbox_dump`(궤적·이벤트 npz) 전부 스펙 ② 에서 채워짐 |
 
-즉 v0.1은 "SDK 5종 인터페이스는 계약으로 확정, scout는 그중 3종을 실제
-로봇으로 구현" 상태다. Work/Diag 구현은 스펙 ②의 범위다.
+즉 SDK 5종 인터페이스는 계약으로 확정돼 있고, scout 프로파일은 **5종
+전부를 실제 로봇으로 구현**한 상태다(스펙 ①로 Drive/Localizer/Perception,
+스펙 ②로 Work/Diag).
 
 ## 4. 새 로봇 온보딩 = SDK 5종 구현 + hello 선언
 
