@@ -391,23 +391,113 @@ async def test_watchdog_counter_resets_on_recovery(app):
     assert _mission(app, "scout01").state == "RUNNING"   # 연속 3틱을 못 채웠다
 
 
-async def test_watchdog_fails_mission_when_robot_stays_offline(app):
-    _seed(app, "scout01")
-    eng = BTEngine(app.state.session_factory, app.state.fleet, stall_ticks=2)
+async def _running_mission_then_offline(app, eng):
     eng.create("single_alley_loop", {"robot": "scout01", "alley": 0, "n": 1},
                created_by=_uid(app))
     await eng.tick_once()
     ms_id = _mission(app, "scout01").id
     _robot_accepts(app, "scout01", ms_id)
     app.state.fleet.presence.touch("scout01", t=0.0)     # 링크 단절(강제 오프라인)
-    await eng.tick_once()
-    await eng.tick_once()
-    ms = _mission(app, "scout01")
-    assert ms.state == "FAILED"
+    return ms_id
+
+
+def _interventions(app, code=None):
+    from fleet_server.models import Intervention
     with app.state.session_factory() as db:
-        from fleet_server.models import MissionEvent
-        kinds = [e.kind for e in db.query(MissionEvent).filter_by(mission_id=ms_id)]
-    assert "fail" in kinds                              # 사유가 이력에 남는다
+        q = db.query(Intervention)
+        if code:
+            q = q.filter(Intervention.code == code)
+        return q.all()
+
+
+async def test_watchdog_offline_does_not_fail_mission_and_notifies_once(app):
+    """라운드 2 — **오프라인은 증거의 부재지 임무 포기의 증거가 아니다.**
+
+    로봇의 링크 단절 정책은 임무를 버리지 않는다(robomw safety.py:240-243 —
+    paused 만 세우고, 해제는 명시적 resume 뿐). 그런데 서버가 45초쯤 뒤 임무를
+    실패시켜 AlleyLock 을 풀면, 로봇은 통로 안에 임무를 쥔 채 서 있는데 서버는
+    그 통로를 다른 로봇에게 내준다 — 링크 복구 후 사람이 resume 하면 서버가
+    비었다고 믿는 통로를 달린다. T4 C3 가 일부러 사람에게 맡긴 판단이다.
+    그래서 자동 종착 대신 개입 알림 1회를 남기고 계속 기다린다."""
+    from fleet_server.traffic import AlleyLocks
+    _seed(app, "scout01")
+    eng = BTEngine(app.state.session_factory, app.state.fleet, stall_ticks=2)
+    ms_id = await _running_mission_then_offline(app, eng)
+
+    for _ in range(8):
+        await eng.tick_once()
+
+    assert _mission(app, "scout01").state == "RUNNING"    # 종착시키지 않는다
+    with app.state.session_factory() as db:
+        assert [r["mission_id"] for r in AlleyLocks.list_active(db)] == [ms_id]
+    rows = _interventions(app, "LINK_LOST_POLICY")
+    assert len(rows) == 1                                # 에피소드당 1회
+    assert rows[0].context_json.get("mission_id") == ms_id
+    assert (rows[0].context_json or {}).get("repeat", 0) == 0   # 틱마다 재발행 없음
+
+
+async def test_operator_cancel_recovers_offline_stalled_mission(app):
+    """회수는 사람의 몫 — C3 오프라인 cancel 이 로컬 전이로 임무를 끝내고 잠금을 푼다."""
+    from fleet_server import mission_ops
+    from fleet_server.traffic import AlleyLocks
+    _seed(app, "scout01")
+    eng = BTEngine(app.state.session_factory, app.state.fleet, stall_ticks=2)
+    ms_id = await _running_mission_then_offline(app, eng)
+    for _ in range(4):
+        await eng.tick_once()
+
+    with app.state.session_factory() as db:
+        ms = db.get(m.Mission, ms_id)
+        delivery = await mission_ops.apply_verb(db, app.state.fleet, ms, "cancel")
+        assert delivery == "not_sent"
+        assert ms.state == "CANCELED"
+        assert AlleyLocks.list_active(db) == []
+
+
+async def test_watchdog_fails_queued_mission_when_robot_is_idle(app):
+    """(a) 수락 직후 로봇 재기동·수락 신호 유실이면 QUEUED 로 굳어 어떤 경로도
+    풀지 못한다. QUEUED 는 정의상 이미 발진된 상태이므로, 같은 적극적 증거
+    (온라인 ∧ mode=idle)를 더 긴 임계로 적용해 종착시킨다."""
+    from fleet_server.traffic import AlleyLocks
+    _seed(app, "scout01")
+    eng = BTEngine(app.state.session_factory, app.state.fleet,
+                   stall_ticks=2, queued_stall_ticks=4)
+    eng.create("single_alley_loop", {"robot": "scout01", "alley": 0, "n": 1},
+               created_by=_uid(app))
+    await eng.tick_once()
+    ms_id = _mission(app, "scout01").id
+    assert _mission(app, "scout01").state == "QUEUED"     # 수락 신호가 오지 않았다
+
+    for _ in range(3):
+        _tel(app, "scout01", "idle")
+        await eng.tick_once()
+    assert _mission(app, "scout01").state == "QUEUED"     # 아직 임계 미달
+    _tel(app, "scout01", "idle")
+    await eng.tick_once()
+    assert _mission(app, "scout01").state == "FAILED"
+    with app.state.session_factory() as db:
+        assert AlleyLocks.list_active(db) == []
+    assert _mission(app, "scout01").id == ms_id
+
+
+async def test_watchdog_holds_judgement_when_track_is_stale(app):
+    """(b) tel/state 만 멈추고 링크가 살아 있으면, 임무 이전의 idle 행이 계속
+    '최신'으로 읽혀 주행 중인 임무를 죽인다. 낡은 증거는 증거가 아니다."""
+    _seed(app, "scout01")
+    eng = BTEngine(app.state.session_factory, app.state.fleet,
+                   stall_ticks=2, track_fresh_s=20.0)
+    eng.create("single_alley_loop", {"robot": "scout01", "alley": 0, "n": 1},
+               created_by=_uid(app))
+    await eng.tick_once()
+    ms_id = _mission(app, "scout01").id
+    app.state.fleet.feed("scout01", "tel/state",         # 10분 묵은 idle 보고
+                         {"x": 0.0, "y": 0.0, "yaw": 0.0, "mode": "idle",
+                          "ts": time.time() - 600})
+    _robot_accepts(app, "scout01", ms_id)
+    for _ in range(6):
+        app.state.fleet.presence.touch("scout01")        # 링크는 살아 있다
+        await eng.tick_once()
+    assert _mission(app, "scout01").state == "RUNNING"    # 판단 보류
 
 
 async def test_watchdog_ignores_queued_mission_not_yet_accepted(app):

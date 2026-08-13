@@ -17,7 +17,7 @@ import contextlib
 import datetime as dt
 import logging
 
-from .. import audit, mission_ops, missions
+from .. import audit, interventions, mission_ops, missions
 from ..missions import InvalidTransition
 from ..mission_ops import MissionOpError
 from ..models import BTInstance, Mission, Robot, Track
@@ -28,6 +28,12 @@ log = logging.getLogger("fleet_server.bt")
 
 _ACTIVE = "RUNNING"
 _RESULT_STATE = {"success": "SUCCESS", "failure": "FAILED"}
+
+# 좀비 감시 대상 — 둘 다 "이미 로봇에 나간" 임무다. QUEUED_LOCK 은 나간 적이
+# 없고(잠금 대기), PAUSED 는 사람이 세운 것이라 대상이 아니다.
+_STALL_WATCHED = ("QUEUED", "RUNNING")
+_WHY_OFFLINE = "링크 단절"
+_WHY_IDLE = "로봇 mode=idle"
 
 
 def mission_ids(state: dict | None) -> list[int]:
@@ -115,12 +121,15 @@ class BTEngine:
     """`BTEngine(session_factory, fleet)` — create/cancel + 1 Hz 틱 태스크."""
 
     def __init__(self, session_factory, fleet, *, period_s: float = 1.0,
-                 max_tick_errors: int = 5, stall_ticks: int = 30):
+                 max_tick_errors: int = 5, stall_ticks: int = 30,
+                 queued_stall_ticks: int = 60, track_fresh_s: float = 20.0):
         self._factory = session_factory
         self.fleet = fleet                      # lifespan 이 레거시 포트로 교체할 수 있다
         self.period_s = period_s
         self.max_tick_errors = max_tick_errors  # 연속 틱 예외 한계(넘으면 종착)
-        self.stall_ticks = stall_ticks          # 좀비 임무 판정 연속 틱 수
+        self.stall_ticks = stall_ticks          # RUNNING 임무 정체 판정 틱 수
+        self.queued_stall_ticks = queued_stall_ticks   # QUEUED 는 더 길게 본다
+        self.track_fresh_s = track_fresh_s      # 이보다 낡은 텔레메트리는 증거로 안 친다
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()             # 틱과 취소를 직렬화
         # 연속 실패/정체 누적기는 메모리에만 둔다. 목적이 "폭주 차단"이라 재기동에
@@ -128,6 +137,7 @@ class BTEngine:
         # 마이그레이션 기구가 없어 기존 배포본 DB 를 깨뜨린다(T4 이연 항목).
         self._tick_errors: dict[int, int] = {}
         self._stalled: dict[int, int] = {}
+        self._notified: set[int] = set()         # 정체 알림을 이미 낸 임무(에피소드당 1회)
 
     # ── 생성·취소 ───────────────────────────────────────────────────────────
     def create(self, preset: str, params: dict, *, created_by: int) -> list[int]:
@@ -239,35 +249,47 @@ class BTEngine:
 
     # ── 좀비 임무 감시 ──────────────────────────────────────────────────────
     def _sweep_stalled_missions(self) -> None:
-        """RUNNING 인데 로봇이 들고 있지 않은 임무를 종착시킨다.
+        """로봇이 들고 있지 않은 임무를 정리한다 — 증거의 종류에 따라 다르게.
 
-        로봇이 임무 도중 재기동하면 완료/취소 보고가 영영 오지 않는다 — 서버
-        임무는 RUNNING 으로 굳고, 통로 잠금은 잡힌 채, BT Action 은 영원히
-        running 이다(출구는 사람의 REST cancel 뿐이었다). 서버가 이미 받고 있는
-        텔레메트리로 그 괴리를 보고 정리한다:
+        로봇이 임무 도중 재기동하면 완료/취소 보고가 영영 오지 않는다. 서버
+        임무는 RUNNING(또는 수락 신호까지 잃었으면 QUEUED)으로 굳고, 통로 잠금은
+        잡힌 채, BT Action 은 영원히 running 이다. 서버가 이미 받고 있는 것만으로
+        그 괴리를 본다 — 로봇 계약은 건드리지 않는다.
 
-          로봇이 오프라인 **또는** 최신 텔레메트리 mode 가 idle → 정체 1틱.
-          연속 stall_ticks 틱이면 관문 경유 fail(잠금 해제 훅이 그 안에 있다).
+        **적극적 증거(온라인 ∧ 최신 mode=idle) → 종착.** 로봇이 살아서 "나는
+        임무 중이 아니다"라고 말하고 있다. 관문 경유 fail 이므로 잠금이 풀린다.
+        RUNNING 은 stall_ticks, QUEUED 는 queued_stall_ticks(더 길게 — 수락 직후
+        구간의 idle 을 오귀속하지 않기 위해).
 
-        보수적으로 잡은 이유: 완료 보고가 조금 늦거나(수집 유실 포함) 링크가
-        잠깐 끊긴 것을 임무 실패로 오귀속하면 안 된다. 기본 30틱 = 30초다.
-        QUEUED(아직 로봇이 수락하지 않음)는 대상이 아니다 — 그 구간의 idle 은
-        정상이다.
+        **증거의 부재(오프라인) → 알림만, 자동 종착 없음(라운드 2).** 로봇의 링크
+        단절 정책은 임무를 버리지 않는다(robomw safety.py — paused 만 세우고 해제는
+        명시적 resume 뿐). 여기서 임무를 실패시켜 잠금을 풀면, 로봇이 통로 안에
+        임무를 쥐고 서 있는데 서버는 그 통로를 다른 로봇에게 내준다 — 링크 복구
+        후 사람이 resume 하면 서버가 비었다고 믿는 통로를 달린다. T4 C3 가 일부러
+        사람에게 맡긴 판단이라, 개입 큐로 부르고 기다린다(회수는 사람의 오프라인
+        cancel — 그 경로가 잠금까지 푼다).
         """
         with self._factory() as db:
-            rows = db.query(Mission).filter(Mission.state == "RUNNING").all()
+            rows = db.query(Mission).filter(Mission.state.in_(_STALL_WATCHED)).all()
             live_ids = {ms.id for ms in rows}
             for mid in list(self._stalled):
                 if mid not in live_ids:
                     del self._stalled[mid]      # 종착한 임무의 누적은 버린다
+                    self._notified.discard(mid)
             for ms in rows:
                 why = self._robot_lost_mission(db, ms)
-                if why is None:
+                if why is None:                 # 정상 — 에피소드 종료
                     self._stalled.pop(ms.id, None)
+                    self._notified.discard(ms.id)
                     continue
                 n = self._stalled.get(ms.id, 0) + 1
                 self._stalled[ms.id] = n
-                if n < self.stall_ticks:
+                limit = (self.stall_ticks if ms.state == "RUNNING"
+                         else self.queued_stall_ticks)
+                if n < limit:
+                    continue
+                if why == _WHY_OFFLINE:         # 증거의 부재 — 사람에게 넘긴다
+                    self._notify_link_stall(db, ms, n)
                     continue
                 reason = f"로봇이 임무를 들고 있지 않음 — {why} {n}틱 연속"
                 try:
@@ -278,15 +300,40 @@ class BTEngine:
                     pass                        # 그 사이 정상 종착 — 무시
                 self._stalled.pop(ms.id, None)
 
+    def _notify_link_stall(self, db, ms: Mission, ticks: int) -> None:
+        """정체 에피소드당 개입 알림 1회 — 틱마다 큐를 두드리지 않는다.
+
+        코드는 기존 LINK_LOST_POLICY 를 쓴다(코드표 확장 없이). 로봇이 스스로
+        내는 같은 사유의 호출은 링크가 끊긴 동안 서버에 닿을 수 없으므로, 이
+        서버측 관측이 그 티켓을 대신 연다 — 링크가 돌아와 로봇 호출이 도착하면
+        open_or_bump 가 같은 건을 잇는다."""
+        if ms.id in self._notified:
+            return
+        self._notified.add(ms.id)
+        interventions.open_or_bump(
+            db, robot_id=ms.robot_id, farm_id=ms.farm_id, code="LINK_LOST_POLICY",
+            msg=f"임무#{ms.id} 진행 중 링크 단절 — 서버가 종착 신호를 받지 못한다",
+            severity="warn",
+            context={"mission_id": ms.id, "state": ms.state, "ticks": ticks,
+                     "source": "bt_watchdog"})
+        log.warning("임무 %s 링크 단절 정체 %d틱 — 개입 알림(자동 종착 안 함)",
+                    ms.id, ticks)
+
     def _robot_lost_mission(self, db, ms: Mission) -> str | None:
-        """이 임무를 로봇이 더는 들고 있지 않다고 볼 근거(사유 문자열) 또는 None."""
+        """이 임무를 로봇이 더는 들고 있지 않다고 볼 근거(사유) 또는 None(보류)."""
         if not self.fleet.robot_status(ms.robot_id).online:
-            return "링크 단절"                   # 종착 신호가 올 길이 없다
+            return _WHY_OFFLINE                 # 종착 신호가 올 길이 없다
         row = (db.query(Track).filter(Track.robot_id == ms.robot_id)
                .order_by(Track.ts.desc()).first())
         if row is None:
             return None                         # 아직 아무 보고도 없다 — 판단 보류
-        return "로봇 mode=idle" if str(row.mode or "") == "idle" else None
+        # 낡은 증거는 증거가 아니다: tel/state 만 멈추고 링크(ping)는 살아 있는
+        # 경우, 임무 이전의 idle 행이 계속 "최신"으로 읽혀 주행 중인 임무를
+        # 죽인다. 신선도 하한을 못 넘으면 판단을 보류한다.
+        ts = row.ts if row.ts.tzinfo else row.ts.replace(tzinfo=dt.UTC)
+        if (dt.datetime.now(dt.UTC) - ts).total_seconds() > self.track_fresh_s:
+            return None
+        return _WHY_IDLE if str(row.mode or "") == "idle" else None
 
     # ── 수명주기(서버 lifespan) ─────────────────────────────────────────────
     def restore(self) -> int:
