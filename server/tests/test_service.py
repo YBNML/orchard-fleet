@@ -91,6 +91,177 @@ def test_mission_sync_no_active_mission_ignored(factory):
     assert svc.latest["ghost"]["mission"] == {"state": "done"}    # 캐시는 갱신됨
 
 
+# ── 로봇 evt → 임무 상태기계 (실기 수명주기) ────────────────────────────────
+#
+# 아래 payload 는 전부 실기에서 실제로 받은 것을 그대로 옮긴 것이다
+# (server/fleet.db events 테이블, 2026-08-13 scout01/scout02):
+#   {"kind":"mission_started","msg":"임무 시작 — 통로 [0] · 웨이포인트 1개",...}
+#   {"kind":"cmd_result","cmd_id":"m21","cmd":"mission_start","status":"accepted",
+#    "code":"OK","data":{}}
+#   {"kind":"cmd_result","cmd_id":"m9","cmd":"mission_start","status":"completed",
+#    "code":"OK","data":{"alleys_done":[7,6,5],"distance_m":244.7,
+#                        "duration_s":3963.8,"interventions":0,"coverage":1.0}}
+#   {"kind":"mission_done","msg":"임무 완료",...} / {"kind":"mission_cancelled",...}
+
+def _svc(factory):
+    fp = InMemoryFleetPort()
+    svc = FleetService(factory)
+    svc.attach(fp)
+    return fp, svc
+
+
+def _accepted(mission_id: int) -> dict:
+    return {"kind": "cmd_result", "cmd_id": f"m{mission_id}", "cmd": "mission_start",
+            "status": "accepted", "code": "OK", "data": {},
+            "msg": "mission_start → accepted", "level": "info"}
+
+
+_REPORT = {"alleys_done": [0], "distance_m": 60.2, "duration_s": 700.5,
+           "interventions": 0, "coverage": 1.0}
+
+
+def _completed(mission_id: int, data=None) -> dict:
+    return {"kind": "cmd_result", "cmd_id": f"m{mission_id}", "cmd": "mission_start",
+            "status": "completed", "code": "OK", "data": data if data is not None else _REPORT,
+            "msg": "mission_start → completed", "level": "info"}
+
+
+def _state(factory, ms_id):
+    with factory() as db:
+        return db.get(m.Mission, ms_id).state
+
+
+def test_evt_cmd_result_accepted_starts_mission(factory):
+    """로봇이 mission_start 를 수락하면 서버 임무도 RUNNING 이어야 한다 —
+    cmd_id("m{id}")로 정확히 상관된다. started_at 도 이때 찍힌다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
+    with factory() as db:
+        ms = db.get(m.Mission, ms_id)
+        assert ms.state == "RUNNING"
+        assert ms.started_at is not None
+
+
+def test_evt_mission_started_kind_starts_mission(factory):
+    """cmd_result 를 못 받는 경우(상관 키 없는 옛 경로)에도 evt kind 로 이어진다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "mission_started", "msg": "임무 시작 — 통로 [0]"}, seq=1)
+    assert _state(factory, ms_id) == "RUNNING"
+
+
+def test_evt_completed_finishes_mission_and_records_report(factory):
+    """완료 보고(cmd_result completed)의 data 는 임무 이벤트로 남겨야 한다 —
+    주행거리·소요·개입수·커버리지가 운행 기록의 알맹이다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
+    fp.feed("scout01", "evt", _completed(ms_id), seq=2)
+    assert _state(factory, ms_id) == "DONE"
+    with factory() as db:
+        payloads = [e.payload_json for e in db.query(m.MissionEvent)
+                    .filter_by(mission_id=ms_id).all()]
+    assert any(p.get("distance_m") == 60.2 and p.get("coverage") == 1.0
+               for p in payloads)
+
+
+def test_evt_mission_done_kind_finishes_mission(factory):
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "mission_started"}, seq=1)
+    fp.feed("scout01", "evt", {"kind": "mission_done", "msg": "임무 완료"}, seq=2)
+    assert _state(factory, ms_id) == "DONE"
+
+
+def test_evt_done_then_completed_still_records_report(factory):
+    """실기 순서는 evt(mission_done) → cmd_result(completed) 다(1 ms 차). 먼저 온
+    evt 가 임무를 종착시켜도 뒤따르는 보고를 버리면 안 된다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
+    fp.feed("scout01", "evt", {"kind": "mission_done", "msg": "임무 완료"}, seq=2)
+    fp.feed("scout01", "evt", _completed(ms_id), seq=3)
+    assert _state(factory, ms_id) == "DONE"
+    with factory() as db:
+        assert any(e.payload_json.get("distance_m") == 60.2
+                   for e in db.query(m.MissionEvent).filter_by(mission_id=ms_id))
+
+
+def test_evt_mission_cancelled_kind_cancels_mission(factory):
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
+    fp.feed("scout01", "evt", {"kind": "mission_cancelled", "msg": "임무 취소"}, seq=2)
+    assert _state(factory, ms_id) == "CANCELED"
+
+
+def test_evt_lifecycle_releases_alley_lock(factory):
+    """완료가 서버 상태기계를 통과해야 통로 잠금이 풀린다 — BT 의 '선행 종료 시
+    자동 발진'이 이 해제에 걸려 있다."""
+    from fleet_server.traffic import AlleyLocks
+    ms_id = _seed_mission(factory)
+    with factory() as db:
+        ms = db.get(m.Mission, ms_id)
+        AlleyLocks.acquire(db, ms.robot_id, ms.id, [0], ms.farm_id)
+        db.commit()
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
+    fp.feed("scout01", "evt", _completed(ms_id), seq=2)
+    with factory() as db:
+        assert AlleyLocks.list_active(db) == []
+
+
+def test_evt_duplicate_signals_are_idempotent(factory):
+    """중복 evt(재전송·evt+cmd_result 이중 신호)로 상태가 흔들리면 안 된다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "mission_started"}, seq=1)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=2)          # 같은 뜻 — 이미 RUNNING
+    assert _state(factory, ms_id) == "RUNNING"
+    fp.feed("scout01", "evt", _completed(ms_id), seq=3)
+    fp.feed("scout01", "evt", _completed(ms_id), seq=4)         # 완료 재전송
+    fp.feed("scout01", "evt", {"kind": "mission_done"}, seq=5)
+    assert _state(factory, ms_id) == "DONE"
+    with factory() as db:
+        reports = [e for e in db.query(m.MissionEvent).filter_by(mission_id=ms_id)
+                   if e.payload_json.get("distance_m") is not None]
+    assert len(reports) == 1                       # 보고는 한 번만 적힌다
+
+
+def test_evt_from_other_robot_does_not_touch_mission(factory):
+    """다른 로봇의 evt 는 이 임무를 건드리지 않는다(휴리스틱 오귀속 방지)."""
+    ms_id = _seed_mission(factory, "scout01")
+    with factory() as db:
+        db.add(m.Robot(id="scout99", farm_id=1, name="r2"))
+        db.commit()
+    fp, _ = _svc(factory)
+    fp.feed("scout99", "evt", {"kind": "mission_started"}, seq=1)
+    fp.feed("scout99", "evt", _accepted(ms_id), seq=2)     # cmd_id 는 scout01 의 임무
+    assert _state(factory, ms_id) == "QUEUED"             # 남의 로봇 보고 — 무시
+
+
+def test_evt_rejected_still_fails_mission(factory):
+    """T4 I4 와의 공존 — 거부는 여전히 FAILED 로 종착시킨다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "cmd_result", "cmd_id": f"m{ms_id}",
+                               "cmd": "mission_start", "status": "rejected",
+                               "code": "BUSY", "data": {"reason": "임무 진행 중"}}, seq=1)
+    assert _state(factory, ms_id) == "FAILED"
+
+
+def test_evt_unknown_kinds_and_other_commands_ignored(factory):
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "pong", "msg": "pong"}, seq=1)
+    fp.feed("scout01", "evt", {"kind": "cmd_result", "cmd_id": "x1",
+                               "cmd": "self_test", "status": "completed",
+                               "data": {"items": []}}, seq=2)
+    fp.feed("scout01", "evt", {"kind": "work_stopped", "msg": "작업 중단"}, seq=3)
+    assert _state(factory, ms_id) == "QUEUED"
+
+
 def test_subscribe_receives_and_unsub_stops(factory):
     fp = InMemoryFleetPort()
     svc = FleetService(factory)
