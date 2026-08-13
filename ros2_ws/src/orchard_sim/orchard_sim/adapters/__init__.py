@@ -6,7 +6,7 @@ robomw/tests/test_no_ros_imports.py). 그래서 rclpy·메시지 타입·tf2 에
 하나가 되게 하려는 것이다: 코어(안전·라우팅·계약)는 그대로 두고 어댑터만
 새로 쓴다.
 
-    Drive      → ros_drive.RosDrive       (/cmd_vel 발행)
+    Drive      → ros_drive.RosDrive       (/<robot_id>/cmd_vel 발행)
     Localizer  → ros_sensors.RosSensors   (TF 포즈·로컬라이저 진단)
     Perception → ros_sensors.RosSensors   (점군 여유거리·밀착률)
     (점군 공급) → ros_cloud.RosCloudWorld  (PointCloud2 → map 프레임 점 배열)

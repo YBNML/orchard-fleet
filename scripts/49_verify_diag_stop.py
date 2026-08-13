@@ -53,8 +53,12 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--host", default="127.0.0.1")
 ap.add_argument("--port", type=int, default=8080)
 ap.add_argument("--robot", default="scout01")
-ap.add_argument("--topic", default="/map_localizer/diagnostics")
+# 로컬라이저 진단은 로봇 네임스페이스에 딸린다 (다중 로봇, 2026-08-14).
+ap.add_argument("--topic", default=None,
+                help="기본값: /<robot>/map_localizer/diagnostics")
 a = ap.parse_args()
+if not a.topic:
+    a.topic = f"/{a.robot}/map_localizer/diagnostics"
 
 OK, NG = "\033[92m✔\033[0m", "\033[91m✗\033[0m"
 res = []
@@ -125,7 +129,7 @@ def events(msgs):
 
 # ── 진단 발행자 ─────────────────────────────────────────────────────────────
 rclpy.init()
-node = Node("verify_diag_stop")
+node = Node(f"verify_diag_stop_{a.robot}")
 pub = node.create_publisher(StringMsg, a.topic, 10)
 threading.Thread(target=lambda: rclpy.spin(node), daemon=True).start()
 

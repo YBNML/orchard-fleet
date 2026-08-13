@@ -8,7 +8,8 @@ Stage-7 — FAST-LIO2 로 정합까지 포함한 맵 만들기
 완전히 같기 때문이다. 따로 두 번 주행하면 궤적이 달라져 비교가 흐려진다.
 
 프레임은 겹치지 않는다:
-    참값     map → odom → base_link → 센서   (gt_localizer, sdf_static_tf)
+    참값     map → <robot_id>/odom → <robot_id>/base_link → 센서
+                                           (gt_localizer, sdf_static_tf)
     FAST-LIO camera_init → body              (자체 발행)
 
 MID-70 에는 IMU 가 없다. FAST-LIO2 는 IMU 가 필수라 로봇 본체에 별도 IMU 를 달았다
@@ -21,7 +22,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -31,6 +32,9 @@ def generate_launch_description():
 
     args = [
         DeclareLaunchArgument("world_name", default_value="orchard_10x41"),
+        DeclareLaunchArgument("robot_id", default_value="scout01"),
+        DeclareLaunchArgument("ns", default_value="",
+                              description="ROS 네임스페이스. 비우면 robot_id 를 쓴다"),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("lio_out", default_value="/tmp/orchard_lio.npz"),
         DeclareLaunchArgument("gt_out", default_value="/tmp/orchard_gt.npz"),
@@ -38,6 +42,8 @@ def generate_launch_description():
         DeclareLaunchArgument("speed", default_value="0.9"),
     ]
     use_sim_time = LaunchConfiguration("use_sim_time")
+    robot_id = LaunchConfiguration("robot_id")
+    ns = PythonExpression(["'", LaunchConfiguration("ns"), "' or '", robot_id, "'"])
 
     return LaunchDescription(args + [
         # 참값 경로 일체 (브리지·정적TF·참값 로컬라이저·Livox 계약)
@@ -46,20 +52,24 @@ def generate_launch_description():
                 os.path.join(pkg, "launch", "stage0.launch.py")),
             launch_arguments={"world_name": LaunchConfiguration("world_name"),
                               "use_sim_time": use_sim_time,
+                              "robot_id": robot_id,
+                              "ns": ns,
                               "cameras": "false"}.items()),
 
         Node(package="fast_lio", executable="fastlio_mapping",
-             name="fastlio_mapping", output="screen",
+             name="fastlio_mapping", namespace=ns, output="screen",
              parameters=[fastlio_cfg, {"use_sim_time": use_sim_time}]),
 
         Node(package="orchard_sim", executable="lio_recorder",
-             name="lio_recorder", output="screen",
+             name="lio_recorder", namespace=ns, output="screen",
              parameters=[{"use_sim_time": use_sim_time,
+                          "robot_id": robot_id,
                           "out": LaunchConfiguration("lio_out")}]),
 
         Node(package="orchard_sim", executable="mapping_run",
-             name="mapping_run", output="screen",
+             name="mapping_run", namespace=ns, output="screen",
              parameters=[{"use_sim_time": use_sim_time,
+                          "robot_id": robot_id,
                           "out": LaunchConfiguration("gt_out"),
                           "alleys": LaunchConfiguration("alleys"),
                           "speed": LaunchConfiguration("speed")}]),

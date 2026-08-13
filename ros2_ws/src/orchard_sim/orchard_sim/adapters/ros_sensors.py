@@ -37,21 +37,32 @@ from robomw.sdk.types import Pose
 # "지금 죽었나"를 즉시 답해야 하는데, 표본 개수 창은 저빈도 구간에서 창이
 # 다 차기까지 느리다. 시간 창은 창 밖으로 나간 표본이 바로 빠져 반응이 빠르다.
 RATE_WINDOW_S = 3.0
+# 시뮬이 통째로 멈춘 것(= sim time 정지)을 "정상"으로 오판하지 않기 위한 벽시계
+# 안전망. 정상 운용의 최저 RTF 에서도 라이다 한 프레임(0.1 s sim)이 이 안에는
+# 들어온다 — RTF 0.02 까지 견딘다.
+STALE_WALL_S = 5.0
 
 # 재정위 확인 — 요청을 낸 뒤 이 시간 안에 로컬라이저가 이 품질 이상을 보고해야
 # 성공으로 답한다. 문턱 0.3 은 ScoutDiag 의 localizer 자가진단과 같은 값이다
 # (같은 "측위가 살아 있다"는 판정을 두 곳이 다른 잣대로 재면 안 된다).
 REINIT_TIMEOUT_S = 2.0
 REINIT_MIN_QUALITY = 0.3
-LOC_DIAG_TOPIC = "/map_localizer/diagnostics"
-LOC_REINIT_TOPIC = "/map_localizer/reinit"
+# 상대 이름이다 — 로컬라이저와 **같은 네임스페이스**에 있다는 뜻. 다중 로봇에서
+# 이 둘을 절대 이름으로 박아 두면 두 로봇이 서로의 재정위를 받는다.
+LOC_DIAG_TOPIC = "map_localizer/diagnostics"
+LOC_REINIT_TOPIC = "map_localizer/reinit"
 
 
 class RosSensors(Localizer, Perception):
 
     def __init__(self, node, reinit_topic=LOC_REINIT_TOPIC,
-                 diag_topic=LOC_DIAG_TOPIC):
+                 diag_topic=LOC_DIAG_TOPIC, base_frame="base_link",
+                 map_frame="map"):
         self._node = node
+        # 자세 조회용 프레임. 다중 로봇에서는 base_frame 이 "scout01/base_link"
+        # 처럼 로봇 접두를 단다 (map 은 전역 공용).
+        self._base_frame = base_frame
+        self._map_frame = map_frame
         self.buf = Buffer()
         self._tfl = TransformListener(self.buf, node)
         self._imu_R = None              # 기체 자세 (월드←바디) — 점군 수평화용
@@ -72,35 +83,56 @@ class RosSensors(Localizer, Perception):
         # 작은 전용 노드를 따로 두고 그 노드만 제 실행기로 돌린다. 호스트의
         # 구독(_on_loc_diag)은 그대로고 이쪽은 순전히 대기용 귀다.
         self._reinit_pub = node.create_publisher(String, reinit_topic, 10)
-        self._ack_node = Node(f"{node.get_name()}_relocalize_ack")
+        # 전용 노드도 **호스트와 같은 네임스페이스**에 둔다. 안 그러면 상대
+        # 토픽이 전역으로 풀려 다른 로봇의 진단을 듣게 되고, 노드 이름도
+        # 로봇 간에 충돌한다.
+        self._ack_node = Node(f"{node.get_name()}_relocalize_ack",
+                              namespace=node.get_namespace())
         self._ack_node.create_subscription(String, diag_topic, self._on_ack, 10)
         self._ack_exec = SingleThreadedExecutor()
         self._ack_exec.add_node(self._ack_node)
         self._ack_quality = None        # 마지막으로 받은 재정위 확인 품질
 
+    def _now(self):
+        """(ROS 시각, 벽시계) — 둘 다 필요하다. 아래 rates() 주석 참조."""
+        return (self._node.get_clock().now().nanoseconds * 1e-9, time.monotonic())
+
     def _note_rx(self, key, now=None):
-        now = now if now is not None else time.monotonic()
+        t = self._now() if now is None else (now, now)
         dq = self._rx_times[key]
-        dq.append(now)
-        cutoff = now - RATE_WINDOW_S
-        while dq and dq[0] < cutoff:
+        dq.append(t)
+        cutoff = t[0] - RATE_WINDOW_S
+        while dq and dq[0][0] < cutoff:
             dq.popleft()
 
     def rates(self):
         """수신율(Hz) — self_test(ScoutDiag) 가 읽는다.
 
-        3초 창 안 도착 시각의 간격으로 잰다. 창 안에 표본이 2개 미만이면(막
-        시작했거나 완전히 끊긴 것) 0.0 — "모른다"가 아니라 "지금은 없다"로
+        **ROS 시각(시뮬에서는 sim time)으로 잰다.** 예전에는 벽시계로 쟀는데,
+        시뮬 센서가 벽시계로 내는 빈도는 `사양 Hz × RTF` 라서 RTF 가 떨어지면
+        멀쩡한 라이다가 "죽었다"로 찍힌다 — 판정 문턱(8 Hz / 80 Hz)은 실기
+        기준(사양의 80%·40%)이므로 RTF 0.8 밑에서는 무조건 오탐이었다.
+        실측(2026-08-14): 이 월드의 gz 단독 RTF 0.40 → 벽시계 라이다 4.4 Hz.
+        sim time 으로 재면 RTF 와 무관하게 10 Hz / 200 Hz 가 나오고, 실기에서는
+        ROS 시각이 곧 벽시계라 판정이 그대로 유지된다.
+
+        벽시계도 같이 들고 있는 이유: gz 가 멈추면 sim time 도 멈춰 창이 비지
+        않는다 — 그러면 죽은 시뮬을 "정상"으로 보고하게 된다. 마지막 표본이
+        벽시계로 STALE_WALL_S 넘게 오래됐으면 0.0 으로 답한다.
+
+        3초(sim) 창 안 도착 시각의 간격으로 잰다. 창 안에 표본이 2개 미만이면
+        (막 시작했거나 완전히 끊긴 것) 0.0 — "모른다"가 아니라 "지금은 없다"로
         답해야 자가진단이 센서 죽음을 놓치지 않는다.
         """
-        now = time.monotonic()
+        sim_now, wall_now = self._now()
         out = {}
         for key, dq in self._rx_times.items():
-            cutoff = now - RATE_WINDOW_S
-            while dq and dq[0] < cutoff:
+            cutoff = sim_now - RATE_WINDOW_S
+            while dq and dq[0][0] < cutoff:
                 dq.popleft()
-            if len(dq) >= 2 and dq[-1] > dq[0]:
-                out[key] = (len(dq) - 1) / (dq[-1] - dq[0])
+            if (len(dq) >= 2 and dq[-1][0] > dq[0][0]
+                    and wall_now - dq[-1][1] <= STALE_WALL_S):
+                out[key] = (len(dq) - 1) / (dq[-1][0] - dq[0][0])
             else:
                 out[key] = 0.0
         return out
@@ -191,7 +223,8 @@ class RosSensors(Localizer, Perception):
         번에 돌려준다 — SDK 의 pose() 는 이 결과를 감싼 것이다.
         """
         try:
-            tr = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
+            tr = self.buf.lookup_transform(self._map_frame, self._base_frame,
+                                           rclpy.time.Time())
         except Exception:
             return None, 0.0
         t, q = tr.transform.translation, tr.transform.rotation

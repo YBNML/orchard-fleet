@@ -4,11 +4,14 @@ livox_sim_bridge — gz gpu_lidar 점군을 Livox MID-70 계약으로 변환 (�
 
     ros2 run orchard_sim livox_sim_bridge
 
-입력  /livox/points_raw/points   sensor_msgs/PointCloud2
+입력  /<robot_id>/livox/points_raw/points   sensor_msgs/PointCloud2
         gz gpu_lidar → ros_gz_bridge. 113×113 정사각 격자, x/y/z/intensity + ring,
         point_step 32, is_dense=False (무반사는 inf/NaN)
-출력  /livox/lidar               sensor_msgs/PointCloud2  (PointXYZRTLT)
-      /livox/lidar_custom        livox_ros_driver2/CustomMsg  (FAST-LIO2 용, 선택)
+출력  /<robot_id>/livox/lidar          sensor_msgs/PointCloud2  (PointXYZRTLT)
+      /<robot_id>/livox/lidar_custom   livox_ros_driver2/CustomMsg  (FAST-LIO2 용, 선택)
+
+토픽·프레임 기본값은 `robot_id` 에서 파생한다 (다중 로봇). 옛 단일 로봇 이름으로
+쓰려면 세 토픽과 frame_id 를 명시로 넘기면 된다.
 
 이 노드가 존재하는 이유: 하류 소비자(SLAM·인지·데이터셋)를 시뮬레이터 구현과
 분리하기 위해서다. 나중에 커스텀 비반복 스캔 플러그인으로 바꾸든 실장비로 바꾸든
@@ -23,6 +26,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
 
+from orchard_sim import gz_topics as gzt
 from orchard_sim import livox_contract as lc
 
 try:
@@ -58,10 +62,15 @@ class LivoxSimBridge(Node):
     def __init__(self):
         super().__init__("livox_sim_bridge")
 
-        self.declare_parameter("input_topic", "/livox/points_raw/points")
-        self.declare_parameter("output_topic", "/livox/lidar")
-        self.declare_parameter("custom_topic", "/livox/lidar_custom")
-        self.declare_parameter("frame_id", "livox_frame")
+        # 토픽·프레임 기본값은 robot_id 파생이다 — 노드를 ns 없이
+        # (`ros2 run`) 띄워도 제 로봇의 토픽에 붙게 하려고 상대 이름이 아니라
+        # 절대 이름으로 만든다.
+        self.declare_parameter("robot_id", "scout01")
+        rid = str(self.get_parameter("robot_id").value)
+        self.declare_parameter("input_topic", gzt.ns_topic(rid, "livox/points_raw/points"))
+        self.declare_parameter("output_topic", gzt.ns_topic(rid, "livox/lidar"))
+        self.declare_parameter("custom_topic", gzt.ns_topic(rid, "livox/lidar_custom"))
+        self.declare_parameter("frame_id", gzt.frame(rid, "livox_frame"))
         self.declare_parameter("publish_custom_msg", True)
         self.declare_parameter("apply_fov_mask", True)
         self.declare_parameter("publish_freq_hz", 10.0)

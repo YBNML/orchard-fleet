@@ -31,6 +31,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from tf2_ros import Buffer, TransformListener
 
+from orchard_sim import gz_topics as gzt
 from orchard_sim import transforms as tfu
 
 
@@ -67,7 +68,13 @@ class MappingRun(Node):
         self.declare_parameter("voxel", 0.05)           # 누적 시 다운샘플 [m]
         self.declare_parameter("max_range", 30.0)       # 먼 점은 밀도가 낮아 잡음이 된다
         self.declare_parameter("out", "/tmp/orchard_map.npz")
-        self.declare_parameter("cloud_topic", "/livox/lidar")
+        # 토픽·프레임 기본값은 robot_id 파생이다 (다중 로봇).
+        self.declare_parameter("robot_id", "scout01")
+        _rid = str(self.get_parameter("robot_id").value)
+        self.declare_parameter("cloud_topic", gzt.ns_topic(_rid, "livox/lidar"))
+        self.declare_parameter("cmd_vel_topic", gzt.ns_topic(_rid, "cmd_vel"))
+        self.declare_parameter("map_frame", "map")
+        self.declare_parameter("base_frame", gzt.frame(_rid, "base_link"))
 
         g = lambda k: self.get_parameter(k).value
         self.R = int(g("rows")); self.T = int(g("trees_per_row"))
@@ -78,6 +85,7 @@ class MappingRun(Node):
         self.decel_dist = float(g("decel_dist"))
         self.voxel = float(g("voxel")); self.max_range = float(g("max_range"))
         self.out = g("out")
+        self.map_frame = str(g("map_frame")); self.base_frame = str(g("base_frame"))
 
         self.x0 = -((self.R - 1) * self.S) / 2.0
         self.col_l = (self.T - 1) * self.ts
@@ -88,7 +96,7 @@ class MappingRun(Node):
 
         self.buf = Buffer()
         self.listener = TransformListener(self.buf, self)
-        self.cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.cmd = self.create_publisher(Twist, str(g("cmd_vel_topic")), 10)
         qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                          history=HistoryPolicy.KEEP_LAST, depth=5)
         self.create_subscription(PointCloud2, g("cloud_topic"), self.on_cloud, qos)
@@ -108,7 +116,7 @@ class MappingRun(Node):
         if not self.collecting:
             return
         try:
-            tr = self.buf.lookup_transform("map", msg.header.frame_id,
+            tr = self.buf.lookup_transform(self.map_frame, msg.header.frame_id,
                                            rclpy.time.Time())
         except Exception:
             return
@@ -133,7 +141,7 @@ class MappingRun(Node):
     def robot_xy(self):
         """map 프레임에서의 (x, y) 와 yaw. TF 가 아직 없으면 (None, None)."""
         try:
-            tr = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
+            tr = self.buf.lookup_transform(self.map_frame, self.base_frame, rclpy.time.Time())
         except Exception:
             return None, None
         t, q = tr.transform.translation, tr.transform.rotation
@@ -144,7 +152,7 @@ class MappingRun(Node):
         """전복 감지. 뒤집힌 채로 계속 돌면 쓰레기 데이터만 쌓인다 —
         2026-07-25 에 실제로 통로 8개 분량을 그렇게 날렸다."""
         try:
-            tr = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
+            tr = self.buf.lookup_transform(self.map_frame, self.base_frame, rclpy.time.Time())
         except Exception:
             return True
         q = tr.transform.rotation

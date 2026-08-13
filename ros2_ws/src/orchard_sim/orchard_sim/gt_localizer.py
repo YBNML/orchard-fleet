@@ -16,9 +16,9 @@ gz 의 모델 참값 포즈를 읽어 **완벽한 map→odom** 을 발행한다.
         T_map_base : gz 참값 (map 프레임 = gz 월드 프레임으로 정의)
         T_odom_base: DiffDrive 가 내는 휠 오도메트리
 
-입력  /gz_ground_truth   tf2_msgs/TFMessage  (gz dynamic_pose/info 브리지)
-      /tf                DiffDrive 의 odom→base_link
-출력  /tf                map→odom
+입력  /<robot_id>/gz_ground_truth  tf2_msgs/TFMessage  (gz PosePublisher 브리지)
+      /tf                          DiffDrive 의 <robot_id>/odom→<robot_id>/base_link
+출력  /tf                          map→<robot_id>/odom
       ~/localization_error  진단용 (참값 대비 오도메트리 드리프트)
 """
 from __future__ import annotations
@@ -34,6 +34,7 @@ from std_msgs.msg import Float32MultiArray
 from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
+from orchard_sim import gz_topics as gzt
 from orchard_sim import transforms as tfu
 
 
@@ -42,11 +43,15 @@ class GtLocalizer(Node):
     def __init__(self):
         super().__init__("gt_localizer")
 
-        self.declare_parameter("ground_truth_topic", "/gz_ground_truth")
-        self.declare_parameter("robot_model_name", "scout_mini_mid70")
+        # 토픽·프레임 기본값은 robot_id 파생이다 (다중 로봇). robot_model_name
+        # 은 gz 인스턴스 이름 — 참값 TFMessage 의 child_frame_id 가 곧 이 값이다.
+        self.declare_parameter("robot_id", "scout01")
+        rid = str(self.get_parameter("robot_id").value)
+        self.declare_parameter("ground_truth_topic", gzt.ns_topic(rid, "gz_ground_truth"))
+        self.declare_parameter("robot_model_name", rid)
         self.declare_parameter("map_frame", "map")
-        self.declare_parameter("odom_frame", "odom")
-        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("odom_frame", gzt.frame(rid, "odom"))
+        self.declare_parameter("base_frame", gzt.frame(rid, "base_link"))
         self.declare_parameter("publish_rate_hz", 30.0)
         self.declare_parameter("log_every_n", 150)
 

@@ -4,10 +4,19 @@
     ros2 launch orchard_sim control.launch.py
     ros2 launch orchard_sim control.launch.py slam:=fastlio     # 참값 대신 FAST-LIO2
 
+    # 2호기 — 로봇당 한 세트씩 띄운다 (포트·네임스페이스가 겹치지 않게)
+    ros2 launch orchard_sim control.launch.py \
+        robot_id:=scout02 ns:=scout02 port:=8081 clock:=false
+
 띄우는 것
     stage0        브리지 · 정적TF · 참값 로컬라이저 · Livox 계약
     fastlio       (선택) FAST-LIO2 — slam:=fastlio 일 때만
     control_agent 텔레메트리 + 웹 대시보드 + 명령 처리
+
+토픽·TF 표준 (다중 로봇):
+    /<ns>/{cmd_vel, odom, imu, livox/lidar, gz_ground_truth, …}
+    map → <robot_id>/odom → <robot_id>/base_link → <robot_id>/{livox_frame, …}
+`/tf`·`/tf_static`·`/clock` 만 전역이다. 근거는 orchard_sim/gz_topics.py 머리말.
 
 **이 launch 는 로봇 PC 에서 돈다.** 관제 PC 에는 아무것도 깔지 않는다 — 브라우저로
 http://<로봇IP>:8080/ 을 열면 된다. ROS 2 도, 파이썬 패키지도 필요 없다.
@@ -35,7 +44,13 @@ def generate_launch_description():
         DeclareLaunchArgument("port", default_value="8080"),
         DeclareLaunchArgument("bind", default_value="0.0.0.0",
                               description="0.0.0.0 이어야 다른 PC 에서 붙는다"),
-        DeclareLaunchArgument("robot_id", default_value="scout01"),
+        DeclareLaunchArgument("robot_id", default_value="scout01",
+                              description="gz 월드의 로봇 인스턴스 이름. "
+                                          "토픽·TF 접두가 전부 여기서 나온다"),
+        DeclareLaunchArgument("ns", default_value="",
+                              description="ROS 네임스페이스. 비우면 robot_id 를 쓴다"),
+        DeclareLaunchArgument("clock", default_value="true",
+                              description="/clock 브리지. 2호기부터는 false"),
         DeclareLaunchArgument("slam", default_value="groundtruth",
                               description="groundtruth | fastlio"),
         DeclareLaunchArgument("speed", default_value="0.7"),
@@ -63,6 +78,10 @@ def generate_launch_description():
         DeclareLaunchArgument("tls_key", default_value=""),
     ]
     ust = LaunchConfiguration("use_sim_time")
+    robot_id = LaunchConfiguration("robot_id")
+    # ns 를 비워 두면 robot_id 를 쓴다. 런치 인자에는 "비었으면 다른 값" 이라는
+    # 기본값 문법이 없어서 파이썬 표현식으로 고른다.
+    ns = PythonExpression(["'", LaunchConfiguration("ns"), "' or '", robot_id, "'"])
     use_fastlio = IfCondition(PythonExpression(
         ["'", LaunchConfiguration("slam"), "' == 'fastlio'"]))
 
@@ -72,16 +91,23 @@ def generate_launch_description():
                 os.path.join(pkg, "launch", "stage0.launch.py")),
             launch_arguments={"world_name": LaunchConfiguration("world_name"),
                               "use_sim_time": ust,
+                              "robot_id": robot_id,
+                              "ns": ns,
+                              "clock": LaunchConfiguration("clock"),
                               "cameras": LaunchConfiguration("cameras")}.items()),
 
+        # FAST-LIO2 는 토픽을 절대 이름(/Odometry 등)으로 발행한다 — 네임스페이스를
+        # 씌워도 갈라지지 않는다. 다중 로봇 SLAM 은 별건이라 여기서는 손대지 않고,
+        # 참값 경로(slam:=groundtruth)만 다중화 대상이다.
         Node(package="fast_lio", executable="fastlio_mapping",
-             name="fastlio_mapping", output="screen", condition=use_fastlio,
+             name="fastlio_mapping", namespace=ns, output="screen",
+             condition=use_fastlio,
              parameters=[fastlio_cfg, {"use_sim_time": ust}]),
 
         Node(package="orchard_sim", executable="control_agent",
-             name="control_agent", output="screen",
+             name="control_agent", namespace=ns, output="screen",
              parameters=[{"use_sim_time": ust,
-                          "robot_id": LaunchConfiguration("robot_id"),
+                          "robot_id": robot_id,
                           "port": LaunchConfiguration("port"),
                           "bind": LaunchConfiguration("bind"),
                           "speed": LaunchConfiguration("speed"),

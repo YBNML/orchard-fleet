@@ -19098,7 +19098,7 @@
 
     <!-- 로봇 -->
     <include>
-      <name>scout_mini_mid70</name>
+      <name>scout01</name>
       <uri>model://scout_mini_mid70</uri>
       <pose>-14.000 -33.000 0.914 0 0 1.5708</pose>
     </include>

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """사전 맵 로컬리제이션 — 시뮬레이터 실측 검증
 
-    ros2 run orchard_sim map_localizer --ros-args -p bundle:=maps/orchard_v1 ...
+    ros2 run orchard_sim map_localizer --ros-args -r __ns:=/scout01 -p bundle:=maps/orchard_v1 ...
     python3 scripts/39_verify_localization_live.py --secs 120 --out /tmp/loc_run.npz
+    python3 scripts/39_verify_localization_live.py --robot scout02 ...
 
 돌고 있는 map_localizer 의 추정 자세를 참값과 비교해 기록한다.
-    추정 = TF map→odom(map_localizer) ∘ odom→base_link(휠 오도메트리)
-    참값 = /gz_ground_truth (Gazebo 모델 포즈)
+    추정 = TF map→<robot>/odom(map_localizer) ∘ <robot>/odom→<robot>/base_link
+    참값 = /<robot>/gz_ground_truth (Gazebo 모델 포즈)
 
 가설 검증의 핵심은 '오차가 커지는가(누적)' 이지 '오차가 있는가' 가 아니다.
 그래서 시간에 따른 오차 궤적을 통째로 남긴다 — 나중에 차트로 본다.
@@ -30,14 +31,18 @@ from orchard_sim import transforms as tfu        # noqa: E402
 
 class Recorder(Node):
 
-    def __init__(self, model="scout_mini_mid70"):
-        super().__init__("loc_recorder")
+    def __init__(self, robot="scout01"):
+        super().__init__(f"loc_recorder_{robot}")
         self.buf = Buffer()
         self.tfl = TransformListener(self.buf, self)
-        self.model = model
+        # gz 인스턴스 이름 = 참값 TFMessage 의 child_frame_id = TF 프레임 접두.
+        # 셋이 같은 값이라는 것이 다중 로봇 이름 규약의 요지다.
+        self.model = robot
+        self.base_frame = f"{robot}/base_link"
         self.gt = None
         self.rows = []           # (t, ex, ey, eyaw, gx, gy, px, py)
-        self.create_subscription(TFMessage, "/gz_ground_truth", self._on_gt, 20)
+        self.create_subscription(TFMessage, f"/{robot}/gz_ground_truth",
+                                 self._on_gt, 20)
         self.create_timer(0.1, self._tick)   # 10 Hz 기록
         self.t0 = time.time()
 
@@ -53,7 +58,7 @@ class Recorder(Node):
         if self.gt is None:
             return
         try:
-            tr = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
+            tr = self.buf.lookup_transform("map", self.base_frame, rclpy.time.Time())
         except Exception:
             return
         p, q = tr.transform.translation, tr.transform.rotation
@@ -68,11 +73,12 @@ class Recorder(Node):
 ap = argparse.ArgumentParser()
 ap.add_argument("--secs", type=float, default=120.0)
 ap.add_argument("--out", default="/tmp/loc_run.npz")
+ap.add_argument("--robot", default="scout01")
 a = ap.parse_args()
 
 rclpy.init()
-node = Recorder()
-print(f"기록 시작 — {a.secs:.0f}초")
+node = Recorder(a.robot)
+print(f"기록 시작 — {a.robot} · {a.secs:.0f}초")
 end = time.time() + a.secs
 try:
     while rclpy.ok() and time.time() < end:
@@ -85,8 +91,8 @@ node.destroy_node()
 rclpy.shutdown()
 
 if len(d) < 10:
-    print(f"✗ 표본이 부족하다 ({len(d)}개) — 노드가 떠 있는지, /gz_ground_truth 가 "
-          "나오는지 확인할 것")
+    print(f"✗ 표본이 부족하다 ({len(d)}개) — 노드가 떠 있는지, "
+          f"/{a.robot}/gz_ground_truth 가 나오는지 확인할 것")
     sys.exit(1)
 
 np.savez_compressed(a.out, t=d[:, 0], ex=d[:, 1], ey=d[:, 2], eyaw=d[:, 3],

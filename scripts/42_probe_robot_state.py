@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """로봇 상태 진단 — 왜 안 움직이는가
 
-    python3 scripts/42_probe_robot_state.py [--secs 6]
+    python3 scripts/42_probe_robot_state.py [--secs 6] [--robot scout01]
 
 관제 링크로 붙어 state/event 를 받아 '무엇이 막고 있는지'를 한 화면에 보여준다.
 링크를 유지하기 위해 ping 을 계속 보낸다 (SafetyArbiter 의 링크두절 판정을
@@ -26,6 +26,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--secs", type=float, default=6.0)
 ap.add_argument("--host", default="127.0.0.1")
 ap.add_argument("--port", type=int, default=8080)
+# 로봇마다 에이전트가 따로 뜬다 — 토픽 접두(orchard/<robot>/cmd)와 포트가
+# 같이 바뀐다. 옛 호출(인자 없음)은 1호기 기본값으로 그대로 돈다.
+ap.add_argument("--robot", default="scout01")
 a = ap.parse_args()
 
 s = socket.create_connection((a.host, a.port), timeout=8)
@@ -39,7 +42,7 @@ while b"\r\n\r\n" not in b:
 
 
 def send(cmd, **kw):
-    m = P.envelope("orchard/scout01/cmd", dict(cmd=cmd, **kw), time.time_ns(), 1)
+    m = P.envelope(f"orchard/{a.robot}/cmd", dict(cmd=cmd, **kw), time.time_ns(), 1)
     s.sendall(encode_frame(json.dumps(m).encode(), OP_TEXT, mask=True))
 
 
@@ -85,7 +88,7 @@ if st is None:
     print("state 수신 실패 — 에이전트가 떠 있는지 확인할 것")
     sys.exit(1)
 
-print("로봇 상태 진단")
+print(f"로봇 상태 진단 — {a.robot} @ {a.host}:{a.port}")
 print("=" * 74)
 print(f"  모드        {st.get('mode')}")
 print(f"  일시정지    {st.get('paused')}")

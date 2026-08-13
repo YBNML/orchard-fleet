@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """map_localizer — 사전 맵 위에서 위치를 잡는 노드 (gt_localizer 의 대체재)
 
-    ros2 run orchard_sim map_localizer --ros-args \
+    ros2 run orchard_sim map_localizer --ros-args -r __ns:=/scout01 \
         -p bundle:=maps/orchard_v1 -p init_x:=-14.0 -p init_y:=-28.0 -p init_yaw:=1.5708
 
 무엇을 내는가
-    map → odom 변환 하나. 로봇의 휠 오도메트리가 odom → base_link 를 내므로,
-    둘을 이으면 map → base_link 가 완성된다. gt_localizer 와 **같은 인터페이스**라
+    map → <robot_id>/odom 변환 하나. 로봇의 휠 오도메트리가
+    <robot_id>/odom → <robot_id>/base_link 를 내므로, 둘을 이으면
+    map → <robot_id>/base_link 가 완성된다. gt_localizer 와 **같은 인터페이스**라
     둘을 바꿔 끼우며 비교할 수 있다.
+
+    토픽·프레임 기본값은 `robot_id`(기본 scout01) 에서 파생한다. `~/reinit`·
+    `~/diagnostics` 는 노드 네임스페이스에 딸리므로 다중 로봇에서는 `-r __ns:=`
+    로 로봇 네임스페이스에 띄워야 한다 — 안 그러면 두 로봇이 같은 진단 토픽을
+    쓴다.
 
 어떻게 잡는가
     휠 오도메트리가 자세를 밀고 가고(고빈도), 라이다 스캔이 사전 맵의 나무 열에
@@ -48,6 +54,7 @@ from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
+from orchard_sim import gz_topics as gzt
 from orchard_sim import mapbundle
 from orchard_sim import rowlocalize as rl
 from orchard_sim import transforms as tfu
@@ -95,11 +102,15 @@ class MapLocalizer(Node):
         super().__init__("map_localizer")
         d = self.declare_parameter
         d("bundle", "maps/orchard_v1")
+        # 토픽·프레임 기본값은 robot_id 파생이다 (다중 로봇). map 만 전역 —
+        # 로봇들이 같은 지도 위에 있다는 것이 이 시스템의 전제다.
+        d("robot_id", "scout01")
+        _rid = str(self.get_parameter("robot_id").value)
         d("map_frame", "map")
-        d("odom_frame", "odom")
-        d("base_frame", "base_link")
-        d("cloud_topic", "/livox/lidar")
-        d("odom_topic", "/odom")
+        d("odom_frame", gzt.frame(_rid, "odom"))
+        d("base_frame", gzt.frame(_rid, "base_link"))
+        d("cloud_topic", gzt.ns_topic(_rid, "livox/lidar"))
+        d("odom_topic", gzt.ns_topic(_rid, "odom"))
         d("publish_rate_hz", 30.0)
         d("fix_period_s", 0.5)          # 보정 주기 (2 Hz)
         d("init_x", 0.0); d("init_y", 0.0); d("init_yaw", 0.0)
@@ -131,7 +142,7 @@ class MapLocalizer(Node):
                                         # 다음 설계: 첫 빈 거리가 아니라 구조
                                         # 전체의 가상-실측 상관으로 칸 가설검정.
         d("lost_critical_s", 150.0)     # 격상 대기 — 정상 횡단(피벗2+등판+진입)이 최대 ~120초라 그보다 길게. 환상 주행은 여전히 잡는다(이전 사고는 5분+)
-        d("imu_topic", "/imu")          # 요는 자이로 적분 — 바퀴는 회전을 속인다
+        d("imu_topic", gzt.ns_topic(_rid, "imu"))   # 요는 자이로 적분 — 바퀴는 회전을 속인다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
 
         self.bundle = mapbundle.Bundle(str(g("bundle")))

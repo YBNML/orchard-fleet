@@ -8,8 +8,13 @@ sdf_static_tf — 로봇 SDF 를 읽어 센서 외부파라미터를 static TF �
 어긋난다. 그러면 캘리브레이션·융합 결과가 전부 무의미해지는데 증상이 안 보인다.
 같은 파일 하나를 진실의 근원으로 삼아 드리프트를 원천 차단한다.
 
-발행: base_link → {livox_frame, imu_link, navsat_link, cam_*}  (static)
+발행: <robot_id>/base_link → <robot_id>/{livox_frame, imu_link, navsat_link, cam_*}
       링크 포즈는 SDF 에서 모델 원점 기준이므로 base_link 기준으로 변환한다.
+
+프레임 접두(`<robot_id>/`)는 gz DiffDrive 가 붙이는 것과 **같은 규칙**이다
+(orchard_sim/gz_topics.py 머리말). SDF 안의 링크 이름은 접두가 없으므로,
+파일에서 찾을 때(`base_link`)와 TF 로 낼 때(`scout01/base_link`)를 구분한다 —
+이 둘을 한 값으로 합치면 SDF 조회가 조용히 실패한다.
 """
 from __future__ import annotations
 
@@ -55,13 +60,19 @@ class SdfStaticTf(Node):
     def __init__(self):
         super().__init__("sdf_static_tf")
         self.declare_parameter("model_sdf", DEFAULT_SDF)
-        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("robot_id", "scout01")
+        # SDF 안의 링크 이름 (접두 없음) — 파일 조회용
+        self.declare_parameter("base_link_name", "base_link")
+        # TF 로 낼 때 붙일 접두. 비우면 옛 단일 로봇 이름 그대로 나간다.
+        self.declare_parameter(
+            "frame_prefix", f"{self.get_parameter('robot_id').value}/")
         # 바퀴는 회전하므로 static 이 아니다. TF 트리에 넣지 않는다.
         self.declare_parameter("exclude", ["front_left_wheel", "front_right_wheel",
                                            "rear_left_wheel", "rear_right_wheel"])
 
         path = self.get_parameter("model_sdf").value
-        base = self.get_parameter("base_frame").value
+        base = self.get_parameter("base_link_name").value
+        prefix = str(self.get_parameter("frame_prefix").value or "")
         exclude = set(self.get_parameter("exclude").value or [])
 
         if not os.path.exists(path):
@@ -79,8 +90,8 @@ class SdfStaticTf(Node):
             t, q = tfu.decompose(T)
             m = TransformStamped()
             m.header.stamp = stamp
-            m.header.frame_id = base
-            m.child_frame_id = name
+            m.header.frame_id = prefix + base
+            m.child_frame_id = prefix + name
             m.transform.translation.x = float(t[0])
             m.transform.translation.y = float(t[1])
             m.transform.translation.z = float(t[2])
@@ -90,7 +101,8 @@ class SdfStaticTf(Node):
             m.transform.rotation.w = float(q[3])
             msgs.append(m)
             self.get_logger().info(
-                f"  {base} → {name:<18} t=({t[0]:+.3f}, {t[1]:+.3f}, {t[2]:+.3f})")
+                f"  {prefix + base} → {prefix + name:<18} "
+                f"t=({t[0]:+.3f}, {t[1]:+.3f}, {t[2]:+.3f})")
 
         if not msgs:
             self.get_logger().warn("발행할 static TF 가 없습니다")

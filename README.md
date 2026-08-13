@@ -41,8 +41,9 @@ cd ros2_ws && colcon build --packages-select robomw orchard_sim && source instal
 
 # 지형·월드 생성 (커밋된 월드를 재생성할 때)
 python3 scripts/gen_heightmap.py --rows 10 --trees-per-row 41
+# --robots "이름:x,y,yaw도 ..." — 로봇 인스턴스 이름이 곧 토픽·TF 접두다
 python3 scripts/gen_world.py --rows 10 --trees-per-row 41 \
-  --robot scout_mini_mid70 --environment --detail 2 --instrumented-rows 0 \
+  --robots "scout01:-14.0,-33.0,90" --environment --detail 2 --instrumented-rows 0 \
   --out sim/worlds/orchard_nav.sdf
 
 # 시뮬 + 로봇 스택 + 관제 (관제 접속 주소를 안내해준다)

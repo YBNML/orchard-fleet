@@ -1,4 +1,4 @@
-"""Drive SDK 구현 — /cmd_vel 발행. 중재(arbitrate) 결과만 이 클래스로 온다.
+"""Drive SDK 구현 — `/<robot_id>/cmd_vel` 발행. 중재(arbitrate) 결과만 이 클래스로 온다.
 
 **퍼블리셔를 가진 곳은 여기 하나다.** 기능은 속도를 요청할 뿐이고, 요청은
 SafetyArbiter.arbitrate 를 통과한 뒤에야 set_velocity 로 들어온다. 퍼블리셔가
@@ -17,7 +17,10 @@ from robomw.sdk.types import DriveLimits
 
 
 class RosDrive(Drive):
-    def __init__(self, node, v_max, w_max, topic="/cmd_vel"):
+    def __init__(self, node, v_max, w_max, topic="cmd_vel"):
+        # 기본값이 상대 이름인 이유: 노드가 로봇 네임스페이스에 떠 있으면
+        # 그대로 /<ns>/cmd_vel 이 된다. 호스트(control_agent)는 robot_id 로
+        # 만든 절대 이름을 명시로 넘긴다 — ns 없이 띄워도 제 로봇에 붙게.
         self._pub = node.create_publisher(Twist, topic, 10)
         self._lim = DriveLimits(float(v_max), float(w_max))
 

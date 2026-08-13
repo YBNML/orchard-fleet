@@ -34,7 +34,8 @@ from orchard_sim.map_localizer import read_xyz     # noqa: E402
 ap = argparse.ArgumentParser()
 ap.add_argument("--scans", type=int, default=8)
 ap.add_argument("--out", default="/tmp/agl_band.npz")
-ap.add_argument("--model", default="scout_mini_mid70")
+# 로봇 인스턴스 이름 = 참값 child_frame_id = 토픽 접두 (다중 로봇, 2026-08-14)
+ap.add_argument("--model", default="scout01")
 a = ap.parse_args()
 
 BANDS = [(0.10, 0.35), (0.15, 0.45), (0.20, 0.55), (0.25, 0.65),
@@ -42,11 +43,11 @@ BANDS = [(0.10, 0.35), (0.15, 0.45), (0.20, 0.55), (0.25, 0.65),
 S, T, X0 = 3.5, 1.5, -15.75
 
 rclpy.init()
-node = Node("agl_probe")
+node = Node(f"agl_probe_{a.model}")
 clouds, gt = [], {}
 q = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                history=HistoryPolicy.KEEP_LAST, depth=2)
-node.create_subscription(PointCloud2, "/livox/lidar",
+node.create_subscription(PointCloud2, f"/{a.model}/livox/lidar",
                          lambda m: clouds.append(read_xyz(m)), q)
 
 
@@ -58,7 +59,7 @@ def on_gt(m):
             gt["p"] = (p.x, p.y, math.atan2(R[1, 0], R[0, 0]))
 
 
-node.create_subscription(TFMessage, "/gz_ground_truth", on_gt, 20)
+node.create_subscription(TFMessage, f"/{a.model}/gz_ground_truth", on_gt, 20)
 t0 = time.time()
 while time.time() - t0 < 25 and (len(clouds) < a.scans or "p" not in gt):
     rclpy.spin_once(node, timeout_sec=0.2)

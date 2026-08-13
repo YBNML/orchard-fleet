@@ -12,6 +12,26 @@
   센서: MID-70(gpu_lidar) 단독 + IMU + navsat + 카메라  (설계서 §5.4, D7/D12)
 
   좌표: base_link 를 섀시 중심의 지면 투영점에 둔다 (z=0 이 지면).
+
+  ── 토픽 스코프 (다중 로봇, 2026-08-14) ──────────────────────────────────
+  센서·플러그인에 <topic>/<odom_topic>/<tf_topic>/<frame_id>/<child_frame_id> 를
+  **일부러 쓰지 않는다.** gz-sim 은 이 태그가 있으면 그 문자열을 리터럴 전역
+  토픽으로 쓴다 — 같은 모델을 2대 올리면 /cmd_vel·/odom·/tf·/livox/points_raw 가
+  한 토픽에 뒤섞여 두 로봇이 서로의 명령과 점군을 받는다 (2026-08-13 실측).
+  비워 두면 gz 가 인스턴스 이름으로 스코프한 기본 토픽을 만든다 (2026-08-14
+  실측, gz-sim 8.11 · 2로봇 스모크):
+
+      /model/<로봇>/cmd_vel                        DiffDrive 입력
+      /model/<로봇>/odometry                       DiffDrive 오도메트리
+      /model/<로봇>/tf                             DiffDrive TF
+      /model/<로봇>/pose                           PosePublisher 참값
+      /world/<월드>/model/<로봇>/joint_state       휠 조인트
+      /world/<월드>/model/<로봇>/link/<링크>/sensor/<센서>/<접미>   센서 일체
+
+  DiffDrive 의 frame_id/child_frame_id 도 비워 둔다 — 그러면 gz 가
+  "<로봇>/odom" → "<로봇>/base_link" 로 채워 준다(실측). 다중 로봇 TF 접두가
+  여기서 공짜로 나온다. ROS 쪽 이름(/scout0N/…)으로의 환원은
+  orchard_sim/gz_topics.py 가 한곳에서 만든다 — 이 표를 고치면 거기도 고칠 것.
 -->
 <sdf version="1.9">
   <model name="scout_mini_mid70">
@@ -236,8 +256,9 @@
       <!-- MID-360 상당 gpu_lidar (사용자 승인 교체, 08-03). 수평 360° ·
            수직 -7°~+52°, 480x40 ≈ 19.2k/프레임 (~200k pts/s 사양 상당).
            토픽·프레임은 MID-70 시절 그대로 둔다 — 하류 무수정 교체. -->
+      <!-- 토픽 미지정 — 파일 머리말 '토픽 스코프' 참조. 실제 점군은
+           /world/<월드>/model/<로봇>/link/livox_frame/sensor/livox_mid70/scan/points -->
       <sensor name="livox_mid70" type="gpu_lidar">
-        <topic>livox/points_raw</topic>
         <update_rate>10</update_rate>
         <always_on>1</always_on>
         <lidar>
@@ -261,7 +282,6 @@
         <inertia><ixx>1e-6</ixx><iyy>1e-6</iyy><izz>1e-6</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="imu" type="imu">
-        <topic>imu</topic>
         <update_rate>200</update_rate>
         <always_on>1</always_on>
         <imu>
@@ -289,7 +309,6 @@
         <inertia><ixx>1e-6</ixx><iyy>1e-6</iyy><izz>1e-6</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="navsat" type="navsat">
-        <topic>navsat</topic>
         <update_rate>5</update_rate>
         <always_on>1</always_on>
       </sensor>
@@ -305,7 +324,6 @@
         <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="cam_canopy_left" type="camera">
-        <topic>cam/left/image</topic>
         <update_rate>10</update_rate>
         <always_on>1</always_on>
         <camera>
@@ -325,7 +343,6 @@
         <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="cam_canopy_right" type="camera">
-        <topic>cam/right/image</topic>
         <update_rate>10</update_rate>
         <always_on>1</always_on>
         <camera>
@@ -346,7 +363,6 @@
         <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="cam_forward" type="rgbd_camera">
-        <topic>cam/forward</topic>
         <update_rate>10</update_rate>
         <always_on>1</always_on>
         <camera>
@@ -370,18 +386,11 @@
       <wheel_radius>0.0875</wheel_radius>
       <max_linear_velocity>2.7</max_linear_velocity>
       <max_linear_acceleration>3.0</max_linear_acceleration>
-      <topic>cmd_vel</topic>
-      <odom_topic>odom</odom_topic>
-      <tf_topic>tf</tf_topic>
-      <frame_id>odom</frame_id>
-      <child_frame_id>base_link</child_frame_id>
       <odom_publish_frequency>50</odom_publish_frequency>
     </plugin>
 
     <!-- 휠 조인트 상태 발행 -->
-    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
-      <topic>joint_states</topic>
-    </plugin>
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher"/>
 
     <!-- ═══════════════ 참값 포즈 (Stage-0 스캐폴드용, 설계서 §7.5) ═══════════════ -->
     <!-- 월드의 dynamic_pose/info 를 브리지하면 ros_gz 의 Pose_V→TFMessage 변환기가

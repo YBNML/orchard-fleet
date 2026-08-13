@@ -17,6 +17,7 @@
 """
 import math
 import sys
+import argparse
 import time
 
 import numpy as np
@@ -26,8 +27,15 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-EXPECT_TOPICS = ["/odom", "/livox/points_raw/points", "/imu",
-                 "/cam/left/image", "/cam/forward/image"]
+# 로봇 인스턴스별 네임스페이스 (다중 로봇, 2026-08-14). 기본 1호기라
+# 옛 호출 형태(인자 없음)가 그대로 돈다.
+ap = argparse.ArgumentParser()
+ap.add_argument("--robot", default="scout01")
+ARGS, _UNKNOWN = ap.parse_known_args()
+NS = ARGS.robot
+
+EXPECT_TOPICS = [f"/{NS}/odom", f"/{NS}/livox/points_raw/points", f"/{NS}/imu",
+                 f"/{NS}/cam/left/image", f"/{NS}/cam/forward/image"]
 
 
 def yaw_of(q):
@@ -37,13 +45,13 @@ def yaw_of(q):
 
 class Driver(Node):
     def __init__(self):
-        super().__init__("robot_verifier")
+        super().__init__(f"robot_verifier_{NS}")
         self.odom = None
         q = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                        history=HistoryPolicy.KEEP_LAST, depth=5)
-        self.create_subscription(Odometry, "/odom",
+        self.create_subscription(Odometry, f"/{NS}/odom",
                                  lambda m: setattr(self, "odom", m), q)
-        self.cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.cmd = self.create_publisher(Twist, f"/{NS}/cmd_vel", 10)
 
     def pose(self):
         p = self.odom.pose.pose

@@ -13,9 +13,10 @@ setup(
          ["launch/livox_bridge.launch.py", "launch/stage0.launch.py",
           "launch/stage7.launch.py", "launch/control.launch.py"]),
         ("share/" + package_name + "/web", ["web/index.html"]),
-        ("share/" + package_name + "/config", ["config/livox_bridge.yaml", "config/bridge_core.yaml",
-          "config/bridge_cameras.yaml", "config/robot_check.rviz",
-          "config/fastlio_mid70.yaml"]),
+        # 브리지 토픽표는 더 이상 YAML 이 아니다 — 로봇 인스턴스별로 이름이
+        # 달라져야 해서 orchard_sim/gz_topics.py 가 런치 시점에 만든다.
+        ("share/" + package_name + "/config",
+         ["config/robot_check.rviz", "config/fastlio_mid70.yaml"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

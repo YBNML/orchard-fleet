@@ -46,12 +46,18 @@ def gz_at(x, y):
 
 
 def main():
+    import argparse
+    # 로봇 인스턴스별 네임스페이스 (기본 1호기 — 옛 호출 형태 유지)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--robot", default="scout01")
+    ap.add_argument("--world", default="orchard_10x41")
+    aa = ap.parse_known_args()[0]
     rclpy.init()
-    n = Node("anchor_cal")
+    n = Node(f"anchor_cal_{aa.robot}")
     got, imu_r = [], [None]
     qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                      history=HistoryPolicy.KEEP_LAST, depth=2)
-    n.create_subscription(PointCloud2, "/livox/lidar",
+    n.create_subscription(PointCloud2, f"/{aa.robot}/livox/lidar",
                           lambda m: got.append(read_xyz(m)), qos)
 
     def cbi(m):
@@ -59,16 +65,16 @@ def main():
         if q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w > 0.5:
             imu_r[0] = tfu.quat_to_matrix(q.x, q.y, q.z, q.w)
 
-    n.create_subscription(Imu, "/imu", cbi, qos)
+    n.create_subscription(Imu, f"/{aa.robot}/imu", cbi, qos)
 
     def tp(x, y, yaw):
         z = gz_at(x, y) + 0.30
-        req = (f'name: "scout_mini_mid70", '
+        req = (f'name: "{aa.robot}", '
                f'position: {{x: {x}, y: {y}, z: {z:.2f}}}, '
                f'orientation: {{x: 0, y: 0, z: {math.sin(yaw/2):.6f}, '
                f'w: {math.cos(yaw/2):.6f}}}')
         subprocess.run(["gz", "service", "-s",
-                        f"/world/orchard_10x41/set_pose",
+                        f"/world/{aa.world}/set_pose",
                         "--reqtype", "gz.msgs.Pose",
                         "--reptype", "gz.msgs.Boolean",
                         "--timeout", "3000", "--req", req],

@@ -30,13 +30,20 @@ try:
 except ImportError:
     HAVE_CUSTOM = False
 
+import argparse
+
+# 로봇 인스턴스별 네임스페이스 (기본 1호기 — 옛 호출 형태 유지)
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--robot", default="scout01")
+NS = _ap.parse_known_args()[0].robot
+
 TYPES = {1: "INT8", 2: "UINT8", 3: "INT16", 4: "UINT16",
          5: "INT32", 6: "UINT32", 7: "FLOAT32", 8: "FLOAT64"}
 
 
 class V(Node):
     def __init__(self):
-        super().__init__("livox_bridge_verifier")
+        super().__init__(f"livox_bridge_verifier_{NS}")
         q = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                        history=HistoryPolicy.KEEP_LAST, depth=10)
         self.raw = None
@@ -44,10 +51,11 @@ class V(Node):
         self.custom = None
         self.out_stamps = []
         self.raw_stamps = []
-        self.create_subscription(PointCloud2, "/livox/points_raw/points", self._on_raw, q)
-        self.create_subscription(PointCloud2, "/livox/lidar", self._on_out, q)
+        self.create_subscription(PointCloud2, f"/{NS}/livox/points_raw/points",
+                                 self._on_raw, q)
+        self.create_subscription(PointCloud2, f"/{NS}/livox/lidar", self._on_out, q)
         if HAVE_CUSTOM:
-            self.create_subscription(CustomMsg, "/livox/lidar_custom",
+            self.create_subscription(CustomMsg, f"/{NS}/livox/lidar_custom",
                                      lambda m: setattr(self, "custom", self.custom or m), q)
 
     def _on_raw(self, m):

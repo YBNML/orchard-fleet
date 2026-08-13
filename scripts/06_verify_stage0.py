@@ -27,23 +27,33 @@ sys.path.insert(0, "ros2_ws/src/orchard_sim")
 from orchard_sim import transforms as tfu  # noqa: E402
 from orchard_sim.sdf_static_tf import base_relative, parse_link_poses  # noqa: E402
 
+import argparse
+
+# 로봇 인스턴스 이름 = 토픽·TF 접두 (다중 로봇, 2026-08-14).
+# 기본 1호기라 옛 호출 형태(인자 없음)가 그대로 돈다.
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--robot", default="scout01")
+ROBOT = _ap.parse_known_args()[0].robot
+BASE = f"{ROBOT}/base_link"
+
+# model.sdf 는 여전히 한 벌이다 — 인스턴스 이름과 무관하다
 SDF = "sim/models/scout_mini_mid70/model.sdf"
-ROBOT = "scout_mini_mid70"
 SENSOR_FRAMES = ["livox_frame", "imu_link", "navsat_link",
                  "cam_canopy_left", "cam_canopy_right", "cam_forward"]
 
 
 class V(Node):
     def __init__(self):
-        super().__init__("stage0_verifier")
+        super().__init__(f"stage0_verifier_{ROBOT}")
         self.buf = Buffer()
         self.listener = TransformListener(self.buf, self)
         self.gt = None
         self.gt_stamp = None
         q = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                        history=HistoryPolicy.KEEP_LAST, depth=5)
-        self.create_subscription(TFMessage, "/gz_ground_truth", self._on_gt, q)
-        self.cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.create_subscription(TFMessage, f"/{ROBOT}/gz_ground_truth",
+                                 self._on_gt, q)
+        self.cmd = self.create_publisher(Twist, f"/{ROBOT}/cmd_vel", 10)
 
     def _on_gt(self, msg):
         for t in msg.transforms:
@@ -89,9 +99,9 @@ def main():
     while rclpy.ok():
         rclpy.spin_once(n, timeout_sec=0.2)
         try:
-            n.lookup("map", "base_link")
+            n.lookup("map", BASE)
             for f in SENSOR_FRAMES:          # static TF 전파까지 기다린다
-                n.lookup("base_link", f)
+                n.lookup(BASE, f"{ROBOT}/{f}")
             if n.gt is not None:
                 break
         except Exception:
@@ -116,7 +126,7 @@ def main():
     print("\n── 2. map→base_link 가 gz 참값과 일치하는가 ──")
     for _ in range(20):
         rclpy.spin_once(n, timeout_sec=0.1)
-    T_tf = tf_to_matrix(n.lookup_at_gt("map", "base_link"))
+    T_tf = tf_to_matrix(n.lookup_at_gt("map", BASE))
     exy, ez, eyaw = pose_error(T_tf, n.gt)
     print(f"  참값  x={n.gt[0,3]:+.3f} y={n.gt[1,3]:+.3f} z={n.gt[2,3]:+.3f} "
           f"yaw={math.degrees(tfu.yaw_of(n.gt)):+.2f}°")
@@ -137,7 +147,7 @@ def main():
         n.cmd.publish(tw)
         rclpy.spin_once(n, timeout_sec=0.05)
         try:
-            T = tf_to_matrix(n.lookup_at_gt("map", "base_link"))
+            T = tf_to_matrix(n.lookup_at_gt("map", BASE))
             if n.gt is not None:
                 errs.append(pose_error(T, n.gt))
         except Exception:

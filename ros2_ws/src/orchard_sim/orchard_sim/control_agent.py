@@ -52,8 +52,10 @@ from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import Empty
 from std_msgs.msg import String as StringMsg
 
+from orchard_sim import gz_topics as gzt
 from orchard_sim.adapters import (RosCloudWorld, RosDrive, RosSensors,
                                   ScoutDiag, SimWork)
+from orchard_sim.adapters.ros_sensors import LOC_DIAG_TOPIC, LOC_REINIT_TOPIC
 from robomw.core.audit import R_ACCEPT, R_REJECT, AuditLog
 from robomw.core.base import Blackboard, Context
 from robomw.core.blackbox import Blackbox
@@ -200,7 +202,21 @@ class ControlAgent(Node):
         d("state_hz", 5.0); d("health_hz", 1.0); d("map_period", 3.0)
         d("map_cell", 0.25); d("map_max_points", 6000)
         d("min_lidar_hz", 5.0); d("min_imu_hz", 100.0); d("min_lio_hz", 5.0)
-        d("cloud_topic", "/livox/lidar")
+        # 센서 토픽·TF 프레임은 robot_id 파생이다 (다중 로봇). robot_id 는
+        # 위에서 이미 선언했으므로 여기서 값을 꺼내 기본값을 만든다.
+        _rid = str(self.get_parameter("robot_id").value)
+        d("cloud_topic", gzt.ns_topic(_rid, "livox/lidar"))
+        d("imu_topic", gzt.ns_topic(_rid, "imu"))
+        d("map_frame", "map")
+        d("base_frame", gzt.frame(_rid, "base_link"))
+        d("cmd_vel_topic", gzt.ns_topic(_rid, "cmd_vel"))
+        # 로컬라이저 진단·재정위는 map_localizer 의 ~/ 토픽이라 **노드
+        # 네임스페이스**에 딸린다. 기본값은 상대 이름 — control_agent 와
+        # map_localizer 를 같은 ns 에 띄우면 그대로 맞는다.
+        d("loc_diag_topic", LOC_DIAG_TOPIC)
+        d("loc_reinit_topic", LOC_REINIT_TOPIC)
+        # FAST-LIO2 는 토픽을 절대 이름으로 낸다 — 네임스페이스로 안 갈라진다.
+        # 다중 로봇 SLAM 은 별건이라 여기서는 전역 이름 그대로 둔다.
         d("lio_odom_topic", "/Odometry")
         d("tilt_limit_deg", 35.0)
         # 대기/비상정지에서 0 속도를 계속 낼지. True 가 안전하지만, 다른 주행
@@ -246,7 +262,11 @@ class ControlAgent(Node):
         # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
         # 센서 해석과 /cmd_vel 발행은 기체마다 다르다. 코어(안전·라우팅·계약)를
         # 건드리지 않고 갈아끼울 수 있게 adapters/ 로 뺐다.
-        self.sensors = RosSensors(self)
+        self.sensors = RosSensors(self,
+                                  reinit_topic=str(g("loc_reinit_topic")),
+                                  diag_topic=str(g("loc_diag_topic")),
+                                  base_frame=str(g("base_frame")),
+                                  map_frame=str(g("map_frame")))
         self.buf = self.sensors.buf         # 기존 이름 유지 (기능이 쓸 수 있게 노출)
         self._tf_buffer = self.buf
         # Localizer SDK 어댑터 — sdk_work·sdk_diag 전례처럼 블랙보드로 건넨다.
@@ -258,7 +278,8 @@ class ControlAgent(Node):
         self.drive = RosDrive(
             self,
             v_max=max(float(g("speed")), float(g("teleop_max_v"))),
-            w_max=max(float(g("turn_speed")), float(g("teleop_max_w"))))
+            w_max=max(float(g("turn_speed")), float(g("teleop_max_w"))),
+            topic=str(g("cmd_vel_topic")))
         # 점군을 map 프레임 점 배열로 풀어 주는 공급원. 기능(robomw)은 ROS
         # 메시지를 모르므로 어댑터가 풀어서 넘긴다 — 지도 격자 기능이 이걸
         # 받는다. 받을 기능이 하나도 없으면 변환도 하지 않는다.
@@ -272,7 +293,7 @@ class ControlAgent(Node):
         self._cloud_map_errs = 0        # 지도 공급 고장 횟수 (로그 3회 한도)
         self.create_subscription(PointCloud2, str(g("cloud_topic")),
                                  self._on_cloud, sqos)
-        self.create_subscription(Imu, "/imu", self._on_imu, sqos)
+        self.create_subscription(Imu, str(g("imu_topic")), self._on_imu, sqos)
         self.create_subscription(Odometry, str(g("lio_odom_topic")), self._on_lio, 10)
 
         # ── 안전 (코어) ─────────────────────────────────────────────────────
@@ -303,7 +324,7 @@ class ControlAgent(Node):
 
         # 로컬라이저 진단 → 관제 개입 큐. 슬립(TRACTION_LOSS)이면 즉시 멈춘다 —
         # 박힌 채 바퀴를 계속 돌리는 것은 기체·나무 양쪽을 갉아먹는 짓이다.
-        self.create_subscription(StringMsg, "/map_localizer/diagnostics",
+        self.create_subscription(StringMsg, str(g("loc_diag_topic")),
                                  self._on_loc_diag, 10)
 
         # ── 감사 로그 (코어) ────────────────────────────────────────────────

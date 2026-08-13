@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """클라임 하네스 — 테라스 사이 동진 횡단의 정책별 통과율을 직접 잰다
 
-    python3 scripts/46_climb_harness.py [--n 10] [--policies P0,P2,P3,P5]
+    python3 scripts/46_climb_harness.py [--n 10] [--policies P0,P2,P3,P5] [--robot scout01]
 
 임무 반복(25분/회)으로는 횡단 성공이 주사위라는 것밖에 못 배운다(실측:
 런당 0~3회 널뛰기). 여기서는 로봇을 램프 앞에 놓고 같은 횡단을 정책만
@@ -51,14 +51,19 @@ def gz_at(x, y):
 
 
 class Harness(Node):
-    def __init__(self):
-        super().__init__("climb_harness")
-        self.pub = self.create_publisher(Twist, "/cmd_vel", 10)
+    """--robot 으로 대상을 고른다. 토픽·gz 모델 이름이 전부 여기서 갈린다
+    (다중 로봇, 2026-08-14). 기본값 scout01 이라 옛 호출 형태 그대로 돈다."""
+
+    def __init__(self, robot="scout01", world="orchard_10x41"):
+        super().__init__(f"climb_harness_{robot}")
+        self.robot, self.world = robot, world
+        self.pub = self.create_publisher(Twist, f"/{robot}/cmd_vel", 10)
         self.p = None
-        self.create_subscription(TFMessage, "/gz_ground_truth", self._cb, 20)
+        self.create_subscription(TFMessage, f"/{robot}/gz_ground_truth",
+                                 self._cb, 20)
 
     def _cb(self, m):
-        t = m.transforms[0]
+        t = m.transforms[0]      # PosePublisher 는 이 로봇의 모델 포즈 하나만 낸다
         tr, q = t.transform.translation, t.transform.rotation
         self.p = (tr.x, tr.y,
                   math.atan2(2 * (q.w * q.z + q.x * q.y),
@@ -77,10 +82,10 @@ class Harness(Node):
 
     def teleport(self, x, y, yaw):
         z = gz_at(x, y) + 0.30
-        req = (f'name: "scout_mini_mid70", position: {{x: {x}, y: {y}, z: {z:.2f}}}, '
+        req = (f'name: "{self.robot}", position: {{x: {x}, y: {y}, z: {z:.2f}}}, '
                f'orientation: {{x: 0, y: 0, z: {math.sin(yaw/2):.6f}, '
                f'w: {math.cos(yaw/2):.6f}}}')
-        subprocess.run(["gz", "service", "-s", "/world/orchard_10x41/set_pose",
+        subprocess.run(["gz", "service", "-s", f"/world/{self.world}/set_pose",
                         "--reqtype", "gz.msgs.Pose", "--reptype", "gz.msgs.Boolean",
                         "--timeout", "2000", "--req", req], capture_output=True)
         self.cmd(0.0)
@@ -169,13 +174,15 @@ def main():
     ap.add_argument("--from-x", type=float, default=-10.5,   # 통로 1 → 2
                     dest="fx")
     ap.add_argument("--y", type=float, default=34.0)
+    ap.add_argument("--robot", default="scout01")
+    ap.add_argument("--world", default="orchard_10x41")
     ap.add_argument("--mission-pairs", action="store_true",
                     help="임무 파리티대로 8개 횡단(짝수k 북, 홀수k 남)을 순회한다 "
                          "(선회 패드 검증, 08-10)")
     a = ap.parse_args()
 
     rclpy.init()
-    h = Harness()
+    h = Harness(a.robot, a.world)
     h.spin(1.0)
     pols = a.policies.split(",")
     if a.mission_pairs:

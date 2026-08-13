@@ -27,6 +27,8 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from tf2_ros import Buffer, TransformListener
 
+from orchard_sim import gz_topics as gzt
+
 
 def read_xyz(msg: PointCloud2) -> np.ndarray:
     off = {f.name: f.offset for f in msg.fields}
@@ -45,7 +47,12 @@ class LioRecorder(Node):
         self.declare_parameter("out", "/tmp/orchard_lio.npz")
         self.declare_parameter("cloud_topic", "/cloud_registered")
         self.declare_parameter("odom_topic", "/Odometry")
-        self.declare_parameter("gt_frame", "imu_link")
+        # gt_frame 은 참값 TF 조회용 — 다중 로봇에서는 로봇 접두가 붙는다.
+        self.declare_parameter("robot_id", "scout01")
+        self.declare_parameter(
+            "gt_frame",
+            gzt.frame(str(self.get_parameter("robot_id").value), "imu_link"))
+        self.declare_parameter("map_frame", "map")
         self.declare_parameter("voxel", 0.05)
         self.declare_parameter("compact_every", 40)
         self.declare_parameter("log_every", 100)
@@ -54,6 +61,7 @@ class LioRecorder(Node):
         self.out = g("out")
         self.voxel = float(g("voxel"))
         self.gt_frame = g("gt_frame")
+        self.map_frame = str(g("map_frame"))
         self.compact_every = int(g("compact_every"))
         self.log_every = int(g("log_every"))
 
@@ -116,7 +124,8 @@ class LioRecorder(Node):
         self.lio_p.append([p.x, p.y, p.z])
         self.lio_q.append([o.x, o.y, o.z, o.w])
         try:
-            tr = self.buf.lookup_transform("map", self.gt_frame, rclpy.time.Time())
+            tr = self.buf.lookup_transform(self.map_frame, self.gt_frame,
+                                           rclpy.time.Time())
         except Exception:
             self.n_gt_miss += 1
             return
