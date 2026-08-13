@@ -326,6 +326,67 @@ def test_evt_pong_not_persisted_but_other_kinds_are(factory):
     assert [r.kind for r in rows] == ["estop"]
 
 
+# ── Task 6 — 확장 A: 세션(연결) 에폭으로 seq 되감김을 재전송과 구분 ──────────
+#
+# 로봇 seq(robomw control_agent 의 self.seq)는 프로세스 전역·전 채널 공유
+# 카운터라 재기동하면 0 으로 되감긴다. dedup 키가 (robot_id, channel, seq) 뿐이면
+# 재기동 뒤 재사용된 seq 가 옛 세션의 것과 겹쳐 "재전송"으로 오인되어 진짜
+# 신규 이벤트가 버려진다(실사고: 임무 22 완료보고 유실, 임무 23 수락 2건
+# 유실 — QUEUED 고착). hello 는 접속 직후 1회 발행되는 로봇 계약(T_HELLO)이라
+# 재기동을 건드리지 않고 관측할 수 있는 유일한 신호다 — 그 hello 가 실어 온
+# seq 가 이 로봇에서 지금까지 관측한 고수위표보다 크지 않으면(뒤로 뜨거나
+# 같으면) 카운터가 리셋된 것으로 보고 세션 에폭을 올린다. UNIQUE 제약을
+# (robot_id, channel, epoch, seq) 로 확장해, 다른 에폭끼리는 같은 seq 를 써도
+# 충돌하지 않는다.
+
+def test_evt_seq_rewind_after_restart_hello_is_not_treated_as_retransmit(factory):
+    """세션 A 에서 이미 쓰인 seq 를, hello 로 감지된 재기동(세션 B) 뒤에 다시
+    써도 재전송으로 버려지면 안 된다 — 에폭이 다르기 때문이다."""
+    _seed_robot(factory)
+    fp, svc = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "정지A"}, seq=100)
+    # 로봇 재기동 — hello 가 되감긴 seq(1)로 도착한다(고수위 100보다 작다)
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=1)
+    assert svc._epoch.get("scout01", 0) == 1            # 에폭이 올라갔다
+    # 세션 B 가 세션 A 와 같은 seq(100)를 다시 쓴다 — 다른 에폭이라 유효한 신규 이벤트
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "정지B"}, seq=100)
+    with factory() as db:
+        rows = db.query(m.Event).filter_by(robot_id="scout01").order_by(m.Event.id).all()
+    assert [r.msg for r in rows] == ["정지A", "정지B"]
+
+
+def test_evt_same_epoch_duplicate_seq_still_deduped(factory):
+    """dedup 의 목적(링크 재전송 중복 차단)은 유지된다 — 같은 세션, 같은 seq 의
+    진짜 재전송은 에폭 도입 뒤에도 계속 걸러져야 한다."""
+    _seed_robot(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=1)   # 세션 시작(첫 hello — 에폭 불변)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "정지"}, seq=5)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "정지(재전송)"}, seq=5)
+    with factory() as db:
+        rows = db.query(m.Event).filter_by(robot_id="scout01").all()
+    assert len(rows) == 1 and rows[0].msg == "정지"
+
+
+def test_evt_accept_after_session_restart_is_not_lost(factory):
+    """실사고 재현(임무 23) — 로봇 재기동 뒤 되감긴 seq 가 이전 세션의 것과
+    우연히 겹쳐도, 그 세션에서 낸 임무 수락 신호가 조용히 사라지면 안 된다.
+    수정 전에는 fresh=False 로 버려져 임무가 QUEUED 에 영원히 고착됐다."""
+    ms1 = _seed_mission(factory, "scout01")
+    with factory() as db:
+        farm_id = db.get(m.Mission, ms1).farm_id
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms1), seq=5)
+    assert _state(factory, ms1) == "RUNNING"
+    # 로봇 재기동 — hello 가 되감긴 seq 로 도착(세션 갱신)
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=1)
+    with factory() as db:
+        ms2 = missions.create(db, robot_id="scout01", farm_id=farm_id,
+                              spec={"alleys": [1]}, created_by=1).id
+    fp.feed("scout01", "evt", _accepted(ms2), seq=5)      # 옛 세션과 같은 seq
+    assert _state(factory, ms2) == "RUNNING"               # 유실되지 않는다
+
+
 def test_subscribe_receives_and_unsub_stops(factory):
     fp = InMemoryFleetPort()
     svc = FleetService(factory)

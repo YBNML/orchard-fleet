@@ -31,9 +31,12 @@ def track(db, robot_id: str, payload: dict) -> bool:
 
 
 def event(db, robot_id: str, channel: str | None, seq: int | None,
-          payload: dict) -> bool:
+          payload: dict, epoch: int = 0) -> bool:
+    """중복 제거 키는 (robot_id, channel, epoch, seq) — T6 확장 A. `epoch` 는
+    호출부(FleetService)가 세션(연결) 갱신을 관측해 넘긴다. 기본값 0 은 에폭
+    개념이 없는 호출부(예전 테스트·스크립트)와 하위호환을 위한 것이다."""
     row = Event(robot_id=robot_id, ts=_ts(payload), channel=channel, seq=seq,
-                kind=str(payload.get("kind", "unknown")),
+                epoch=epoch, kind=str(payload.get("kind", "unknown")),
                 severity=str(payload.get("severity", "info")),
                 msg=str(payload.get("msg", ""))[:256], payload_json=payload)
     db.add(row)

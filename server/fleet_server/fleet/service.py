@@ -17,11 +17,14 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Callable
 
 from .. import ingest, missions
-from ..models import Mission, MissionEvent
+from ..models import Event, Mission, MissionEvent
+
+log = logging.getLogger("fleet_server.fleet.service")
 
 _ROBOT_STATE_EVENT = {"running": "start", "paused": "pause", "done": "complete",
                       "canceled": "cancel", "failed": "fail"}
@@ -76,6 +79,13 @@ class FleetService:
         self._factory = session_factory
         self.latest: dict[str, dict[str, dict]] = {}
         self._subs: list[Callable[[str, str, dict], None]] = []
+        # T6 확장 A — 세션(연결) 에폭. 메모리에만 두면 서버 재기동마다 0 으로
+        # 되돌아가 옛 시즌 seq 대역과 겹칠 수 있으므로, 로봇별 첫 메시지에서
+        # DB(events 의 마지막 행)로 한 번 시딩한다(_seed_epoch). 그 뒤로는
+        # hello 의 seq 되감김만으로 갱신한다(로봇 계약 불변 — hello 는 이미
+        # 접속 직후 1회 발행되는 기존 규약이다).
+        self._epoch: dict[str, int] = {}
+        self._last_seq: dict[str, int] = {}
 
     def attach(self, fleet) -> None:
         fleet.set_telemetry_handler(self.on_telemetry)
@@ -90,6 +100,7 @@ class FleetService:
     def on_telemetry(self, robot_id: str, channel: str, payload: dict,
                      seq: int | None) -> None:
         self.latest.setdefault(robot_id, {})[channel] = payload
+        self._track_session(robot_id, channel, seq)
         if channel == "tel/state":
             with self._factory() as db:
                 ingest.track(db, robot_id, payload)
@@ -97,8 +108,9 @@ class FleetService:
             kind = str(payload.get("kind", ""))
             if kind not in EVENT_KIND_SKIP:     # Task 6 — pong 은 기록하지 않는다
                 with self._factory() as db:
-                    fresh = ingest.event(db, robot_id, channel, seq, payload)
-                    if fresh:                # 재전송 방어는 ingest 의 seq 중복 제거가 맡는다
+                    epoch = self._epoch.get(robot_id, 0)
+                    fresh = ingest.event(db, robot_id, channel, seq, payload, epoch=epoch)
+                    if fresh:                # 재전송 방어는 ingest 의 (…,epoch,seq) 중복 제거가 맡는다
                         self._route_intervention(db, robot_id, payload)
                         self._consume_cmd_result(db, robot_id, payload)
                         self._consume_mission_evt(db, robot_id, payload)
@@ -106,6 +118,47 @@ class FleetService:
             self._sync_mission(robot_id, payload)
         for cb in list(self._subs):
             cb(robot_id, channel, payload)
+
+    # ── T6 확장 A: 세션 에폭 ──────────────────────────────────────────────────
+    def _track_session(self, robot_id: str, channel: str, seq: int | None) -> None:
+        """로봇 seq(robomw control_agent 의 `self.seq`)는 프로세스 전역·전 채널
+        공유 카운터라 재기동하면 0 으로 되감긴다. 로봇 계약은 못 건드리므로
+        (robomw 수정 금지) 서버가 이미 관측하는 신호만으로 에폭을 올린다:
+
+        hello(T_HELLO, 접속 직후 1회 발행 — 계약 불변)의 seq 가 이 로봇에서
+        지금까지 관측한 고수위표(`_last_seq`)보다 크지 않으면(뒤로 뜨거나
+        같으면) 카운터가 리셋된 것 — 재기동으로 본다. 단순 회선 재접속(로봇
+        프로세스는 살아 있음)이면 hello 는 다시 오지만 seq 는 계속 이어지므로
+        여기 걸리지 않는다 — "hello 수신"과 "seq 큰 폭 후퇴"를 **함께** 봐야
+        재기동만 골라낼 수 있다(브리프 예시 신호 3종 중 hello+되감김 조합).
+
+        고수위표는 채널을 가리지 않고 갱신한다 — seq 카운터 자체가 채널
+        공유라서다(예: pong 이 가장 잦아 고수위표를 가장 자주 새로 고친다)."""
+        self._seed_epoch(robot_id)
+        if seq is None:
+            return
+        last = self._last_seq.get(robot_id, -1)
+        if channel == "hello" and last >= 0 and seq <= last:
+            self._epoch[robot_id] = self._epoch.get(robot_id, 0) + 1
+            log.warning("로봇 %s 세션 갱신 감지(hello seq=%s <= 고수위 %s) — 에폭 %d",
+                       robot_id, seq, last, self._epoch[robot_id])
+        if seq > last:
+            self._last_seq[robot_id] = seq
+
+    def _seed_epoch(self, robot_id: str) -> None:
+        """서버 (재)기동 뒤 이 로봇의 첫 메시지에서 한 번만 — events 테이블의
+        마지막 행에서 에폭·seq 고수위표를 이어받는다. 메모리만 쓰면 서버
+        재기동 자체가 매번 에폭을 0 으로 되돌려 옛 시즌의 seq 대역과 겹칠 수
+        있다(이 태스크가 고치는 문제를 서버 재기동이 다시 만드는 셈이라 —
+        Task 6 확장 B 에서 서버를 재기동하는 이 태스크 안에서 특히 중요하다)."""
+        if robot_id in self._epoch:
+            return
+        with self._factory() as db:
+            row = (db.query(Event).filter(Event.robot_id == robot_id)
+                   .order_by(Event.id.desc()).first())
+        self._epoch[robot_id] = row.epoch if row is not None else 0
+        self._last_seq[robot_id] = (row.seq if row is not None and row.seq is not None
+                                    else -1)
 
     # 로봇 이벤트 → 개입 큐. 이벤트가 곧 티켓이 되는 지점이다.
     #   kind 가 코드표에 있으면 그것을, 아니면 payload.code 를 본다 —

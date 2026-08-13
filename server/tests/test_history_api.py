@@ -18,6 +18,17 @@ def test_event_dedup(db):
     assert db.query(m.Event).count() == 1                      # 스펙 §3.3 중복 제거
 
 
+def test_event_dedup_scoped_by_epoch(db):
+    """T6 확장 A — UNIQUE(robot_id, channel, epoch, seq). 같은 에폭에서는 seq
+    재사용이 재전송으로 걸러지고, 에폭이 다르면(로봇 재기동) 같은 seq 라도
+    별개 이벤트로 받아들인다."""
+    _farm_robot(db)
+    assert ingest.event(db, "scout01", "evt", 5, {"kind": "estop"}, epoch=0) is True
+    assert ingest.event(db, "scout01", "evt", 5, {"kind": "estop"}, epoch=0) is False
+    assert ingest.event(db, "scout01", "evt", 5, {"kind": "estop"}, epoch=1) is True
+    assert db.query(m.Event).count() == 2
+
+
 def test_track_downsample(db):
     _farm_robot(db)
     t0 = dt.datetime(2026, 8, 1, 12, 0, 0, tzinfo=dt.UTC)

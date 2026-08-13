@@ -148,17 +148,30 @@ class Track(Base):
 
 
 class Event(Base):
+    """T6 확장 A — dedup 키에 `epoch`(세션 에폭)를 더했다.
+
+    로봇 seq(robomw control_agent 의 `self.seq`)는 프로세스 전역·전 채널
+    공유 카운터라 재기동하면 0 으로 되감긴다. UNIQUE 가 (robot_id, channel,
+    seq) 뿐이던 시절에는 재기동 뒤 재사용된 seq 가 이전 세션의 것과 충돌해
+    "재전송"으로 오인·폐기됐다(실사고: 임무 22 완료보고 유실, 임무 23 수락
+    2건 유실). `epoch` 는 FleetService 가 hello(접속 직후 1회, 로봇 계약
+    불변) 의 seq 되감김을 관측해 올리는 값이다 — 다른 에폭끼리는 같은 seq 를
+    써도 충돌하지 않는다. 기존 행은 전부 epoch=0 으로 채워졌다(서버
+    재기동으로 시작하는 관측 이전 이력이라는 뜻일 뿐, 실제로 여러 세션이
+    섞여 있었을 수 있다 — 과거 dedup 오탐을 소급 정정하지는 않는다)."""
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(primary_key=True)
     robot_id: Mapped[str] = mapped_column(ForeignKey("robots.id"))
     ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
     channel: Mapped[str | None] = mapped_column(String(32), default=None)
     seq: Mapped[int | None] = mapped_column(Integer, default=None)
+    epoch: Mapped[int] = mapped_column(Integer, default=0)
     kind: Mapped[str] = mapped_column(String(32))
     severity: Mapped[str] = mapped_column(String(16), default="info")
     msg: Mapped[str] = mapped_column(String(256), default="")
     payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    __table_args__ = (UniqueConstraint("robot_id", "channel", "seq", name="uq_event_seq"),)
+    __table_args__ = (UniqueConstraint("robot_id", "channel", "epoch", "seq",
+                                       name="uq_event_seq"),)
 
 
 class Intervention(Base):
