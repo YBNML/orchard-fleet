@@ -97,6 +97,33 @@ class AlleyLock(Base):
     ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class BTInstance(Base):
+    """Behavior Tree 인스턴스 — 프리셋 하나가 만든 '로봇 1대분 임무 큐'.
+
+    tree_json 이 곧 실행 상태다(nodes.to_state/from_state 왕복): Sequence 의
+    진행 위치, Retry 의 남은 시도, Action 이 붙든 mission_id 까지 들어 있다.
+    엔진은 매 틱 이 JSON 을 되살려 tick 하고 다시 적는다 — 그래서 서버가
+    재기동해도 RUNNING 인스턴스는 하던 자리에서 이어 달린다(별도 복원 로직이
+    아니라 영속 상태 자체가 이어달리기의 근거다).
+
+    robot_id·farm_id 는 프리셋이 고른 '주 로봇'이다(인스턴스 1개 = 로봇 1대).
+    조회 스코프(farm)와 인가는 그 값으로 건다.
+    """
+    __tablename__ = "bt_instances"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preset: Mapped[str] = mapped_column(String(40))
+    params_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    robot_id: Mapped[str] = mapped_column(ForeignKey("robots.id"))
+    farm_id: Mapped[int] = mapped_column(ForeignKey("farms.id"))
+    state: Mapped[str] = mapped_column(String(16), default="RUNNING")  # RUNNING|SUCCESS|FAILED|CANCELED
+    tree_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    note: Mapped[str] = mapped_column(String(160), default="")         # 실패 사유 등
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    __table_args__ = (Index("ix_bt_state", "state"),)
+
+
 class MissionEvent(Base):
     __tablename__ = "mission_events"
     id: Mapped[int] = mapped_column(primary_key=True)

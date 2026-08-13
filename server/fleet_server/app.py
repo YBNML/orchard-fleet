@@ -46,10 +46,14 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
             lp = LegacyFleetPort(settings.offline_after_s)
             app.state.fleet = lp
             app.state.fleet_service.attach(lp)
+            app.state.bt_engine.fleet = lp      # 엔진도 같은 포트를 봐야 한다
             with session_factory() as db:
                 for r in db.query(Robot).filter(Robot.conn_kind == "legacy_ws"):
                     lp.register_robot(r.id, r.farm_id, r.conn_kind, r.config_json)
+        app.state.bt_engine.restore()           # RUNNING 인스턴스를 이어받는다
+        await app.state.bt_engine.start()       # 1 Hz 틱
         yield
+        await app.state.bt_engine.stop()
         if use_legacy and hasattr(app.state.fleet, "shutdown"):
             await app.state.fleet.shutdown()
 
@@ -62,14 +66,18 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     if fleet is not None:
         app.state.fleet_service.attach(fleet)
 
+    from .bt.engine import BTEngine
+    app.state.bt_engine = BTEngine(session_factory, app.state.fleet)
+
     from .api import admin_routes, auth_routes
     app.include_router(auth_routes.router, prefix="/api/v1")
     app.include_router(admin_routes.router, prefix="/api/v1")
 
-    from .api import history_routes, mission_routes, ops_routes
+    from .api import bt_routes, history_routes, mission_routes, ops_routes
     app.include_router(mission_routes.router, prefix="/api/v1")
     app.include_router(history_routes.router, prefix="/api/v1")
     app.include_router(ops_routes.router, prefix="/api/v1")
+    app.include_router(bt_routes.router, prefix="/api/v1")
 
     from . import ws as ws_module
     app.include_router(ws_module.router)

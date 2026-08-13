@@ -32,6 +32,11 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     # 중이던 요청을 재시도할 별도 API 는 v1 범위 밖).
     ("QUEUED", "lock_conflict"): "QUEUED_LOCK",
     ("QUEUED_LOCK", "cancel"): "CANCELED",
+    # BT 엔진의 승격(스펙 ③ §3) — 잠금 재획득에 성공한 QUEUED_LOCK 임무는
+    # QUEUED 로 돌아가 발진한다. T4 까지 QUEUED_LOCK 의 출구는 cancel 뿐이라
+    # "선행 임무가 끝나면 대기하던 임무가 스스로 출발한다"가 성립하지 않았다.
+    # 전이는 mission_ops.promote_locked 만 쓴다(획득 성공 직후·발진 직전).
+    ("QUEUED_LOCK", "lock_acquired"): "QUEUED",
     # 리뷰 라운드 1 (I4) — 로봇이 mission_start 자체를 거부(BUSY/BAD_PARAM/
     # ESTOPPED/UNSUPPORTED)하면 서버 쪽 임무는 RUNNING 을 못 보고 QUEUED 에
     # 머문다. 그 상태에서도 fail 로 종착시킬 수 있어야 통로 잠금이 풀린다.

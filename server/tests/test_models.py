@@ -10,7 +10,7 @@ def test_tables_create(db):
     names = {t.name for t in m.Base.metadata.sorted_tables}
     assert names == {"users", "auth_sessions", "farms", "user_farms", "robots",
                      "missions", "mission_events", "tracks", "events", "audit_log",
-                     "interventions", "alley_locks"}
+                     "interventions", "alley_locks", "bt_instances"}
 
 
 def test_event_dedup_unique(db):
