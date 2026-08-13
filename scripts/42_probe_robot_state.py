@@ -43,11 +43,24 @@ def send(cmd, **kw):
     s.sendall(encode_frame(json.dumps(m).encode(), OP_TEXT, mask=True))
 
 
+# ping 은 **주기로만** 보낸다 (1 Hz — 링크두절 문턱 1.5초의 절반 이하).
+#
+# 예전에는 루프를 돌 때마다, 즉 **프레임을 받을 때마다** 보냈다. 그런데 ping
+# 한 건은 로봇이 전 관제로 뿌리는 pong 이벤트 한 건을 만들고, 그 프레임이
+# 여기 도착하면 또 ping 을 보내게 된다 — 고리가 닫힌다. 루프백에서는 왕복이
+# 마이크로초라 초당 수천 건까지 발산했다 (2026-08-13 실측: 로봇 6,673건/초,
+# 관제 이벤트 루프가 굶어 하트비트가 5초 밀리고 로봇이 링크두절로 오판).
+# 링크를 살려 두는 데 필요한 것은 1 Hz 면 충분하다.
+PING_PERIOD_S = 1.0
+
 s.settimeout(0.4)
 end = time.time() + a.secs
 st, hello, events, poses = None, None, [], []
+next_ping = 0.0
 while time.time() < end:
-    send(P.CMD_PING)
+    if time.time() >= next_ping:
+        next_ping = time.time() + PING_PERIOD_S
+        send(P.CMD_PING)
     try:
         op, dd = decode_frame(s)
     except Exception:

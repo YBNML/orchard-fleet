@@ -100,6 +100,20 @@ PENDING_CMDS = ()
 DENY_REPEAT_S = 2.0
 DENY_PRUNE_S = 30.0             # 오래된 거부 기록은 버린다 (사전이 무한정 크지 않게)
 DENY_KEYS_MAX = 256             # 나이 가지치기만으로는 안 준다 — 개수 상한도 둔다
+
+# pong 이벤트를 이 간격보다 자주 브로드캐스트하지 않는다.
+#
+# **되먹임 차단이 목적이다.** ping 한 건이 전 관제로 나가는 브로드캐스트 한 건을
+# 만들면, 그 프레임을 받고 또 ping 하는 클라이언트가 있을 때 고리가 닫힌다:
+#   ping → pong 브로드캐스트 → (그 프레임을 받은) 클라이언트가 또 ping → …
+# 루프백에서는 왕복이 마이크로초라 초당 수천 건까지 치솟는다 (2026-08-13 실측:
+# 로봇이 초당 6,673건 발행. 관제는 그걸 건건이 동기 DB 로 적느라 이벤트 루프가
+# 굶어 1 Hz 하트비트가 5초까지 밀렸고, 로봇은 그 침묵을 링크두절로 읽었다).
+#
+# 상한을 두면 고리의 이득이 1 아래로 떨어져 발산하지 않는다. 정상 운영에는
+# 영향이 없다 — 관제 하트비트는 1 Hz 라 이 간격(0.5초)에 걸리지 않는다.
+# 명령-응답 상관(cmd_id 를 실은 ping)은 그대로다: cmd_result 는 따로 나간다.
+PONG_EVENT_MIN_GAP_S = 0.5
 DENY_WHY_MAX = 160              # 사유 문자열 상한. 클라이언트가 보낸 이름이 섞인다
 
 
@@ -353,6 +367,7 @@ class ControlAgent(Node):
         self.create_timer(0.05, self.control_tick)      # 20 Hz — 코어 루프
         self.create_timer(0.05, self.telemetry_tick)
         self._last_blackbox_pose_time = 0.0  # 1 Hz feed_pose 추적 (기존 텔레메트리 타이머에 편승)
+        self._last_pong_emit = 0.0           # pong 이벤트 발행 간격 상한용
         self.get_logger().info(
             f"control_agent 시작 — robot_id={self.robot_id} · "
             f"기능 {len(self.registry.features)}개")
@@ -840,8 +855,14 @@ class ControlAgent(Node):
             self._core_result(payload, c, "rejected", "DENIED", dict(reason=why))
             return True
         if c == P.CMD_PING:
-            self._emit("event", dict(kind="pong", msg="pong", level="info",
-                                     t=time.time()))
+            # 발행 간격 상한 — 되먹임 발산을 막는다 (PONG_EVENT_MIN_GAP_S 참조).
+            # 링크 생존 집계(note_client)는 _on_ws_message 에서 이미 끝났으므로
+            # 여기서 이벤트를 걸러도 링크 판정에는 영향이 없다.
+            now_m = time.monotonic()
+            if now_m - self._last_pong_emit >= PONG_EVENT_MIN_GAP_S:
+                self._last_pong_emit = now_m
+                self._emit("event", dict(kind="pong", msg="pong", level="info",
+                                         t=time.time()))
             self._core_result(payload, c, "completed")
             return True
         return False
