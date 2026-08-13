@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from . import auth
 from .config import Settings, load_settings
 from .db import Base, make_engine, make_session_factory
+from .event_retention import RetentionTask
 from .fleet.port import InMemoryFleetPort
 from .fleet.service import FleetService
 from .models import User
@@ -52,7 +53,9 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
                     lp.register_robot(r.id, r.farm_id, r.conn_kind, r.config_json)
         app.state.bt_engine.restore()           # RUNNING 인스턴스를 이어받는다
         await app.state.bt_engine.start()       # 1 Hz 틱
+        await app.state.retention.start()       # 이벤트 보존정책 — 기동 시 1회 + 24h 주기
         yield
+        await app.state.retention.stop()
         await app.state.bt_engine.stop()
         if use_legacy and hasattr(app.state.fleet, "shutdown"):
             await app.state.fleet.shutdown()
@@ -68,6 +71,7 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
 
     from .bt.engine import BTEngine
     app.state.bt_engine = BTEngine(session_factory, app.state.fleet)
+    app.state.retention = RetentionTask(session_factory, settings.event_ttl_days)
 
     from .api import admin_routes, auth_routes
     app.include_router(auth_routes.router, prefix="/api/v1")

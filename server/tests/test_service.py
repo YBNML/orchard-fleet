@@ -311,6 +311,21 @@ def test_evt_unknown_kinds_and_other_commands_ignored(factory):
     assert _state(factory, ms_id) == "QUEUED"
 
 
+# ── Task 6 — 이벤트 보존정책: pong 미기록 ────────────────────────────────────
+
+def test_evt_pong_not_persisted_but_other_kinds_are(factory):
+    """pong 은 링크 판정에만 쓰인다(어댑터 메모리로 충분하다는 것이 스펙 판단) —
+    events 테이블에 적을 가치가 없다(실기: 81,503건 중 81,174건이 pong). 다른
+    kind 는 그대로 기록된다."""
+    _seed_robot(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "pong", "msg": "pong"}, seq=1)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "정지"}, seq=2)
+    with factory() as db:
+        rows = db.query(m.Event).filter_by(robot_id="scout01").all()
+    assert [r.kind for r in rows] == ["estop"]
+
+
 def test_subscribe_receives_and_unsub_stops(factory):
     fp = InMemoryFleetPort()
     svc = FleetService(factory)

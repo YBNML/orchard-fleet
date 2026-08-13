@@ -17,6 +17,7 @@ class Settings:
     admin_login: str = ""                 # users 테이블이 빌 때만 부트스트랩
     admin_password: str = ""
     offline_after_s: float = 15.0         # 스펙 §3.1 — 오프라인 표시 15초
+    event_ttl_days: int = 7               # Task 6 — 이벤트 보존정책(TTL 7일)
 
 
 def load_settings() -> Settings:
@@ -31,4 +32,5 @@ def load_settings() -> Settings:
         s.web_dir = Path(os.environ["FLEET_WEB_DIR"])
     s.admin_login = os.environ.get("FLEET_ADMIN_LOGIN", "")
     s.admin_password = os.environ.get("FLEET_ADMIN_PASSWORD", "")
+    s.event_ttl_days = int(os.environ.get("FLEET_EVENT_TTL_DAYS", s.event_ttl_days))
     return s

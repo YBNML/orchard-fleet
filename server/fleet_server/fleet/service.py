@@ -26,6 +26,14 @@ from ..models import Mission, MissionEvent
 _ROBOT_STATE_EVENT = {"running": "start", "paused": "pause", "done": "complete",
                       "canceled": "cancel", "failed": "fail"}
 
+# Task 6 — pong 은 링크 판정에만 쓰인다(어댑터 메모리로 충분하다는 것이 스펙
+# 판단). events 테이블에 적을 가치가 없다 — 실기 81,503건 중 81,174건이
+# pong 이었다(하트비트 왕복 하나가 브로드캐스트 한 건을 만드는 구조상 트래픽의
+# 대부분을 차지한다 — orchard_sim/control_agent.py PONG_EVENT_MIN_GAP_S 주석
+# 참조). 화면(웹 대시보드)도 이미 pong 을 걸러낸다(index.html:1225) — 그 필터를
+# 소스(서버 기록)까지 끌어올린 것뿐이다.
+EVENT_KIND_SKIP = {"pong"}
+
 # 로봇이 실제로 내는 임무 evt kind → 임무 전이.
 #
 # 이름은 상상하지 않고 로봇 소스에서 확정했다 — robomw
@@ -86,12 +94,14 @@ class FleetService:
             with self._factory() as db:
                 ingest.track(db, robot_id, payload)
         elif channel == "evt":
-            with self._factory() as db:
-                fresh = ingest.event(db, robot_id, channel, seq, payload)
-                if fresh:                   # 재전송 방어는 ingest 의 seq 중복 제거가 맡는다
-                    self._route_intervention(db, robot_id, payload)
-                    self._consume_cmd_result(db, robot_id, payload)
-                    self._consume_mission_evt(db, robot_id, payload)
+            kind = str(payload.get("kind", ""))
+            if kind not in EVENT_KIND_SKIP:     # Task 6 — pong 은 기록하지 않는다
+                with self._factory() as db:
+                    fresh = ingest.event(db, robot_id, channel, seq, payload)
+                    if fresh:                # 재전송 방어는 ingest 의 seq 중복 제거가 맡는다
+                        self._route_intervention(db, robot_id, payload)
+                        self._consume_cmd_result(db, robot_id, payload)
+                        self._consume_mission_evt(db, robot_id, payload)
         elif channel == "mission":
             self._sync_mission(robot_id, payload)
         for cb in list(self._subs):
