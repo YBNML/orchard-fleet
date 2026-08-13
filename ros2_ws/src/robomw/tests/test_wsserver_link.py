@@ -167,6 +167,51 @@ def test_slow_client_with_ping_does_not_stall_receive_loop(server, patient_send)
         f"수신 공백 {gap:.2f}s — 로봇이 살아 있는 링크를 두절로 오판한다")
 
 
+def test_pong_send_cannot_outlast_link_budget(server, monkeypatch):
+    """PONG **전송**도 링크 예산(1.5초) 안에 끝나야 한다.
+
+    1차 수정의 잔존 구멍(2026-08-13 실기 재발). 그때는 pong 이 송신 **락**을
+    기다리는 시간만 0.2초로 묶었고, 락을 잡은 뒤의 **send 자체**는 여전히
+    SEND_TIMEOUT_S(2.0초)까지 매달릴 수 있었다. 2.0초 > 1.5초이므로,
+    관제 소켓이 잠깐 꽉 찬 순간에 PING 이 도착하면 수신 루프가 그 자리에서
+    2초를 서고 → note_client 가 끊겨 살아 있는 링크가 다시 두절로 찍혔다.
+
+    여기서는 **락은 비어 있고 소켓만 꽉 찬** 상태를 만든다. 그래야 이 경로
+    하나만 시험한다(락 경합은 위 시험이 따로 본다).
+    """
+    srv, seen = server
+    # 넉넉한 전체 시한 — 이 시험이 보려는 것은 pong 경로의 독립적 시한이다.
+    # (예전 코드는 pong 도 이 값을 그대로 썼다 → 그래서 실패한다)
+    monkeypatch.setattr(wsserver, "SEND_TIMEOUT_S", 30.0, raising=False)
+    sock, conn = _slow_client(srv)
+    time.sleep(0.3)
+
+    # 커널 송신 버퍼를 **꽉** 채운다. send_text 를 거치지 않으므로 링크는
+    # 죽지 않고, 끝나면 락도 풀려 있다.
+    with conn.lock:
+        try:
+            conn._send_locked(encode_frame(BIG.encode(), OP_TEXT), timeout=0.5)
+        except Exception:
+            pass
+    assert not conn.lock.locked(), "시험 전제: 락은 비어 있어야 한다"
+
+    del seen[:]
+    t0 = time.monotonic()
+    sock.sendall(encode_frame(b"", OP_PING, mask=True))      # 여기서 멈추면 안 된다
+    for _ in range(6):
+        sock.sendall(encode_frame(HEARTBEAT.encode(), OP_TEXT, mask=True))
+        time.sleep(0.25)
+    t_end = time.monotonic()
+    got = sorted(t for t in seen if t0 <= t <= t_end)
+    marks = [t0] + got + [t_end]
+    gap = max(b - a for a, b in zip(marks, marks[1:]))
+
+    sock.close()
+    assert got, "PING 뒤 하트비트가 한 건도 처리되지 않았다 — 수신 루프가 pong 송신에 갇혔다"
+    assert gap * 1000 < P.LINK_LOSS_STOP_MS, (
+        f"수신 공백 {gap:.2f}s — pong 송신이 링크 예산을 넘겼다")
+
+
 def test_broadcast_gives_up_on_wedged_client(server, monkeypatch):
     """브로드캐스트는 **반드시 돌아온다.**
 
@@ -200,3 +245,48 @@ def test_broadcast_gives_up_on_wedged_client(server, monkeypatch):
     assert conn not in srv.conns, "죽은 연결이 목록에 남았다"
     assert conn.dropped > 0
     sock.close()
+
+
+def test_retired_client_socket_is_actually_closed(server, monkeypatch):
+    """못 따라와 **걷어낸** 관제는 소켓까지 닫아야 한다.
+
+    2026-08-13 재발의 본체. 걷어내기만 하고 소켓을 열어 두면:
+
+      · 관제는 끊긴 줄 **모른다** — 계속 하트비트를 보낸다. 그래서 서버 쪽에
+        keepalive 오류(1011)도 안 뜬다. 실기에서 "1011 은 0건인데 link_lost 만
+        난다"로 보인 이유가 이것이다.
+      · 로봇은 그 연결을 세지 않는다(client_count 에서 빠진다). 살아 있다고
+        믿는 링크가 로봇 장부에서만 사라진다.
+      · 수신 스레드는 recv 에 갇힌 채 남아 '관제 해제' 로그조차 안 나온다 —
+        그래서 로그의 '총 N' 이 실제와 어긋난다.
+
+    닫아 주면 상대가 즉시 알고 재접속한다(어댑터 백오프 1초).
+    """
+    srv, _ = server
+    monkeypatch.setattr(wsserver, "SEND_TIMEOUT_S", 0.5, raising=False)
+    sock, conn = _slow_client(srv)
+    time.sleep(0.3)
+
+    for _ in range(40):
+        srv.broadcast({"topic": "orchard/x/map", "payload": BIG})
+        if not conn.alive:
+            break
+    assert not conn.alive, "시험 전제: 연결이 걷어내져야 한다"
+    assert conn not in srv.conns
+
+    # 상대 입장에서 확인한다: 밀린 데이터를 다 읽고 나면 EOF 여야 한다.
+    sock.settimeout(1.0)
+    closed = False
+    end = time.time() + 5.0
+    while time.time() < end:
+        try:
+            if sock.recv(65536) == b"":
+                closed = True
+                break
+        except socket.timeout:
+            break                            # 아직 열려 있다 = 상대는 모른다
+        except OSError:
+            closed = True
+            break
+    sock.close()
+    assert closed, "걷어낸 연결의 소켓이 안 닫혔다 — 관제는 끊긴 줄 모른 채 계속 보낸다"

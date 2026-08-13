@@ -50,9 +50,29 @@ SEND_TIMEOUT_S = 2.0
 # 재시도한다 — 조각마다 돌아와야 SEND_TIMEOUT_S 를 시험이 갈아 끼워도 듣는다.
 SEND_SLICE_S = 0.2
 
-# 수신 루프가 PONG 을 보내려고 송신 락을 기다리는 한도. 링크 두절 판정
-# (P.LINK_LOSS_STOP_MS=1.5초)보다 훨씬 짧아야 한다 — Conn.pong 주석 참조.
+# 수신 루프가 PONG 때문에 멈춰 있어도 되는 시간. **락 대기와 송신 각각에**
+# 건다 — 둘 중 하나만 묶으면 나머지로 새기 때문이다(2026-08-13 재발: 락 대기만
+# 0.2초로 묶고 송신은 SEND_TIMEOUT_S(2.0초)를 쓰게 뒀더니, 관제 소켓이 잠깐
+# 꽉 찬 순간에 PING 이 오면 수신 루프가 2초를 서서 link_lost 가 다시 났다).
+#
+# 합쳐도 0.4초 — 링크 두절 판정(P.LINK_LOSS_STOP_MS=1.5초)에 한참 못 미쳐야
+# 한다. 수신이 멈춰도 되는 최대 시간이 곧 이 두 값의 합이다.
 PONG_LOCK_WAIT_S = 0.2
+PONG_SEND_TIMEOUT_S = 0.2
+
+
+class SendTimeout(TimeoutError):
+    """송신 시한 초과.
+
+    partial 이면 프레임이 반만 나가 스트림이 깨진 상태다 — 이어 붙일 수 없으니
+    그 연결은 끊어야 한다. 아무것도 못 냈으면 프레임은 아직 온전하므로,
+    호출부가 미뤘다가 다시 보낼 수 있다.
+    """
+
+    def __init__(self, partial: bool):
+        super().__init__("송신 시한 초과 — 관제가 읽지 않는다")
+        self.partial = partial
+
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".json": "application/json",
@@ -179,26 +199,43 @@ class Conn:
         """
         timeout = SEND_TIMEOUT_S if timeout is None else timeout
         view = memoryview(data)
+        sent = 0
         end = time.monotonic() + timeout
         while view:
             if time.monotonic() >= end:
-                raise TimeoutError("송신 시한 초과 — 관제가 읽지 않는다")
+                raise SendTimeout(partial=sent > 0)
             try:
                 n = self.sock.send(view)
+            except SendTimeout:
+                raise
             except (BlockingIOError, TimeoutError):
                 continue                    # 조각 시한 안에 한 바이트도 못 냈다
             except InterruptedError:
                 continue
             if n <= 0:
                 raise ConnectionError("송신 실패")
+            sent += n
             view = view[n:]
 
     def _flush_pong_locked(self) -> None:
-        """송신 락을 쥔 상태에서, 미뤄 둔 PONG 이 있으면 **먼저** 내보낸다."""
+        """송신 락을 쥔 상태에서, 미뤄 둔 PONG 이 있으면 **먼저** 내보낸다.
+
+        여기서도 짧게만 시도한다. 이 함수는 브로드캐스트 경로에서도 불리는데,
+        밀린 pong 하나 때문에 텔레메트리 송신이 길게 붙들리면 안 된다.
+        못 내보내면 도로 넣어 두고 다음 기회를 노린다.
+        """
         with self._pong_lock:
             data, self._pending_pong = self._pending_pong, None
-        if data is not None:
-            self._send_locked(data)
+        if data is None:
+            return
+        try:
+            self._send_locked(data, timeout=PONG_SEND_TIMEOUT_S)
+        except SendTimeout as e:
+            if e.partial:
+                raise                       # 스트림이 깨졌다 — 호출부가 끊는다
+            with self._pong_lock:
+                if self._pending_pong is None:
+                    self._pending_pong = data
 
     def send_text(self, s: str) -> bool:
         if not self.alive:
@@ -250,19 +287,30 @@ class Conn:
         if not self.alive:
             return False
         if not self.lock.acquire(timeout=PONG_LOCK_WAIT_S):
-            with self._pong_lock:
-                self._pending_pong = data
-            self.deferred_pongs += 1
+            self._defer_pong(data)
             return False
         try:
             self._flush_pong_locked()
-            self._send_locked(data)
+            self._send_locked(data, timeout=PONG_SEND_TIMEOUT_S)
             return True
+        except SendTimeout as e:
+            # 락은 잡았는데 **소켓이 꽉 차** 못 보냈다. 여기서 오래 매달리면
+            # 수신 루프가 그대로 서서 link_lost 가 난다(재발 원인). 미뤄 둔다.
+            if e.partial:
+                self.alive = False          # 반만 나갔다 — 스트림이 깨졌다
+                return False
+            self._defer_pong(data)
+            return False
         except Exception:
             self.alive = False
             return False
         finally:
             self.lock.release()
+
+    def _defer_pong(self, data: bytes) -> None:
+        with self._pong_lock:
+            self._pending_pong = data
+        self.deferred_pongs += 1
 
     def ping(self):
         try:
@@ -277,6 +325,16 @@ class Conn:
             with self.lock:
                 # 닫는 길에서 오래 붙들지 않는다 — 이미 못 읽는 상대다.
                 self._send_locked(encode_frame(b"", OP_CLOSE), timeout=0.2)
+        except Exception:
+            pass
+        # **shutdown 을 먼저 한다.** socket.close() 만으로는 실제로 안 닫힌다:
+        # http.server 핸들러가 makefile() 로 rfile/wfile 을 들고 있어 파이썬
+        # 소켓의 _io_refs 가 0 이 아니고, 그러면 close() 는 표시만 하고 fd 를
+        # 남긴다. 그 사이 상대는 끊긴 줄 모른 채 계속 보내고, recv 에 갇힌
+        # 수신 스레드도 안 깨어난다. shutdown 은 그 참조와 무관하게 즉시 FIN 을
+        # 보내 양쪽을 깨운다.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
         except Exception:
             pass
         try:
@@ -476,6 +534,14 @@ class ControlServer:
                     if c in self.conns:
                         self.conns.remove(c)
             for c in dead:
+                # **소켓까지 닫는다.** 목록에서 빼기만 하면 상대는 끊긴 줄
+                # 모른 채 계속 보낸다 — keepalive 도 정상이라 오류조차 안 뜬다.
+                # 그동안 로봇은 그 연결을 세지 않으므로, 살아 있다고 믿는
+                # 링크가 로봇 장부에서만 사라진다(2026-08-13 실기: 서버 1011
+                # 0건인데 로봇만 link_lost). 수신 스레드도 recv 에 갇혀 있어
+                # '관제 해제' 로그조차 안 나와 '총 N' 이 실제와 어긋난다.
+                # 닫아 주면 상대가 즉시 알고 재접속하고, 장부도 정직해진다.
+                c.close()
                 if self.on_close:
                     self.on_close(c)
 
