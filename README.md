@@ -41,16 +41,24 @@ cd ros2_ws && colcon build --packages-select robomw orchard_sim && source instal
 
 # 지형·월드 생성 (커밋된 월드를 재생성할 때)
 python3 scripts/gen_heightmap.py --rows 10 --trees-per-row 41
-# --robots "이름:x,y,yaw도 ..." — 로봇 인스턴스 이름이 곧 토픽·TF 접두다
+# --robots "이름:x,y,yaw도 ..." — 로봇 인스턴스 이름이 곧 토픽·TF 접두다 (여러 대면 공백으로 나열)
 python3 scripts/gen_world.py --rows 10 --trees-per-row 41 \
-  --robots "scout01:-14.0,-33.0,90" --environment --detail 2 --instrumented-rows 0 \
+  --robots "scout01:-14.0,-33.0,90 scout02:7.0,-33.0,90" \
+  --environment --detail 2 --instrumented-rows 0 \
   --out sim/worlds/orchard_nav.sdf
 
-# 시뮬 + 로봇 스택 + 관제 (관제 접속 주소를 안내해준다)
-bash scripts/run_control.sh
+# 시뮬레이터 (월드 하나에 로봇 모두)
+gz sim -s -r -v2 sim/worlds/orchard_nav.sdf
+
+# 로봇 스택은 대수만큼 — /clock 브리지는 월드당 하나뿐이라 첫 대만 clock:=true
+ros2 launch orchard_sim control.launch.py robot_id:=scout01 ns:=scout01 port:=8080 clock:=true
+ros2 launch orchard_sim control.launch.py robot_id:=scout02 ns:=scout02 port:=8081 clock:=false
+
+# 관제 서버 (별도 터미널)
+cd server && python -m uvicorn fleet_server.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
-관제 서버(8000)는 `server/`에서 uvicorn으로 별도 기동한다 — 자세한 절차와 계정 설정은 `docs/` 및 `server/` 참조. 저장소의 admin/123 등은 로컬 시뮬 전용 예시 계정이다.
+다중 로봇 온보딩(네임스페이스·포트·서버 등록)의 전체 절차는 `ros2_ws/src/robomw/README.md` §4.1 에 있다. 계정 설정은 `server/` 참조 — 저장소의 admin/123 등은 로컬 시뮬 전용 예시 계정이다.
 
 ## 문서 지도
 
@@ -65,7 +73,12 @@ bash scripts/run_control.sh
 
 - ✅ M3 자율주행: 9통로 무개입 완주 재현(2연속) · 통로 안 측위 RMS 0.09 m
 - ✅ robomw v0.1: 명령 계약 + scout 재배선 + 서버 프로토콜 단일화 (회귀 게이트 전 항목 녹색)
-- ⏳ 다음: 신규 명령 동작 구현(작업 유형·진단), 이기종 2호기 온보딩 실증, 측위 위상 고착 종결(후방 산포 게이트)
+- ✅ 신규 명령 동작: 작업 유형(정찰 work)·진단 3종(self_test·relocalize·blackbox_dump) + 대시보드 명령 UI
+- ✅ **2대 동시 운용**: scout01·scout02 를 네임스페이스로 다중화하고 통로 잠금(AlleyLock)으로 공간 분리 — 분담 정찰 프리셋으로 통로 [0..4]/[6,7,8] 동시 주행 실증(69.8분), 상호 라이다 오염 0점/프레임 실측
+- ✅ **서버측 Behavior Tree 임무 큐**: 노드 5종(Sequence·Selector·Retry·Condition·Action) + 프리셋 3종 + 서버 재기동 복원, 대시보드에 트리 상태·통로 점유 오버레이
+- ⏳ 다음: 선회 구역 보정 자기잠금 해소(횡단 중 자동 정지의 원인), 측위 종방향 1.5 m 위상 고착 종결, 3대 이상 운용을 위한 점군 대역 확보(DDS 전송 설정 또는 표본 감축)
+
+최신 게이트 수치는 `docs/findings/2026-08-13-multirobot-bt.md` 참조.
 
 ## 라이선스
 

@@ -197,6 +197,54 @@ class Diag(ABC):
 모듈명만 넣으면 된다(코어도 대시보드도 안 고친다, `robomw/robomw/core/
 base.py` 상단 docstring 참조).
 
+### 4.1 같은 로봇을 여러 대 — 네임스페이스·포트·서버 등록
+
+**`robomw` 는 다중 로봇을 모른다.** 코어에는 로봇이 몇 대인지가 드러나지
+않는다 — 인스턴스마다 자기 `robot_id` 로 `ControlServer` 를 하나씩 띄우면
+그게 곧 다중 로봇이다. 실제로 2대 동시 운용을 실증하며 고친 코어 파일은
+0개다(스펙 ③ / `docs/findings/2026-08-13-multirobot-bt.md`).
+
+붙이는 데 필요한 것은 셋뿐이다.
+
+1. **네임스페이스** — 로봇별 토픽·TF 를 `scout0N/` 아래로 민다. 어댑터·
+   로컬라이저·브리지를 `__ns:=/scout0N` 로 기동하면 되고, **코드 안에서는
+   상대 토픽만 쓴다**(절대경로를 박으면 그 순간 다중화가 깨진다).
+   TF 프레임은 `scout0N/odom`·`scout0N/base_link` 로 나누고 `map` 만
+   공유한다. `tf`/`tf_static` 토픽 자체는 전역으로 두고 프레임 이름으로
+   구분한다(ROS 관례).
+
+   ```bash
+   ros2 launch orchard_sim control.launch.py \
+     robot_id:=scout02 ns:=scout02 port:=8081 clock:=false   # /clock 브리지는 월드당 하나
+   ```
+
+2. **포트** — 관제 링크(WebSocket)는 로봇마다 따로 연다. 이 저장소 관례는
+   scout01 → 8080, scout02 → 8081. `control_agent` 의 `port` 파라미터다.
+
+3. **서버 등록** — 관제 DB 에 로봇 행을 하나 더 넣는다. **기존
+   `register_robot` 경로를 그대로 쓰며 서버를 멈추지 않아도 된다** —
+   접속 주소는 `config_json.ws_url` 로 준다.
+
+   ```json
+   {"id": "scout02", "farm_id": 1, "name": "스카우트 2호", "kind": "orchard",
+    "conn_kind": "legacy_ws",
+    "config_json": {"ws_url": "ws://127.0.0.1:8081/ws", "token": ""}}
+   ```
+
+검증 도구는 전부 `--robot`(기본 `scout01`)을 받는다 — 옛 무인자 호출은 1호기
+동작 그대로다: `42_probe_robot_state.py --robot scout02 --port 8081`,
+`39_verify_localization_live.py --robot scout02`, `46_climb_harness.py --robot`.
+
+**한 대를 붙일 때마다 같이 확인할 것**
+
+- **점군 대역은 시스템 전역 천장을 나눠 쓴다** — 벽시계 약 2.7 프레임/초가
+  로봇 수로 갈린다. 2대에서 이미 한 로봇이 `self_test` 의 8 Hz 문턱 아래로
+  내려간다(실측 3.9~8.1 Hz). 3대째부터는 라이다 표본 감축이 사실상 전제다.
+- **통로 잠금(AlleyLock)은 임무 단위 공간 분리**라, 두 로봇의 통로 집합이
+  겹치거나 사이 헤드랜드 패드를 공유하면 뒤 임무가 `QUEUED_LOCK` 으로 선다.
+- **선회 평지 패드 파리티** — 통로 목록은 오름차순이면 첫 통로가 짝수,
+  내림차순이면 홀수여야 물리적으로 완주 가능하다(`presets.parity_safe`).
+
 ## 5. 회귀 게이트 (재배선 합격 기준)
 
 전 항목 통과 수치는 `docs/findings/2026-08-12-robomw-extraction.md` 참조.
