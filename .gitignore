@@ -24,6 +24,8 @@ sim/models/orchard_terrain/heightmap_meta.json
 sim/models/scout_mini_mid70/meshes/*.dae
 server/.venv/
 server/fleet.db
+server/fleet.db-shm
+server/fleet.db-wal
 server/data/
 server/*.egg-info/
 __pycache__/

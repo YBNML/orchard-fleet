@@ -81,6 +81,16 @@ def generate_launch_description():
     robot_id = LaunchConfiguration("robot_id")
     # ns 를 비워 두면 robot_id 를 쓴다. 런치 인자에는 "비었으면 다른 값" 이라는
     # 기본값 문법이 없어서 파이썬 표현식으로 고른다.
+    #
+    # 주의 — ns 는 robot_id 와 같게 두거나 비워라(비우면 robot_id 를 그대로
+    # 쓴다). 다르게 주면 갈라진다: 아래로 넘어가는 stage0/livox_bridge 는 이
+    # ns 로 노드 네임스페이스가 잡혀 /<ns>/... 토픽·프레임을 쓰는데,
+    # control_agent 의 센서 토픽·TF 프레임은 여기 ns 가 아니라 robot_id
+    # 파라미터에서 직접 파생된다(control_agent.py 의 robot_id 파생 절 참조).
+    # 즉 브리지는 ns 파생, 노드의 절대 토픽은 robot_id 파생 — 둘을 다르게
+    # 주면 브리지는 /<ns>/... 로 뜨고 control_agent 는 /<robot_id>/... 를
+    # 구독/발행해 서로 어긋난다. 에러도 경고도 없이 그냥 데이터가 안
+    # 온다(무증상 무데이터) — 다중 로봇으로 늘릴 때 가장 조용히 새는 지점.
     ns = PythonExpression(["'", LaunchConfiguration("ns"), "' or '", robot_id, "'"])
     use_fastlio = IfCondition(PythonExpression(
         ["'", LaunchConfiguration("slam"), "' == 'fastlio'"]))

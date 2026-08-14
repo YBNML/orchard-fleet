@@ -42,8 +42,10 @@ cd ros2_ws && colcon build --packages-select robomw orchard_sim && source instal
 # 지형·월드 생성 (커밋된 월드를 재생성할 때)
 python3 scripts/gen_heightmap.py --rows 10 --trees-per-row 41
 # --robots "이름:x,y,yaw도 ..." — 로봇 인스턴스 이름이 곧 토픽·TF 접두다 (여러 대면 공백으로 나열)
+# scout02 의 x=14.0 은 스폰 위치다. 통로 6 남단(x=7.0)은 운용 중 임무 전
+# 텔레포트 목표일 뿐 스폰과는 다르다 — `docs/findings/2026-08-13-multirobot-bt.md` §1.2 참조.
 python3 scripts/gen_world.py --rows 10 --trees-per-row 41 \
-  --robots "scout01:-14.0,-33.0,90 scout02:7.0,-33.0,90" \
+  --robots "scout01:-14.0,-33.0,90 scout02:14.0,-33.0,90" \
   --environment --detail 2 --instrumented-rows 0 \
   --out sim/worlds/orchard_nav.sdf
 
@@ -74,7 +76,7 @@ cd server && python -m uvicorn fleet_server.app:create_app --factory --host 0.0.
 - ✅ M3 자율주행: 9통로 무개입 완주 재현(2연속) · 통로 안 측위 RMS 0.09 m
 - ✅ robomw v0.1: 명령 계약 + scout 재배선 + 서버 프로토콜 단일화 (회귀 게이트 전 항목 녹색)
 - ✅ 신규 명령 동작: 작업 유형(정찰 work)·진단 3종(self_test·relocalize·blackbox_dump) + 대시보드 명령 UI
-- ✅ **2대 동시 운용**: scout01·scout02 를 네임스페이스로 다중화하고 통로 잠금(AlleyLock)으로 공간 분리 — 분담 정찰 프리셋으로 통로 [0..4]/[6,7,8] 동시 주행 실증(69.8분), 상호 라이다 오염 0점/프레임 실측
+- ✅ **2대 동시 운용**: scout01·scout02 를 네임스페이스로 다중화하고 통로 잠금(AlleyLock)으로 공간 분리 — 분담 정찰 프리셋으로 통로 [0..4]/[6,7,8] 동시 주행 실증(69.8분), 실주행 최소 이격 19.98 m·횡오차 0.050/0.082 m 로 상호 오염 증거 없음(근접 배치 직접 실측은 후속)
 - ✅ **서버측 Behavior Tree 임무 큐**: 노드 5종(Sequence·Selector·Retry·Condition·Action) + 프리셋 3종 + 서버 재기동 복원, 대시보드에 트리 상태·통로 점유 오버레이
 - ⏳ 다음: 선회 구역 보정 자기잠금 해소(횡단 중 자동 정지의 원인), 측위 종방향 1.5 m 위상 고착 종결, 3대 이상 운용을 위한 점군 대역 확보(DDS 전송 설정 또는 표본 감축)
 
