@@ -31,3 +31,4 @@ server/*.egg-info/
 __pycache__/
 maps/
 backups/
+.superpowers/
