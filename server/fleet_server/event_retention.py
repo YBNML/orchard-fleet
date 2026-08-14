@@ -40,8 +40,15 @@ _SAFE_KIND_PREFIXES = ("estop", "mission_")
 
 
 def _safe_kind_clause():
+    # 리뷰 라운드 2 (N3) — SQLAlchemy 의 Column.startswith() 는 기본으로
+    # LIKE 와일드카드(%, _)를 이스케이프하지 않는다. "mission_" 의 "_" 는
+    # LIKE 문법에서 "아무 문자 하나"를 뜻하므로, autoescape 없이는
+    # `kind LIKE 'mission_%'` 가 "mission" 뒤에 밑줄 아닌 다른 한 글자가
+    # 와도(예: 가상의 kind "missionX") 안전 유형으로 잘못 인식한다 —
+    # 지금 실제 kind 값들과는 우연히 안 부딪혔을 뿐 구조적으로 틀린
+    # 필터였다. autoescape=True 로 "_"·"%" 를 리터럴로 고정한다.
     return or_(Event.kind.in_(_SAFE_KINDS_EXACT),
-               *(Event.kind.startswith(p) for p in _SAFE_KIND_PREFIXES))
+               *(Event.kind.startswith(p, autoescape=True) for p in _SAFE_KIND_PREFIXES))
 
 
 def purge_expired(db, ttl_days: int, safe_ttl_days: int = 90) -> int:

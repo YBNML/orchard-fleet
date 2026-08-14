@@ -133,6 +133,25 @@ def test_purge_expired_safe_kinds_eventually_expire_too(factory):
     assert n == 2
 
 
+def test_purge_expired_kind_prefix_does_not_wildcard_match(factory):
+    """N3 — startswith('mission_')·startswith('estop') 의 매칭은 LIKE
+    와일드카드가 아니라 리터럴 접두어여야 한다. autoescape 없이는 "_"(밑줄)
+    가 "아무 문자 하나"로 해석돼, 밑줄이 아닌 글자가 와도(가상의 kind
+    "missionX") 안전 유형으로 잘못 인식해 지워지지 않는다."""
+    _seed_robot(factory)
+    old = dt.datetime.now(dt.UTC) - dt.timedelta(days=8)
+    with factory() as db:
+        db.add(m.Event(robot_id="scout01", ts=old, channel="evt", seq=1, kind="missionX"))
+        db.add(m.Event(robot_id="scout01", ts=old, channel="evt", seq=2, kind="mission_started"))
+        db.commit()
+    with factory() as db:
+        n = purge_expired(db, ttl_days=7, safe_ttl_days=90)
+    assert n == 1                            # missionX 는 안전 유형이 아니다 — 표준 TTL 로 지워짐
+    with factory() as db:
+        kinds = {e.kind for e in db.query(m.Event).all()}
+    assert kinds == {"mission_started"}       # 진짜 mission_* 만 안전 유형으로 보존
+
+
 def test_purge_expired_safe_ttl_zero_or_negative_is_noop_for_safe_axis(factory):
     """safe_ttl_days<=0 은 안전 kind 축만 비활성화한다(표준 축은 그대로 동작)."""
     _seed_robot(factory)
