@@ -311,6 +311,25 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
 .qcard .meta{font-size:11.5px; color:var(--dim); margin-top:4px}
 .qcard .acts{display:flex; gap:6px; margin-top:9px}
 .qcard .acts button{flex:1; padding:7px; font-size:12px}
+/* BT 임무 큐 — 인스턴스 카드 + 중첩 트리. 상태색은 개입 큐·통로 레일과
+   같은 팔레트를 그대로 쓴다(대기 muted·실행 gold·성공 leaf·실패 danger) */
+.btcard{border:1px solid var(--line); border-radius:10px; padding:10px 11px;
+  margin-bottom:8px; background:var(--bg)}
+.btcard .top{display:flex; justify-content:space-between; align-items:baseline; gap:8px}
+.btcard .ttl{font-weight:600; font-size:13px}
+.btstate{font-size:10.5px; font-weight:700; padding:1px 8px; border-radius:999px;
+  border:1px solid var(--line); color:var(--dim); white-space:nowrap}
+.btstate.running{color:var(--gold); border-color:var(--gold)}
+.btstate.success{color:var(--leaf); border-color:var(--leaf)}
+.btstate.failure{color:var(--danger); border-color:var(--danger)}
+.bttree{list-style:none; margin:8px 0 0; padding-left:0; font-size:12px}
+.bttree ul{list-style:none; margin:2px 0 0; padding-left:14px;
+  border-left:1px dashed var(--line-soft)}
+.bttree li{padding:2px 0}
+.btnode{padding:0 2px; border-radius:4px; color:var(--dim)}
+.btnode.running{color:var(--gold); font-weight:600}
+.btnode.success{color:var(--leaf)}
+.btnode.failure{color:var(--danger); font-weight:600}
 /* 선회·횡단 구간 — 자이로 방위유지로 달리는 특수 구간임을 알린다 */
 .phase-turn{color:var(--gold); font-weight:600}
 .locchip{display:inline-block; font-size:10.5px; border:1px solid var(--line);
@@ -489,6 +508,8 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
       <span class="ico">⚑</span>개입 <span class="qbadge" id="qBadge">0</span></button>
     <button class="tab snav" data-tab="mission" aria-selected="true">
       <span class="ico">▤</span>임무</button>
+    <button class="tab snav" data-tab="bt" aria-selected="false"
+            data-min-role="operator"><span class="ico">◈</span>BT</button>
     <button class="tab snav" data-tab="drive" aria-selected="false"
             data-min-role="operator"><span class="ico">✛</span>조종</button>
     <button class="tab snav" data-tab="maint" aria-selected="false">
@@ -580,6 +601,45 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
         <h3>진행</h3>
         <div class="row"><span class="dim">통과한 통로</span><span id="mProg" class="num">—</span></div>
         <div class="row"><span class="dim">현재 구간</span><span id="mPhase">—</span></div>
+      </div>
+
+      <!-- BT 임무 큐 — 프리셋 3종으로 인스턴스를 낸다. 선택한 로봇과 무관하게
+           플릿 전체를 다루므로 data-needs(기능 게이트)는 걸지 않는다. -->
+      <div class="pane" id="pane-bt" data-min-role="operator">
+        <h3>프리셋 발진</h3>
+        <div class="field"><label for="btPreset">프리셋</label>
+          <select id="btPreset">
+            <option value="full_split_patrol">분담 정찰 — 로봇 두 대로 나눠 돈다</option>
+            <option value="sequential_retry">순차 재시도 — 통로 목록, 실패 시 재시도</option>
+            <option value="single_alley_loop">통로 한 줄 반복</option>
+          </select>
+        </div>
+        <div id="btParams">
+          <div class="bt-p" data-p="full_split_patrol">
+            <div class="field"><label for="btRobotA">로봇 A</label><select id="btRobotA"></select></div>
+            <div class="field"><label for="btRobotB">로봇 B</label><select id="btRobotB"></select></div>
+            <div class="field"><label for="btSplitK">분할 k</label>
+              <input id="btSplitK" type="number" min="1" step="1" value="5"></div>
+          </div>
+          <div class="bt-p" data-p="sequential_retry" style="display:none">
+            <div class="field"><label for="btSeqRobot">로봇</label><select id="btSeqRobot"></select></div>
+            <div class="field"><label for="btSeqAlleys">통로 목록 (쉼표 구분, 인접해야 함)</label>
+              <input id="btSeqAlleys" placeholder="예: 0,1,2,3,4"></div>
+            <div class="field"><label for="btSeqN">시도 횟수 n</label>
+              <input id="btSeqN" type="number" min="1" step="1" value="2"></div>
+          </div>
+          <div class="bt-p" data-p="single_alley_loop" style="display:none">
+            <div class="field"><label for="btLoopRobot">로봇</label><select id="btLoopRobot"></select></div>
+            <div class="field"><label for="btLoopAlley">통로 번호</label>
+              <input id="btLoopAlley" type="number" min="0" step="1" value="0"></div>
+            <div class="field"><label for="btLoopN">반복 n</label>
+              <input id="btLoopN" type="number" min="1" step="1" value="1"></div>
+          </div>
+        </div>
+        <button id="btLaunch" class="primary wide">발진</button>
+
+        <h3>인스턴스</h3>
+        <div id="btList"><div class="dim" style="font-size:12.5px">발진된 임무 큐가 없습니다.</div></div>
       </div>
 
       <!-- 조종 -->
@@ -765,6 +825,7 @@ async function boot() {
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
     refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
+    refreshBT(); refreshAlleyLocks();
   } catch (e) { /* 로그인 대기 */ }
 }
 
@@ -781,6 +842,7 @@ $("login-form").addEventListener("submit", async ev => {
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
     refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
+    refreshBT(); refreshAlleyLocks();
   } catch (e) { $("login-err").textContent = e.message; }
 });
 
@@ -815,6 +877,7 @@ async function loadRobots() {
   }
   await restoreMissions();
   renderFleet();
+  buildBtRobotSelects();
 }
 
 // missionId 는 mission_start REST 응답에서만 얻는 클라이언트 로컬 상태라,
@@ -1322,13 +1385,43 @@ cv.addEventListener("click", ev => {
       $("pane-mission").style.display !== "none") toggleAlley(k);
 });
 
+// 로봇 색 배정 — 선택된 로봇은 금색, 나머지는 잎색, 비상정지·일시정지는
+// 상태색이 우선한다. 지도의 로봇 마커·궤적·통로 점유 오버레이가 전부 이
+// 한 함수를 공유한다(로봇 하나 = 화면 어디서나 같은 색).
+function robotColor(r, isSel, c){
+  if (!r?.state) return isSel ? c.gold : c.leaf;
+  return r.state.estop ? c.danger : r.state.paused ? c.gold
+       : isSel ? c.gold : c.leaf;
+}
+
+// 통로 점유 오버레이 — GET /alley-locks 를 로봇 색 반투명 밴드로 얹는다.
+// 좌표 변환은 위 통로선 렌더와 같은 기하(g.x0·g.row_spacing)를 그대로 쓴다.
+// alleys 가 null(와일드카드 — traffic.py 의 "전체 점유" 센티널)이면 그
+// farm 의 통로를 전부 밴드로 그린다(브리프: null 처리 필수).
+function drawAlleyLocks(g, c){
+  if (!ALLEY_LOCKS.length) return;
+  ctx.save(); ctx.globalAlpha = 0.22;
+  for (const lock of ALLEY_LOCKS){
+    const ks = lock.alleys === null
+      ? [...Array(g.alleys).keys()] : lock.alleys.filter(k => k >= 0 && k < g.alleys);
+    if (!ks.length) continue;
+    ctx.fillStyle = robotColor(robots.get(lock.robot_id), lock.robot_id === selKey, c);
+    for (const k of ks){
+      const xL = g.x0 + k*g.row_spacing, xR = xL + g.row_spacing;
+      const [ax, ay] = W2S(xL, -g.col_len/2 - g.headland);
+      const [bx, by] = W2S(xR, g.col_len/2 + g.headland);
+      ctx.fillRect(ax, by, bx-ax, ay-by);
+    }
+  }
+  ctx.restore();
+}
+
 function drawRobot(r, isSel, c){
   const p = r.state?.pose;
   if (!p) return;
   const s = view.scale, [px,py] = W2S(p.x,p.y), L = Math.max(8, s*0.6);
   ctx.save(); ctx.translate(px,py); ctx.rotate(-p.yaw);
-  ctx.fillStyle = r.state.estop ? c.danger : r.state.paused ? c.gold
-                : isSel ? c.gold : c.leaf;
+  ctx.fillStyle = robotColor(r, isSel, c);
   ctx.beginPath(); ctx.moveTo(L,0); ctx.lineTo(-L*0.6,L*0.6);
   ctx.lineTo(-L*0.3,0); ctx.lineTo(-L*0.6,-L*0.6); ctx.closePath(); ctx.fill();
   if (isSel){ ctx.strokeStyle = c.ink; ctx.lineWidth = 1.5; ctx.stroke(); }
@@ -1388,6 +1481,8 @@ function draw(){
   const [rx,ry] = W2S(g.x0 + (g.rows-0.5)*g.row_spacing, -g.col_len/2);
   ctx.strokeStyle = c["canvas-edge"]; ctx.lineWidth = 1;
   ctx.strokeRect(lx, ly, rx-lx, ry-ly);
+
+  drawAlleyLocks(g, c);
 
   // 장애물 — 모든 로봇이 본 것을 겹쳐 그린다 (같은 밭이므로 서로 보완된다)
   for (const r of robots.values()){
@@ -1622,6 +1717,119 @@ setInterval(() => {
   $("latPill").style.color = age > 3000 ? "var(--danger)" : (age > 1200 ? "var(--gold)" : "");
 }, 300);
 
+/* ── BT 임무 큐 ─────────────────────────────────────────────────────────
+   프리셋 3종(server/fleet_server/bt/presets.py) 으로 인스턴스를 낸다.
+   인스턴스 1개 = 로봇 1대분 트리(중첩 Sequence/Retry/Condition/Action) —
+   분담 정찰은 프리셋 1회 호출이 인스턴스 2개(로봇마다 하나)를 낸다. */
+$("btPreset").onchange = () => {
+  document.querySelectorAll(".bt-p").forEach(d =>
+    d.style.display = d.dataset.p === $("btPreset").value ? "" : "none");
+};
+
+function buildBtRobotSelects(){
+  const opts = [...robots.values()].map(r =>
+    `<option value="${esc(r.id)}">${esc(r.name || r.id)}</option>`).join("");
+  for (const id of ["btRobotA", "btRobotB", "btSeqRobot", "btLoopRobot"]) $(id).innerHTML = opts;
+  // 분담 정찰은 서로 다른 로봇 두 대가 필요하다(presets.full_split_patrol) —
+  // 기본값부터 겹치지 않게 둘째 로봇을 고른다.
+  if ($("btRobotB").options.length > 1) $("btRobotB").selectedIndex = 1;
+}
+
+$("btLaunch").onclick = async () => {
+  const preset = $("btPreset").value;
+  let params;
+  if (preset === "full_split_patrol"){
+    const a = $("btRobotA").value, b = $("btRobotB").value;
+    if (!a || !b) return alert("로봇을 골라야 합니다.");
+    if (a === b) return alert("분담 정찰은 서로 다른 로봇 두 대가 필요합니다.");
+    params = {robot_a: a, robot_b: b, split_k: +$("btSplitK").value || 5};
+  } else if (preset === "sequential_retry"){
+    const alleys = $("btSeqAlleys").value.split(",").map(s => s.trim())
+      .filter(s => s !== "").map(Number);
+    if (!alleys.length || alleys.some(Number.isNaN))
+      return alert("통로 목록을 올바르게 입력하세요 (예: 0,1,2).");
+    params = {robot: $("btSeqRobot").value, alleys, n: +$("btSeqN").value || 2};
+  } else {
+    params = {robot: $("btLoopRobot").value, alley: +$("btLoopAlley").value || 0,
+              n: +$("btLoopN").value || 1};
+  }
+  try {
+    await api("/bt", {method: "POST", body: {preset, params}});
+    toast("임무 큐 발진", "ok");
+  } catch (e) { alert("발진하지 못했습니다: " + e.message); }
+  refreshBT(); refreshAlleyLocks();
+};
+
+const BT_STATE_LABEL = {RUNNING: "실행 중", SUCCESS: "성공", FAILED: "실패", CANCELED: "취소됨"};
+const BT_STATE_CLS = {RUNNING: "running", SUCCESS: "success", FAILED: "failure"};
+const BT_KIND_LABEL = {sequence: "순차", selector: "선택", retry: "재시도",
+                       condition: "조건", action: "임무"};
+
+// 노드 상태색: 대기(last 없음)는 muted, 실행 중은 gold, 성공은 leaf, 실패는 danger —
+// bt/nodes.py 의 tick 어휘(running/success/failure) 그대로.
+function btNodeCls(last){
+  return last === "running" ? "running" : last === "success" ? "success"
+       : last === "failure" ? "failure" : "";
+}
+function btNodeText(n){
+  if (n.kind === "condition") return `조건 · ${esc(n.cond)} ${esc(JSON.stringify(n.arg))}`;
+  if (n.kind === "retry") return `재시도 · 시도 ${n.tries}/${n.n}`;
+  if (n.kind === "action"){
+    const alleys = esc(JSON.stringify(n.spec?.alleys ?? []));
+    const mid = n.mission_id ? ` · 임무 #${n.mission_id}` : "";
+    return `임무 · ${esc(n.spec?.robot || "")} 통로 ${alleys}${mid}`;
+  }
+  return esc(BT_KIND_LABEL[n.kind] || n.kind);
+}
+// 트리 렌더 — Sequence/Selector 는 자식 목록, Retry 는 자식 하나, Condition·Action 은
+// 잎(중첩 ul 로 kind 별 모양이 그대로 드러난다, bt/nodes.py to_state() 그대로 반영).
+function renderBtNode(n){
+  if (!n) return "";
+  const kids = (n.kind === "sequence" || n.kind === "selector")
+    ? `<ul>${(n.children || []).map(c => renderBtNode(c)).join("")}</ul>`
+    : n.kind === "retry" ? `<ul>${renderBtNode(n.child)}</ul>` : "";
+  return `<li><span class="btnode ${btNodeCls(n.last)}">${btNodeText(n)}</span>${kids}</li>`;
+}
+
+let BT_LIST = [];
+async function refreshBT(){
+  let rows;
+  try { rows = await api("/bt"); } catch (e) { return; }
+  BT_LIST = rows;
+  const box = $("btList");
+  if (!rows.length){
+    box.innerHTML = '<div class="dim" style="font-size:12.5px">발진된 임무 큐가 없습니다.</div>';
+    return;
+  }
+  box.innerHTML = rows.map(inst => `
+    <div class="btcard">
+      <div class="top"><span class="ttl">#${inst.id} ${esc(inst.preset)}</span>
+        <span class="btstate ${BT_STATE_CLS[inst.state] || ""}">${esc(BT_STATE_LABEL[inst.state] || inst.state)}</span></div>
+      <div class="dim" style="font-size:11.5px;margin-top:2px">${esc(inst.robot_id)}` +
+        (inst.note ? ` · ${esc(inst.note)}` : "") + `</div>
+      <ul class="bttree">${renderBtNode(inst.node_states)}</ul>` +
+      (inst.state === "RUNNING"
+        ? `<button class="wide" data-btcancel="${inst.id}" style="margin-top:7px">취소</button>` : "") +
+      `</div>`).join("");
+  box.querySelectorAll("[data-btcancel]").forEach(b => {
+    b.onclick = async () => {
+      try { await api(`/bt/${b.dataset.btcancel}/cancel`, {method: "POST"}); }
+      catch (e) { alert("취소하지 못했습니다: " + e.message); }
+      refreshBT(); refreshAlleyLocks();
+    };
+  });
+}
+
+/* ── 통로 점유 오버레이 ────────────────────────────────────────────────
+   GET /alley-locks 를 지도 캔버스에 얹는다(렌더는 drawAlleyLocks, draw() 안에서
+   호출). 여기서는 목록을 받아 캔버스 상태만 갱신한다 — BT 패널과 별개로,
+   임무 지도를 보는 사람도 지금 어느 통로가 잠겨 있는지 봐야 한다. */
+let ALLEY_LOCKS = [];
+async function refreshAlleyLocks(){
+  try { ALLEY_LOCKS = await api("/alley-locks"); } catch (e) { return; }
+  if (mapReady) draw();
+}
+
 /* ── 개입 큐 ───────────────────────────────────────────────────────────
    상시 감시형 화면은 1인당 2~5대가 상한이다. 로봇이 막혔을 때만 부르고
    사람이 큐에서 꺼내 처리하는 구조라야 그 상한을 넘는다 — 그래서 큐가
@@ -1783,7 +1991,9 @@ $("u-create").addEventListener("click", async () => {
 });
 
 // 큐는 화면이 살아 있는 동안 계속 본다 — 놓치면 로봇이 멈춰 서 있게 된다
-setInterval(() => { if (ME) { refreshQueue(); refreshMetrics(); } }, 8000);
+setInterval(() => { if (ME) {
+  refreshQueue(); refreshMetrics(); refreshBT(); refreshAlleyLocks();
+} }, 8000);
 setTheme(document.documentElement.dataset.theme || "light");
 setTab("mission");
 resize(); updateSec();
