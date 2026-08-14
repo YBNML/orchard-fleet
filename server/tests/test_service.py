@@ -1,4 +1,6 @@
 """FleetService — 텔레메트리 허브(최신값 캐시·DB 수집·구독자 팬아웃·임무 동기화)."""
+import datetime as dt
+
 import pytest
 
 from fleet_server import missions
@@ -385,6 +387,57 @@ def test_evt_accept_after_session_restart_is_not_lost(factory):
                               spec={"alleys": [1]}, created_by=1).id
     fp.feed("scout01", "evt", _accepted(ms2), seq=5)      # 옛 세션과 같은 seq
     assert _state(factory, ms2) == "RUNNING"               # 유실되지 않는다
+
+
+# ── 리뷰 수정 라운드 1 (C1·I3) ────────────────────────────────────────────
+
+def test_seed_epoch_uses_max_not_last_row(factory):
+    """C1 — 기존 행이 있는 상태의 시딩 경로(원래 커버리지 0 이던 경로)를
+    검증한다. "마지막 행"(id 최댓값)의 epoch·seq 가 아니라 **그 로봇의
+    MAX(epoch)+1·MAX(seq)** 로 시딩해야 한다. 라이브 events 82k 행이 전부
+    epoch=0(여러 세션이 뒤섞인 공간)인 상황을 재현: id 순서(삽입 순서)와
+    seq 크기가 어긋나는(재기동 뒤섞임) 행을 미리 깔아 둔다 — id 가 더 큰
+    (나중에 적힌) 행이 오히려 seq 는 더 작다."""
+    _seed_robot(factory)
+    with factory() as db:
+        db.add_all([
+            m.Event(id=1, robot_id="scout01", ts=dt.datetime.now(dt.UTC),
+                    channel="evt", seq=42570, epoch=0, kind="estop"),
+            m.Event(id=2, robot_id="scout01", ts=dt.datetime.now(dt.UTC),
+                    channel="evt", seq=100, epoch=0, kind="estop"),   # 마지막 행이지만 seq 는 더 작다
+        ])
+        db.commit()
+    fp, svc = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "assistance", "msg": "x"}, seq=101)
+    assert svc._epoch.get("scout01", 0) == 1             # MAX(epoch)=0 + 1— "마지막 행"의 epoch(0)가 아니다
+    assert svc._last_seq.get("scout01") == 42570          # MAX(seq) — "마지막 행"의 seq(100)가 아니다
+
+
+def test_evt_repeated_reconnect_after_restart_does_not_rebump_epoch(factory):
+    """I3(a) — 에폭 bump 후 고수위표를 새 세션 기준으로 재설정해야 한다.
+    안 하면 첫 재기동 이후의 모든 정상 재접속(hello)이 옛(재기동 전) 고수위와
+    비교돼 매번 에폭을 또 올린다(상시 오탐 — 정상 재접속을 새 세션으로
+    오인)."""
+    _seed_robot(factory)
+    fp, svc = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "x"}, seq=100)
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=1)       # 진짜 재기동 — 에폭 1
+    assert svc._epoch.get("scout01", 0) == 1
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "y"}, seq=50)  # 새 세션 진행
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=60)      # 단순 재접속(seq 는 계속 이어짐)
+    assert svc._epoch.get("scout01", 0) == 1              # 오탐 없음 — 재차 bump 되지 않는다
+
+
+def test_evt_seq_rewind_still_detected_after_prior_bump(factory):
+    """I3(b) 회귀 — 고수위표 재설정 이후에도 진짜 되감김(재기동)은 여전히
+    감지돼야 한다(오탐 제거가 과해서 진짜 재기동까지 놓치면 안 된다)."""
+    _seed_robot(factory)
+    fp, svc = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "x"}, seq=100)
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=1)       # 1차 재기동 — 에폭 1
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "y"}, seq=50)
+    fp.feed("scout01", "hello", {"robot_id": "scout01"}, seq=3)       # 2차 재기동(고수위 50보다 작다)
+    assert svc._epoch.get("scout01", 0) == 2
 
 
 def test_subscribe_receives_and_unsub_stops(factory):

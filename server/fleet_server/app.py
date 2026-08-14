@@ -11,6 +11,7 @@ from .db import Base, make_engine, make_session_factory
 from .event_retention import RetentionTask
 from .fleet.port import InMemoryFleetPort
 from .fleet.service import FleetService
+from .migrations import ensure_events_epoch_column
 from .models import User
 
 
@@ -29,6 +30,7 @@ def _bootstrap_admin(app: FastAPI) -> None:
 def create_app(settings: Settings | None = None, engine=None, fleet=None) -> FastAPI:
     settings = settings or load_settings()
     engine = engine or make_engine(settings.db_url)
+    ensure_events_epoch_column(engine)      # T6 리뷰 I4 — 구 스키마 자동 복구(create_all 전)
     Base.metadata.create_all(engine)
     session_factory = make_session_factory(engine)
 
@@ -71,7 +73,8 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
 
     from .bt.engine import BTEngine
     app.state.bt_engine = BTEngine(session_factory, app.state.fleet)
-    app.state.retention = RetentionTask(session_factory, settings.event_ttl_days)
+    app.state.retention = RetentionTask(session_factory, settings.event_ttl_days,
+                                        safe_ttl_days=settings.event_ttl_safe_days)
 
     from .api import admin_routes, auth_routes
     app.include_router(auth_routes.router, prefix="/api/v1")

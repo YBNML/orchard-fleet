@@ -28,3 +28,4 @@ server/data/
 server/*.egg-info/
 __pycache__/
 maps/
+backups/

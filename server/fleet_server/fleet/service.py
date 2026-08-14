@@ -21,6 +21,8 @@ import logging
 import re
 from typing import Callable
 
+from sqlalchemy import func
+
 from .. import ingest, missions
 from ..models import Event, Mission, MissionEvent
 
@@ -79,11 +81,12 @@ class FleetService:
         self._factory = session_factory
         self.latest: dict[str, dict[str, dict]] = {}
         self._subs: list[Callable[[str, str, dict], None]] = []
-        # T6 확장 A — 세션(연결) 에폭. 메모리에만 두면 서버 재기동마다 0 으로
-        # 되돌아가 옛 시즌 seq 대역과 겹칠 수 있으므로, 로봇별 첫 메시지에서
-        # DB(events 의 마지막 행)로 한 번 시딩한다(_seed_epoch). 그 뒤로는
-        # hello 의 seq 되감김만으로 갱신한다(로봇 계약 불변 — hello 는 이미
-        # 접속 직후 1회 발행되는 기존 규약이다).
+        # T6 확장 A — 세션(연결) 에폭. 서버 프로세스가 시작할 때마다 로봇별
+        # 첫 메시지에서 DB 의 MAX(epoch)+1 로 새로 시딩한다(_seed_epoch,
+        # 리뷰 C1 — WS 는 재기동을 못 넘으므로 매번 새 에폭을 받아도 안전
+        # 하다). 그 뒤로는(같은 서버 프로세스가 사는 동안) hello 의 seq
+        # 되감김만으로 추가 갱신한다(로봇 계약 불변 — hello 는 이미 접속
+        # 직후 1회 발행되는 기존 규약이다).
         self._epoch: dict[str, int] = {}
         self._last_seq: dict[str, int] = {}
 
@@ -140,25 +143,53 @@ class FleetService:
         last = self._last_seq.get(robot_id, -1)
         if channel == "hello" and last >= 0 and seq <= last:
             self._epoch[robot_id] = self._epoch.get(robot_id, 0) + 1
+            # 리뷰 I3 — 고수위표를 새 세션 기준으로 재설정한다. 안 하면 이
+            # bump 뒤에 오는 **정상 재접속**(로봇은 안 죽었다, 단순 회선
+            # 플랩)의 hello 도 옛(재기동 전) 고수위와 비교돼 매번 또 bump
+            # 된다 — 첫 재기동 이후 모든 재접속이 상시 오탐으로 에폭을 계속
+            # 올리는 사고. 새 세션은 이 hello 의 seq 를 자기 기준선으로 삼아야
+            # 한다.
+            self._last_seq[robot_id] = seq
             log.warning("로봇 %s 세션 갱신 감지(hello seq=%s <= 고수위 %s) — 에폭 %d",
                        robot_id, seq, last, self._epoch[robot_id])
+            return
         if seq > last:
             self._last_seq[robot_id] = seq
 
     def _seed_epoch(self, robot_id: str) -> None:
-        """서버 (재)기동 뒤 이 로봇의 첫 메시지에서 한 번만 — events 테이블의
-        마지막 행에서 에폭·seq 고수위표를 이어받는다. 메모리만 쓰면 서버
-        재기동 자체가 매번 에폭을 0 으로 되돌려 옛 시즌의 seq 대역과 겹칠 수
-        있다(이 태스크가 고치는 문제를 서버 재기동이 다시 만드는 셈이라 —
-        Task 6 확장 B 에서 서버를 재기동하는 이 태스크 안에서 특히 중요하다)."""
+        """서버 프로세스가 시작할 때마다 이 로봇에게서 오는 **첫 메시지에서
+        한 번, 무조건 새 에폭**을 배정한다(리뷰 C1).
+
+        WS 연결은 서버 재기동을 넘어 살아남지 못한다 — 그래서 이 서버
+        프로세스가 로봇에게서 받는 모든 메시지는 새 연결에서 온 것이고,
+        재전송이 재기동 경계를 가로지를 수 없다(리뷰어 근거). 그러므로 이
+        로봇에게 "한 번도 쓰인 적 없는" 에폭을 매번 새로 배정해도 안전하다
+        — 오히려 그래야 한다.
+
+        **"마지막 행의 epoch·seq 로 시딩"하던 원래 구현은 틀렸다.** 라이브
+        마이그레이션으로 옮겨진 82k 행이 전부 epoch=0(여러 세션이 뒤섞인
+        공간 — T6 §8.2)이고, "마지막 행"으로 시딩하면 새 세션도 계속 그
+        epoch=0 에 적게 된다. scout01 은 seq>42,570 대의 옛 행이 39,636개
+        (42,570~142,570 대역의 ~40%)라, 진행 중인 세션의 카운터가 언젠가
+        그 대역에 들어서면 새 이벤트가 옛 epoch-0 행과
+        (robot_id,channel,seq) 충돌을 일으켜 IntegrityError 로 조용히
+        폐기된다 — 이 태스크가 고치려던 사고(임무 22·23 유실)가 그대로
+        재무장한다.
+
+        `MAX(epoch)+1` 은 이 로봇이 지금까지 한 번도 쓰지 않은 에폭임이
+        보장되므로, 진행 중인 세션의 seq 가 과거 어느 대역(다중 세션이
+        섞인 옛 에폭 포함)에 들어서도 충돌할 수 없다. `_last_seq` 도 같은
+        이유로 "마지막 행"이 아니라 `MAX(seq)` 로 시딩한다 — id 순서(삽입
+        순서)와 seq 크기는 재기동 뒤섞임 때문에 일치한다는 보장이 없다."""
         if robot_id in self._epoch:
             return
         with self._factory() as db:
-            row = (db.query(Event).filter(Event.robot_id == robot_id)
-                   .order_by(Event.id.desc()).first())
-        self._epoch[robot_id] = row.epoch if row is not None else 0
-        self._last_seq[robot_id] = (row.seq if row is not None and row.seq is not None
-                                    else -1)
+            max_seq, max_epoch = (db.query(func.max(Event.seq), func.max(Event.epoch))
+                                  .filter(Event.robot_id == robot_id).one())
+        self._epoch[robot_id] = (max_epoch + 1) if max_epoch is not None else 0
+        self._last_seq[robot_id] = max_seq if max_seq is not None else -1
+        log.warning("로봇 %s 에폭 시딩 — epoch=%d(기존 최댓값+1), last_seq=%s",
+                   robot_id, self._epoch[robot_id], self._last_seq[robot_id])
 
     # 로봇 이벤트 → 개입 큐. 이벤트가 곧 티켓이 되는 지점이다.
     #   kind 가 코드표에 있으면 그것을, 아니면 payload.code 를 본다 —
