@@ -415,14 +415,21 @@ def build_farm_manifest(geo, image_name, px_per_m, image_sha256, headland_m,
     row_lengths_m = [(r["t_end"] - r["t_start"]) / px_per_m for r in full_rows]
     row_length_m = float(np.median(row_lengths_m))
 
-    # bounds_m = 이미지 전체(0,0)~(image_w,image_h) 픽셀 사각형을 이 아핀으로
-    # 월드좌표에 투영한 바운딩 박스 — 컨트롤러 지시: 열 캐노피+headland_m 만의
-    # 타이트한 박스가 아니라, 이미지에 담긴 나지 여백·농로까지 포함해 T3/T4 가
-    # 미션 스탠드포인트·선회 패드를 놓을 여지를 준다(§bounds_note).
+    # image_footprint_world = 이미지 4모서리(0,0)/(w,0)/(w,h)/(0,h) 를 이
+    # 아핀으로 월드좌표에 투영한 값, 시계방향(픽셀 공간 순서 그대로 —
+    # R(rotation_deg) 는 순수 회전이라 방향성이 보존됨) — "텍스처가 실존하는
+    # 영역"의 정의 그 자체(리뷰 C1). bounds_m(아래, world-axis-aligned AABB)
+    # 은 이 다각형을 감싸는 사각형일 뿐 텍스처 자체가 아니다 — 62.5° 회전
+    # 때문에 AABB 모서리 4개 중 상당수는 실제 이미지 밖(텍스처 없음)에
+    # 놓인다. 오버레이는 반드시 footprint(이 필드)를 그려야 이미지 테두리와
+    # 정확히 겹치는 진짜 시각 검증이 된다 — bounds_m 을 그리면 캔버스 밖으로
+    # 나가 아무것도 안 보인다(1차 구현 결함, §리포트 수정 라운드 1 C1).
     corners_px = [(0.0, 0.0), (float(image_w), 0.0),
                   (float(image_w), float(image_h)), (0.0, float(image_h))]
     corners_world = [to_world(proj_s(cx, cy, theta_rad), proj_t(cx, cy, theta_rad))
                       for cx, cy in corners_px]
+    image_footprint_world = [[round(x, 4), round(y, 4)] for x, y in corners_world]
+
     xs_full = [c[0] for c in corners_world]
     ys_full = [c[1] for c in corners_world]
     min_x, max_x = min(xs_full), max(xs_full)
@@ -436,10 +443,12 @@ def build_farm_manifest(geo, image_name, px_per_m, image_sha256, headland_m,
         "rows": len(full_rows),
         "row_spacing_m": round(geo["spacing_m"], 4),
         "row_length_m": round(row_length_m, 3),
+        "row_lengths_m": [round(v, 3) for v in row_lengths_m],
         "tree_spacing_m": tree_spacing_m,
         "row_origins": [[round(x, 4), round(y, 4)] for x, y in row_origins],
         "headland_m": headland_m,
         "bounds_m": [[round(min_x, 3), round(min_y, 3)], [round(max_x, 3), round(max_y, 3)]],
+        "image_footprint_world": image_footprint_world,
         "terrain": "flat",
         "image_sha256": image_sha256,
         "axes_note": (
@@ -454,22 +463,33 @@ def build_farm_manifest(geo, image_name, px_per_m, image_sha256, headland_m,
             "t(along-row) 값이 더 작은 끝점(이미지 위쪽에 가까운 끝, 즉 이 "
             "규약상 world y 가 더 작은 끝)이며, 열은 거기서 +y 로 "
             "row_length_m 만큼 뻗는다. T3/T6 는 이 부호를 그대로 따라야 "
-            "하며, 진짜 지리적 북이 필요하면 별도로 wy 를 뒤집어야 한다."
+            "하며, 진짜 지리적 북이 필요하면 별도로 wy 를 뒤집어야 한다. "
+            "나무 배치는 row_length_m(대표 중앙값) 대신 row_lengths_m "
+            "배열(열별 실측값, row_origins 와 같은 순서)을 우선 사용하라 — "
+            "열마다 실제 길이가 다르다(경계 형상이 사각형이 아니라 열마다 "
+            "이미지 프레임과 만나는 지점이 다름, 최대 12.9m 차이 실측)."
         ),
         "bounds_note": (
-            "bounds_m 은 (row_origins/headland_m 기반의 타이트한 열 경계가 "
-            "아니라) orchard_ortho.jpg 이미지 전체 픽셀 사각형 "
-            "(0,0)~(image_w,image_h) 을 이 아핀으로 월드좌표에 투영한 "
-            "바운딩 박스다 — 이미지에는 열 캐노피 바깥으로 나지 여백·농로·"
-            "인접 휴경지가 더 담겨 있다(geometry_overlay.png 참고). T3/T4 가 "
-            "미션 스탠드포인트·선회 패드를 그 여백에 배치할 수 있도록 "
-            "일부러 넉넉하게 잡았다. **headland_m 과 혼동하지 말 것**: "
-            "headland_m 은 그와 전혀 다른, 훨씬 좁은 개념이다 — '온전한 "
-            "열'에서 실측한 '실제 캐노피 가장자리'와 '그 열이 이미지 "
-            "프레임과 만나는 지점' 사이 거리일 뿐(row_selection_note "
-            "참고), bounds_m 가장자리까지의 여유를 뜻하지 않는다. 열 자체의 "
-            "타이트한 경계가 필요하면 row_origins ± row_length_m(+y 방향) "
-            "± row_spacing_m/2(x 방향)로 별도 계산하라."
+            "bounds_m 은 world 좌표축에 정렬된 AABB(axis-aligned bounding "
+            "box)로, image_footprint_world(위 필드 — 이미지 4모서리를 실제로 "
+            "투영한 다각형, 텍스처가 존재하는 영역 그 자체) 를 완전히 "
+            "포함하지만 **AABB ⊃ image_footprint_world 이지 둘이 같지"
+            "않다** — rotation_deg=62.5° 때문에 회전된 사각형(footprint)의 "
+            "축정렬 바운딩박스는 그 사각형보다 크고, AABB 의 네 모서리 중 "
+            "상당수는 실제 텍스처 밖(이미지가 없는 영역)에 놓인다. bounds_m "
+            "자체는 orchard_ortho.jpg 이미지 전체 픽셀 사각형(0,0)~"
+            "(image_w,image_h) 의 월드 AABB 이므로, 이미지에 담긴 나지 "
+            "여백·농로까지 포함하는 '텍스처 범위의 상한'으로 쓰라 — T3/T4 가 "
+            "미션 스탠드포인트·선회 패드를 놓을 여지를 이 안에서 찾되, "
+            "AABB 모서리 근방(텍스처 밖일 수 있음)은 image_footprint_world "
+            "다각형 안쪽인지 반드시 별도로 확인해야 한다. **headland_m 과도 "
+            "혼동하지 말 것**: headland_m 은 이들과 전혀 다른, 훨씬 좁은 "
+            "개념이다 — '온전한 열'에서 실측한 '실제 캐노피 가장자리'와 "
+            "'그 열이 이미지 프레임과 만나는 지점' 사이 거리일 뿐"
+            "(row_selection_note 참고), bounds_m/footprint 가장자리까지의 "
+            "여유를 뜻하지 않는다. 열 자체의 타이트한 경계가 필요하면 "
+            "row_origins ± row_lengths_m(+y 방향, 열별 값) ± "
+            "row_spacing_m/2(x 방향)로 별도 계산하라."
         ),
         "row_selection_note": (
             "rows/row_origins 는 '온전한 열'만 포함한다 — 기준(순수 기하, "
@@ -493,10 +513,44 @@ def build_farm_manifest(geo, image_name, px_per_m, image_sha256, headland_m,
 
 
 def render_overlay(arr_rgb, geo, manifest, out_path):
+    """오버레이 — 이미지 자체는 원본 그대로 두고, 범례/캡션은 이미지 밖에
+    새로 붙인 여백에 그린다(리뷰 I4 — 검은 띠로 이미지를 덮으면 열 0~4
+    시작점 같은 실제 콘텐츠가 가려짐). 경계 표시는 bounds_m(AABB, 캔버스
+    밖으로 크게 나감)이 아니라 image_footprint_world(이미지 4모서리 자체)를
+    그린다 — 정의상 이미지 테두리와 정확히 겹쳐야 진짜 시각 검증이 된다
+    (리뷰 C1)."""
     h, w = arr_rgb.shape[:2]
     theta_rad = math.radians(geo["theta_deg"])
-    im = Image.fromarray(arr_rgb.astype(np.uint8), mode="RGB").convert("RGB")
-    draw = ImageDraw.Draw(im)
+    orig = Image.fromarray(arr_rgb.astype(np.uint8), mode="RGB").convert("RGB")
+
+    n_full = len(geo["full_rows"])
+    n_excl = len(geo["row_records"]) - n_full
+    legend = [
+        ("red = full row (used)", (255, 90, 90)),
+        ("yellow = excluded (boundary-clipped)", (230, 190, 40)),
+        ("blue = row start/end (headland edge, median)", (100, 160, 255)),
+        ("green = image_footprint_world (texture edge)", (60, 200, 110)),
+        ("cyan + = origin_px (world 0,0)", (0, 200, 200)),
+    ]
+    line_h = 14
+    top_margin = 6 + line_h * len(legend) + 6
+    caption = (f"rows(full)={n_full} excluded={n_excl} "
+               f"spacing={geo['spacing_m']:.3f}m rot={geo['theta_deg']:.2f}deg "
+               f"headland={manifest['headland_m']:.2f}m "
+               f"row_len_median={manifest['row_length_m']:.1f}m "
+               f"(row_lengths_m: {min(manifest['row_lengths_m']):.1f}"
+               f"~{max(manifest['row_lengths_m']):.1f}m) "
+               f"origin_px=({manifest['origin_px'][0]:.1f},{manifest['origin_px'][1]:.1f})")
+    bottom_margin = 20
+
+    # 이미지 밖에 여백을 더한 새 캔버스 — 이미지 콘텐츠는 절대 안 가림
+    canvas = Image.new("RGB", (w, h + top_margin + bottom_margin), (0, 0, 0))
+    canvas.paste(orig, (0, top_margin))
+    draw = ImageDraw.Draw(canvas)
+
+    def cpx(x, y):
+        """이미지 픽셀좌표 → 캔버스좌표(top_margin 만큼 아래로 이동)."""
+        return x, y + top_margin
 
     full_s = {round(r["s"], 3) for r in geo["full_rows"]}
     for r in geo["row_records"]:
@@ -509,29 +563,27 @@ def render_overlay(arr_rgb, geo, manifest, out_path):
             # 전체(순수 기하)를 옅은 색으로 참고 표시만 한다.
             color = (255, 210, 0)
             t0, t1 = r["avail_t_lo"], r["avail_t_hi"]
-        x0, y0 = st_to_px(r["s"], t0, theta_rad)
-        x1, y1 = st_to_px(r["s"], t1, theta_rad)
+        x0, y0 = cpx(*st_to_px(r["s"], t0, theta_rad))
+        x1, y1 = cpx(*st_to_px(r["s"], t1, theta_rad))
         draw.line([(x0, y0), (x1, y1)], fill=color, width=2)
-        # 끝점 표시
         for (px_, py_) in ((x0, y0), (x1, y1)):
             draw.ellipse([px_ - 3, py_ - 3, px_ + 3, py_ + 3], outline=color, width=1)
 
-    # headland 경계(열 시작/끝 공통 대역) — 파란 점선 느낌으로 짧은 세그먼트 반복
+    # headland 경계(열 시작/끝 공통 대역, 중앙값 기준 — 참고용) — 파란 선
     if geo["full_rows"]:
         t_starts = [r["t_start"] for r in geo["full_rows"]]
         t_ends = [r["t_end"] for r in geo["full_rows"]]
         s_vals = [r["s"] for r in geo["full_rows"]]
         s_lo, s_hi = min(s_vals) - geo["spacing_m"] * manifest["px_per_m"] / 2, \
             max(s_vals) + geo["spacing_m"] * manifest["px_per_m"] / 2
-        for t_val, label in ((float(np.median(t_starts)), "row start"),
-                              (float(np.median(t_ends)), "row end")):
-            x0, y0 = st_to_px(s_lo, t_val, theta_rad)
-            x1, y1 = st_to_px(s_hi, t_val, theta_rad)
+        for t_val in (float(np.median(t_starts)), float(np.median(t_ends))):
+            x0, y0 = cpx(*st_to_px(s_lo, t_val, theta_rad))
+            x1, y1 = cpx(*st_to_px(s_hi, t_val, theta_rad))
             draw.line([(x0, y0), (x1, y1)], fill=(60, 140, 255), width=2)
 
-    # bounds_m 블록 경계(월드 아핀으로 픽셀에 되돌려 그림) — 초록 사각형
-    (bx0, by0), (bx1, by1) = manifest["bounds_m"]
-    corners_world = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)]
+    # image_footprint_world 다각형 — world 아핀으로 픽셀에 되돌리면 정의상
+    # 이미지 4모서리(0,0)/(w,0)/(w,h)/(0,h) 와 정확히 같아야 한다(C1 진짜
+    # 시각 검증). bounds_m(AABB) 은 캔버스 밖으로 나가므로 그리지 않는다.
     px_per_m = manifest["px_per_m"]
     ox, oy = manifest["origin_px"]
 
@@ -541,36 +593,24 @@ def render_overlay(arr_rgb, geo, manifest, out_path):
         dy = px_per_m * (wx * sn + wy * c)
         return ox + dx, oy + dy
 
-    corners_px = [world_to_px(wx, wy) for wx, wy in corners_world]
-    draw.line(corners_px + [corners_px[0]], fill=(50, 220, 90), width=2)
+    footprint_px = [cpx(*world_to_px(wx, wy)) for wx, wy in manifest["image_footprint_world"]]
+    draw.line(footprint_px + [footprint_px[0]], fill=(50, 220, 90), width=2)
 
     # origin 십자
-    draw.line([(ox - 10, oy), (ox + 10, oy)], fill=(0, 255, 255), width=2)
-    draw.line([(ox, oy - 10), (ox, oy + 10)], fill=(0, 255, 255), width=2)
+    cox, coy = cpx(ox, oy)
+    draw.line([(cox - 10, coy), (cox + 10, coy)], fill=(0, 255, 255), width=2)
+    draw.line([(cox, coy - 10), (cox, coy + 10)], fill=(0, 255, 255), width=2)
 
-    n_full = len(geo["full_rows"])
-    n_excl = len(geo["row_records"]) - n_full
-    legend = [
-        ("red = full row (used)", (255, 60, 60)),
-        ("yellow = excluded (boundary-clipped)", (255, 210, 0)),
-        ("blue = row start/end (headland edge)", (60, 140, 255)),
-        ("green = bounds_m", (50, 220, 90)),
-        ("cyan + = origin_px (world 0,0)", (0, 255, 255)),
-    ]
+    # 범례 — 이미지 위가 아니라 위쪽 여백에 그린다(리뷰 I4)
     ly = 4
     for text, color in legend:
-        draw.rectangle([0, ly - 2, w, ly + 12], fill=(0, 0, 0))
         draw.text((4, ly), text, fill=color)
-        ly += 14
+        ly += line_h
 
-    caption = (f"rows(full)={n_full} excluded={n_excl} "
-               f"spacing={geo['spacing_m']:.3f}m rot={geo['theta_deg']:.2f}deg "
-               f"headland={manifest['headland_m']:.2f}m row_len={manifest['row_length_m']:.1f}m "
-               f"origin_px=({ox:.1f},{oy:.1f})")
-    draw.rectangle([0, h - 16, w, h], fill=(0, 0, 0))
-    draw.text((3, h - 14), caption, fill=(255, 255, 255))
+    # 캡션 — 아래쪽 여백에 그린다
+    draw.text((3, h + top_margin + 3), caption, fill=(230, 230, 230))
 
-    im.save(out_path)
+    canvas.save(out_path)
 
 
 # ---------------------------------------------------------------------------
@@ -638,8 +678,54 @@ def run_self_test():
         print(f"[self-test] FAIL rotation_deg {measured:.3f} abs not in [6.5,7.5]")
         ok = False
 
+    # 아핀 왕복 단언 — 리뷰 라운드 1 C1(bounds_m AABB 를 이미지 모서리인 양
+    # 착각해 오버레이가 캔버스 밖으로 나간 결함)의 사각지대를 방어한다.
+    # build_farm_manifest 가 실제로 만드는 매니페스트로 왕복시켜, (1)
+    # row_origins 가 world→px→world 왕복에서 오차<0.1m 인지, (2)
+    # image_footprint_world 가 world→px 변환했을 때 진짜 이미지 4모서리
+    # (0,0)/(w,0)/(w,h)/(0,h) 와 정확히(오차<0.1m) 일치하는지 — (2)가 바로
+    # C1 류 결함(footprint 대신 AABB 를 넣는 실수)을 직접 잡아낸다: AABB
+    # 모서리로 넣었다면 이 오차가 수백 m 로 튄다(§실측: 최대 수백 px).
+    h_img, w_img = arr.shape[:2]
+    manifest = build_farm_manifest(geo, "self_test.png", px_per_m,
+                                    "0" * 64, geo["headland_m"], 1.5, w_img, h_img)
+    theta_rad2 = math.radians(manifest["rotation_deg"])
+    ox, oy = manifest["origin_px"]
+    c2, s2 = math.cos(theta_rad2), math.sin(theta_rad2)
+
+    def world_to_px_rt(wx, wy):
+        return ox + px_per_m * (wx * c2 - wy * s2), oy + px_per_m * (wx * s2 + wy * c2)
+
+    def pixel_to_world_rt(px_, py_):
+        dx, dy = (px_ - ox) / px_per_m, (py_ - oy) / px_per_m
+        return dx * c2 + dy * s2, -dx * s2 + dy * c2
+
+    max_err_origins = 0.0
+    for wx, wy in manifest["row_origins"]:
+        px_, py_ = world_to_px_rt(wx, wy)
+        wx2, wy2 = pixel_to_world_rt(px_, py_)
+        max_err_origins = max(max_err_origins, math.hypot(wx2 - wx, wy2 - wy))
+    print(f"[self-test] row_origins 왕복(world→px→world) 최대오차="
+          f"{max_err_origins:.5f}m (기대: <0.1m)")
+    if max_err_origins >= 0.1:
+        print(f"[self-test] FAIL row_origins 왕복오차 {max_err_origins:.4f}m >= 0.1m")
+        ok = False
+
+    expected_corners_px = [(0.0, 0.0), (float(w_img), 0.0),
+                            (float(w_img), float(h_img)), (0.0, float(h_img))]
+    max_err_fp = 0.0
+    for (fx, fy), (ex, ey) in zip(manifest["image_footprint_world"], expected_corners_px):
+        ewx, ewy = pixel_to_world_rt(ex, ey)
+        max_err_fp = max(max_err_fp, math.hypot(fx - ewx, fy - ewy))
+    print(f"[self-test] image_footprint_world 대 실제 이미지 모서리 최대오차="
+          f"{max_err_fp:.5f}m (기대: <0.1m — C1 회귀 방어)")
+    if max_err_fp >= 0.1:
+        print(f"[self-test] FAIL image_footprint_world 오차 {max_err_fp:.4f}m >= 0.1m "
+              "— footprint 가 AABB(bounds_m) 로 잘못 채워졌을 가능성")
+        ok = False
+
     if ok:
-        print("[self-test] GREEN — row_spacing_m, rotation_deg 복원 성공")
+        print("[self-test] GREEN — row_spacing_m, rotation_deg, 아핀 왕복 모두 통과")
         print(f"[self-test] 부호 관례: PIL.Image.rotate(+{true_angle}) 이미지에서 "
               f"검출된 theta_deg 부호={'+' if measured >= 0 else '-'} "
               "(실제 이미지 rotation_deg 도 이 관례를 그대로 따름)")
@@ -691,8 +777,13 @@ def main():
 
     image_sha256 = sha256_of_file(args.image)
     if meta.get("sha256") and meta["sha256"] != image_sha256:
-        print(f"[extract] 경고: meta sha256({meta['sha256']}) != 실제 파일 sha256"
-              f"({image_sha256})", file=sys.stderr)
+        # 스펙 §6: "이미지 해시 불일치 — 명시적 실패(무음 기본값 금지)".
+        # 경고만 찍고 계속 진행하면 T1 이후 바뀐(혹은 손상된) 이미지로 조용히
+        # farm.json 을 만들 위험이 있다 — 여기서 멈춘다(리뷰 I2).
+        print(f"[extract] 오류: meta sha256({meta['sha256']}) != 실제 파일 sha256"
+              f"({image_sha256}) — 이미지가 T1 이후 변경되었거나 손상됨, 중단",
+              file=sys.stderr)
+        sys.exit(2)
 
     px_per_m = round(1.0 / meta["gsd_m"], 6)
     im = Image.open(args.image).convert("RGB")

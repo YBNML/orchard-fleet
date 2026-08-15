@@ -9,6 +9,35 @@
   "rows": 27,
   "row_spacing_m": 4.9903,
   "row_length_m": 141.109,
+  "row_lengths_m": [
+    128.084,
+    139.609,
+    141.109,
+    141.109,
+    141.109,
+    141.109,
+    140.994,
+    141.109,
+    140.994,
+    141.109,
+    140.994,
+    141.109,
+    140.994,
+    141.109,
+    141.109,
+    141.109,
+    141.109,
+    141.109,
+    141.109,
+    140.994,
+    141.109,
+    140.994,
+    141.109,
+    140.994,
+    141.109,
+    140.532,
+    132.555
+  ],
   "tree_spacing_m": 1.5,
   "row_origins": [
     [
@@ -131,9 +160,27 @@
       108.96
     ]
   ],
+  "image_footprint_world": [
+    [
+      -119.4167,
+      10.8384
+    ],
+    [
+      -60.5437,
+      -102.2555
+    ],
+    [
+      127.9461,
+      -4.1339
+    ],
+    [
+      69.0731,
+      108.96
+    ]
+  ],
   "terrain": "flat",
   "image_sha256": "ce6a60d4eb0b22a1dbc1dc189355133fa865e105aa496d380675d1cfcbef9c99",
-  "axes_note": "px = origin_px + px_per_m * R(rotation_deg) @ (wx, wy), R(theta) = [[cos,-sin],[sin,cos]] (표준 회전, 반사 없음). rotation_deg=0 이면 world +x = image +x(오른쪽), world +y = image +y(아래, 픽셀 행 증가) 와 같은 방향. orchard_ortho_meta.json 의 wms_request_bbox_epsg25831 에 따르면 이 이미지의 row 0(맨 위)이 진짜 지리적 북(최대 northing)이다 — 따라서 world +y 는 image +y 와 나란하므로 진짜 지리적 북이 아니라 남쪽으로 내려가는 방향이다. row_origins 는 각 열에서 t(along-row) 값이 더 작은 끝점(이미지 위쪽에 가까운 끝, 즉 이 규약상 world y 가 더 작은 끝)이며, 열은 거기서 +y 로 row_length_m 만큼 뻗는다. T3/T6 는 이 부호를 그대로 따라야 하며, 진짜 지리적 북이 필요하면 별도로 wy 를 뒤집어야 한다.",
-  "bounds_note": "bounds_m 은 (row_origins/headland_m 기반의 타이트한 열 경계가 아니라) orchard_ortho.jpg 이미지 전체 픽셀 사각형 (0,0)~(image_w,image_h) 을 이 아핀으로 월드좌표에 투영한 바운딩 박스다 — 이미지에는 열 캐노피 바깥으로 나지 여백·농로·인접 휴경지가 더 담겨 있다(geometry_overlay.png 참고). T3/T4 가 미션 스탠드포인트·선회 패드를 그 여백에 배치할 수 있도록 일부러 넉넉하게 잡았다. **headland_m 과 혼동하지 말 것**: headland_m 은 그와 전혀 다른, 훨씬 좁은 개념이다 — '온전한 열'에서 실측한 '실제 캐노피 가장자리'와 '그 열이 이미지 프레임과 만나는 지점' 사이 거리일 뿐(row_selection_note 참고), bounds_m 가장자리까지의 여유를 뜻하지 않는다. 열 자체의 타이트한 경계가 필요하면 row_origins ± row_length_m(+y 방향) ± row_spacing_m/2(x 방향)로 별도 계산하라.",
+  "axes_note": "px = origin_px + px_per_m * R(rotation_deg) @ (wx, wy), R(theta) = [[cos,-sin],[sin,cos]] (표준 회전, 반사 없음). rotation_deg=0 이면 world +x = image +x(오른쪽), world +y = image +y(아래, 픽셀 행 증가) 와 같은 방향. orchard_ortho_meta.json 의 wms_request_bbox_epsg25831 에 따르면 이 이미지의 row 0(맨 위)이 진짜 지리적 북(최대 northing)이다 — 따라서 world +y 는 image +y 와 나란하므로 진짜 지리적 북이 아니라 남쪽으로 내려가는 방향이다. row_origins 는 각 열에서 t(along-row) 값이 더 작은 끝점(이미지 위쪽에 가까운 끝, 즉 이 규약상 world y 가 더 작은 끝)이며, 열은 거기서 +y 로 row_length_m 만큼 뻗는다. T3/T6 는 이 부호를 그대로 따라야 하며, 진짜 지리적 북이 필요하면 별도로 wy 를 뒤집어야 한다. 나무 배치는 row_length_m(대표 중앙값) 대신 row_lengths_m 배열(열별 실측값, row_origins 와 같은 순서)을 우선 사용하라 — 열마다 실제 길이가 다르다(경계 형상이 사각형이 아니라 열마다 이미지 프레임과 만나는 지점이 다름, 최대 12.9m 차이 실측).",
+  "bounds_note": "bounds_m 은 world 좌표축에 정렬된 AABB(axis-aligned bounding box)로, image_footprint_world(위 필드 — 이미지 4모서리를 실제로 투영한 다각형, 텍스처가 존재하는 영역 그 자체) 를 완전히 포함하지만 **AABB ⊃ image_footprint_world 이지 둘이 같지않다** — rotation_deg=62.5° 때문에 회전된 사각형(footprint)의 축정렬 바운딩박스는 그 사각형보다 크고, AABB 의 네 모서리 중 상당수는 실제 텍스처 밖(이미지가 없는 영역)에 놓인다. bounds_m 자체는 orchard_ortho.jpg 이미지 전체 픽셀 사각형(0,0)~(image_w,image_h) 의 월드 AABB 이므로, 이미지에 담긴 나지 여백·농로까지 포함하는 '텍스처 범위의 상한'으로 쓰라 — T3/T4 가 미션 스탠드포인트·선회 패드를 놓을 여지를 이 안에서 찾되, AABB 모서리 근방(텍스처 밖일 수 있음)은 image_footprint_world 다각형 안쪽인지 반드시 별도로 확인해야 한다. **headland_m 과도 혼동하지 말 것**: headland_m 은 이들과 전혀 다른, 훨씬 좁은 개념이다 — '온전한 열'에서 실측한 '실제 캐노피 가장자리'와 '그 열이 이미지 프레임과 만나는 지점' 사이 거리일 뿐(row_selection_note 참고), bounds_m/footprint 가장자리까지의 여유를 뜻하지 않는다. 열 자체의 타이트한 경계가 필요하면 row_origins ± row_lengths_m(+y 방향, 열별 값) ± row_spacing_m/2(x 방향)로 별도 계산하라.",
   "row_selection_note": "rows/row_origins 는 '온전한 열'만 포함한다 — 기준(순수 기하, 캐노피 잡음 배제): 그 열(대각선)이 이미지 사각형 프레임과 겹치는 along-row 가용 구간 길이가 후보 열 전체 최댓값의 90% 이상인 열만 채택(모서리 열은 대각선이 프레임을 일찍 벗어나 가용 구간이 짧아짐 — 크롭 밖 연속 여부를 알 수 없어 제외). row_length_m/headland_m 은 그 온전한 열들에서만 캐노피 임계로 추가 실측(스크립트 canopy_edge_buffer 참고). row_origins 좌표(각 열의 cross-row 위치)는 검출된 실측 위치 그대로이며 격자로 이상화하지 않았다(열 간격이 완전히 균일하지 않을 수 있음)."
 }
