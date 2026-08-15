@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # 편대 기동 — 시뮬레이터 하나 + 로봇 스택 2대(관제 8080/8081)
 #
-#   scripts/run_fleet.sh [terraced|real] [로봇수]
+#   scripts/run_fleet.sh [real|terraced] [로봇수]
 #   WORLD=real ROBOTS=2 LOG_DIR=~/logs scripts/run_fleet.sh
 #
-# 월드 SDF·gz 월드 이름·런치 world 인자를 한 곳에서 고른다. **기본은 terraced**
-# (실사 월드로의 기본 전환은 스펙 ④ T7 게이트 이후다).
-#   terraced  sim/worlds/orchard_nav.sdf   · gz 월드 orchard_10x41
+# 월드 SDF·gz 월드 이름·런치 world 인자를 한 곳에서 고른다. **기본은 real**
+# (스펙 ④ T7 게이트 통과, 2026-08-15 — docs/findings/2026-08-15-photoreal-world.md).
 #   real      sim/worlds/orchard_real.sdf  · gz 월드 orchard_real
 #             기하(rows·row_spacing·통로 중심·열 구간)를 maps/orchard_real/farm.json
 #             에서 읽어 control_agent 파라미터로 넘긴다 (robomw 무관, 데이터 주도)
+#   terraced  sim/worlds/orchard_nav.sdf   · gz 월드 orchard_10x41
+#             계단식 연구 트랙 — 병존한다. 쓰려면 명시 인자로 고른다
 #
 # /clock 브리지는 월드당 하나뿐이라 1호기만 clock:=true 다.
 # 종료: scripts/stop_all.sh 또는 Ctrl+C.
@@ -17,7 +18,7 @@ set -o pipefail   # set -u 금지 — ROS setup.bash 가 미정의 변수를 참
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
-WORLD_KIND=${1:-${WORLD:-terraced}}
+WORLD_KIND=${1:-${WORLD:-real}}
 N=${2:-${ROBOTS:-2}}
 case "$WORLD_KIND" in
   terraced) WORLD_NAME=orchard_10x41; WORLD_SDF=sim/worlds/orchard_nav.sdf ;;

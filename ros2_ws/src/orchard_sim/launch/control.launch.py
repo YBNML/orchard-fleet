@@ -25,14 +25,16 @@
 http://<로봇IP>:8080/ 을 열면 된다. ROS 2 도, 파이썬 패키지도 필요 없다.
 근거와 통신 선택 이유는 docs/findings/2026-07-30-fleet-stack-decision.md 참조.
 
-월드 선택 (`world:=terraced|real`, **기본 terraced**):
-    terraced  sim/worlds/orchard_nav.sdf   · gz 월드 이름 orchard_10x41
-              기하는 control_agent 의 기본 파라미터(rows=10, row_spacing=3.5 …)
+월드 선택 (`world:=real|terraced`, **기본 real**):
     real      sim/worlds/orchard_real.sdf  · gz 월드 이름 orchard_real
               기하(rows·row_spacing·tree_spacing·headland)를 `farm:=`(기본
               maps/orchard_real/farm.json)에서 읽어 control_agent 파라미터로 넘긴다.
               로봇 코드는 무수정 — 기하는 데이터로만 들어간다(스펙 ④).
-**기본값을 real 로 바꾸는 것은 스펙 ④ T7 게이트의 몫이다.** 여기서는 경로만 낸다.
+    terraced  sim/worlds/orchard_nav.sdf   · gz 월드 이름 orchard_10x41
+              기하는 control_agent 의 기본 파라미터(rows=10, row_spacing=3.5 …)
+**기본값은 스펙 ④ T7 게이트 통과로 real 이 됐다**(2026-08-15,
+docs/findings/2026-08-15-photoreal-world.md). 계단식 월드와 그 자산은 연구용으로
+그대로 병존하며 `world:=terraced` 로 **명시해서** 쓴다.
 이 런치는 gz 를 띄우지 않는다(월드 SDF 기동은 scripts/run_control.sh 또는 gz sim).
 """
 import json
@@ -145,9 +147,10 @@ def _farm_geom(farm_path):
 
 def generate_launch_description():
     args = [
-        DeclareLaunchArgument("world", default_value="terraced",
-                              description="terraced | real. 기본은 terraced — "
-                                          "실사 월드로의 기본 전환은 스펙 ④ T7 게이트 이후다"),
+        DeclareLaunchArgument("world", default_value="real",
+                              description="real | terraced. 기본은 real(실사 정사영상 "
+                                          "월드) — 스펙 ④ T7 게이트 통과로 전환. "
+                                          "계단식 연구 트랙은 world:=terraced 로 명시"),
         DeclareLaunchArgument("farm", default_value=DEFAULT_FARM,
                               description="world:=real 일 때 읽는 농장 기하 매니페스트"),
         DeclareLaunchArgument("world_name", default_value="",
