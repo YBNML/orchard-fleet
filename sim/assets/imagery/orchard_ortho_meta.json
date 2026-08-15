@@ -1,0 +1,27 @@
+{
+  "source": "PNOA",
+  "source_dataset": "PNOA Ortofoto Máxima Actualidad (PNOA-MA)",
+  "source_crs": "EPSG:25831",
+  "crop_origin_source_px": [0, 0],
+  "crop_origin_note": "이 이미지는 IGN 공식 WMS(GetMap)에 목표 EPSG:25831 bbox를 직접 지정해 받은 결과물이다 — 더 큰 소스 파일(예: MTN25 도엽)을 내려받아 후처리로 픽셀 크롭한 것이 아니라, WMS 서버가 그 bbox에 대해 반환한 래스터 자체가 곧 이 이미지다. 따라서 crop_origin_source_px=[0,0]이 '소스=WMS 응답 래스터' 기준 원점이며, 실제 지리적 위치는 아래 wms_request_bbox_epsg25831로 특정한다.",
+  "wms_request_bbox_epsg25831": {
+    "minx": 290866.900,
+    "miny": 4600418.400,
+    "maxx": 290994.400,
+    "maxy": 4600630.900,
+    "note": "GetMap BBOX 순서(EPSG:25831, WMS 1.3.0)=minx,miny,maxx,maxy. 이미지 원점(px 0,0)은 좌상단=(minx,maxy)."
+  },
+  "wms_endpoint": "https://www.ign.es/wms-inspire/pnoa-ma",
+  "wms_layer": "OI.OrthoimageCoverage",
+  "wms_request_url": "https://www.ign.es/wms-inspire/pnoa-ma?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=OI.OrthoimageCoverage&STYLES=&CRS=EPSG:25831&BBOX=290866.900,4600418.400,290994.400,4600630.900&WIDTH=510&HEIGHT=850&FORMAT=image/png",
+  "image_size_px": [510, 850],
+  "gsd_m": 0.25,
+  "gsd_source_note": "GetFeatureInfo(OI.MosaicElement, 동일 좌표)의 Resolucion 속성값(0.25)으로 재확인함 — 요청 해상도와 소스 실제 해상도가 일치.",
+  "acquired": "2024-04",
+  "acquired_note": "GetFeatureInfo(OI.MosaicElement layer, QUERY_LAYERS=OI.MosaicElement, 대상 좌표)의 Fecha 속성값을 그대로 사용 — 소스가 연-월 단위까지만 제공(일 단위 불가), 임의로 '-01' 등을 덧붙이지 않음.",
+  "location_place_name": "Soses, Segrià, Lleida, Catalunya, España",
+  "location_wgs84_approx": {"lat": 41.5314, "lon": 0.4809},
+  "row_spacing_measured_m": 4.95,
+  "row_spacing_measure_note": "2D FFT(excess-green 지수, scratchpad/measure_rows.py)로 이 크롭 원본(orchard_ortho_source.png, 재압축 전) 전체에서 실측. 상위 5개 피크 4.85~5.15m 범위 — 스펙 기준(3~4.5m) 대비 이탈, 컨트롤러 승인(§리포트 참고).",
+  "sha256": "ce6a60d4eb0b22a1dbc1dc189355133fa865e105aa496d380675d1cfcbef9c99"
+}
