@@ -1782,6 +1782,28 @@ function draw(){
   }
   for (const [k,r] of robots) if (k !== selKey) drawRobot(r, false, c);
   if (srv) drawRobot(srv, true, c);
+  drawAttribution();
+}
+
+/* 정사영상 출처 표기 — CC BY 4.0 의무 이행 지점.
+   실사 바탕을 실제로 그린 화면에만, 지도 우하단에 상시 표기한다. 문구는
+   서버(/api/v1/farm 의 attribution)가 준 것을 그대로 쓴다 — 화면에 문자열을
+   복사해 두면 농장·영상이 바뀔 때 갈라진다. 벡터 지도로 토글하면 바탕이
+   그 이미지가 아니므로 표기하지 않는다. */
+function drawAttribution(){
+  if (!(mapMode === "photo" && FARM && orthoReady && orthoImg)) return;
+  const t = FARM.attribution;
+  if (!t) return;
+  ctx.save();
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+  const x = cv.width - 10, y = cv.height - 8;
+  // 밝은 항공영상 위에서도 읽히도록 얇은 어두운 외곽선 + 흰 글자
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,.55)";
+  ctx.strokeText(t, x, y);
+  ctx.fillStyle = "rgba(255,255,255,.92)";
+  ctx.fillText(t, x, y);
+  ctx.restore();
 }
 
 /* ── 조작 ──────────────────────────────────────────────────────────── */

@@ -129,6 +129,24 @@ def test_farm_endpoint_includes_ortho_url_and_farm_id(client_with_farm):
     assert r.json()["farm_id"] == 1                # I2 — 기본 FLEET_FARM_ID=1
 
 
+def test_farm_endpoint_carries_ortho_attribution(client_with_farm):
+    """T7 수정 라운드 1 · I2 — 정사영상 출처 표기는 **라이선스 의무**다
+    (LICENSE-DATA.md: '대시보드 배경 포함 모든 산출물'). 화면이 문자열을
+    들고 있으면 농장·영상이 바뀔 때 갈라지므로 API 가 준다."""
+    do_login(client_with_farm)
+    a = client_with_farm.get("/api/v1/farm").json()["attribution"]
+    assert "Instituto Geográfico Nacional" in a and "CC BY 4.0" in a
+
+
+def test_farm_attribution_can_be_overridden_by_manifest(client_with_farm, tmp_path):
+    """다른 출처의 영상으로 바꾸면 farm.json 의 attribution 이 우선한다."""
+    app = client_with_farm.app
+    app.state.farm = dict(app.state.farm, attribution="© 다른 기관 · CC BY-SA 4.0")
+    do_login(client_with_farm)
+    assert client_with_farm.get("/api/v1/farm").json()["attribution"] \
+        == "© 다른 기관 · CC BY-SA 4.0"
+
+
 def test_farm_endpoint_requires_login(client_with_farm):
     assert client_with_farm.get("/api/v1/farm").status_code == 401
 

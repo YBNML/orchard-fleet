@@ -197,10 +197,27 @@ class FleetService:
     _KIND_TO_CODE = {"estop": "ESTOP_REMOTE", "estop_cleared": None,
                      "link_lost": "LINK_LOST_POLICY", "tilt": "TILT_LIMIT"}
 
+    # **명령 응답은 티켓 채널이 아니다.** `cmd_result`·`report` 의 `code` 는
+    # 명령 처리 결과 코드(성공이면 "OK", 실패면 "BUSY"·"TIMEOUT"·"BAD_PARAM"
+    # 따위)이지 정지 사유 코드가 아니다. 그런데 `stopcodes.get` 은 모르는 코드를
+    # UNKNOWN(needs_operator=True)으로 떨어뜨리므로, 거르지 않으면 **정상적으로
+    # 수락된 명령 하나하나가 "분류되지 않은 정지" 티켓을 연다**.
+    #
+    # 실측(2026-08-15 T7 게이트): 발진 3초 만에 `mission_start → accepted` 가
+    # 티켓이 됐고, 큐를 비워도 다음 명령이 곧바로 새 티켓을 열었다. 개입 지표
+    # (개입 건수·통로당 개입·현장 출동)가 통째로 오염된다 — 지표의 정의가
+    # 흔들리는 순간 그 숫자는 조작 가능해진다(stopcodes.py 머리말).
+    #
+    # 이 두 kind 는 이미 `_consume_cmd_result` 가 임무 상태기계로 소비한다.
+    # 명령이 정말 사람을 불러야 하면 로봇이 `assistance` 를 따로 낸다.
+    _NON_TICKET_KINDS = ("cmd_result", "report")
+
     def _route_intervention(self, db, robot_id: str, payload: dict) -> None:
         from .. import interventions, stopcodes
         from ..models import Robot
         kind = str(payload.get("kind", ""))
+        if kind in self._NON_TICKET_KINDS:
+            return
         code = payload.get("code") or self._KIND_TO_CODE.get(kind)
         if kind in ("estop_cleared", "resolved") and payload.get("code"):
             interventions.auto_resolve(db, robot_id, payload["code"])

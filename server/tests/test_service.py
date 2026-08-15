@@ -452,3 +452,69 @@ def test_subscribe_receives_and_unsub_stops(factory):
     unsub()
     fp.feed("scout01", "tel/health", {"batt": 80})
     assert len(got) == 1                          # unsub 후 미호출
+
+
+# ── 명령 응답은 개입 티켓이 아니다 (T7 수정 라운드 1 · I1) ──────────────────
+#
+# `cmd_result`·`report` 의 `code` 는 **명령 처리 결과 코드**(성공 "OK", 실패
+# "BUSY"·"TIMEOUT"·"BAD_PARAM")이지 정지 사유 코드가 아니다. 그런데
+# `stopcodes.get` 은 모르는 코드를 UNKNOWN(needs_operator=True)으로 떨어뜨려서,
+# 거르지 않으면 정상적으로 수락된 명령 하나하나가 "분류되지 않은 정지" 티켓을
+# 열었다 (2026-08-15 T7 게이트 실측: 발진 3초 만에 재현, 개입 지표 오염).
+
+def _open_ivs(factory, robot_id="scout01"):
+    with factory() as db:
+        return [r.code for r in db.query(m.Intervention)
+                .filter(m.Intervention.robot_id == robot_id).all()]
+
+
+def test_cmd_result_ok_opens_no_intervention(factory):
+    """accepted/completed(code OK) — 티켓 0건. 임무 상태기계는 그대로 돈다."""
+    ms_id = _seed_mission(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", _accepted(ms_id), seq=1)
+    fp.feed("scout01", "evt", _completed(ms_id), seq=2)
+    assert _open_ivs(factory) == []
+    assert _state(factory, ms_id) == "DONE"       # 소비 경로는 살아 있다
+
+
+@pytest.mark.parametrize("cmd,status,code,msg", [
+    ("relocalize", "failed", "TIMEOUT", "relocalize → failed (TIMEOUT)"),
+    ("relocalize", "rejected", "BUSY", "relocalize → rejected (BUSY)"),
+    ("self_test", "completed", "OK", "self_test → completed"),
+    ("mission_cancel", "accepted", "OK", "mission_cancel → accepted"),
+])
+def test_cmd_result_any_status_opens_no_intervention(factory, cmd, status, code, msg):
+    """실패·거부 응답도 티켓 채널이 아니다 — 사람을 불러야 하면 로봇이
+    `assistance` 를 따로 낸다. (실측된 네 가지 형태를 그대로 넣는다)"""
+    _seed_robot(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "cmd_result", "cmd_id": "x1", "cmd": cmd,
+                               "status": status, "code": code, "data": {},
+                               "msg": msg, "level": "info"}, seq=1)
+    assert _open_ivs(factory) == []
+
+
+def test_report_kind_opens_no_intervention(factory):
+    """완료 보고(report)도 같다 — code 는 결과 코드다."""
+    _seed_robot(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "report", "code": "OK",
+                               "data": _REPORT, "msg": "임무 보고"}, seq=1)
+    assert _open_ivs(factory) == []
+
+
+def test_real_stop_codes_still_open_intervention(factory):
+    """오탐 제거가 과해서 **진짜 개입**까지 놓치면 안 된다 — 회귀 방어.
+
+    T7 게이트에서 실제로 올라온 두 사유를 그대로 쓴다."""
+    _seed_robot(factory)
+    fp, _ = _svc(factory)
+    fp.feed("scout01", "evt", {"kind": "assistance", "code": "TRACTION_LOSS",
+                               "msg": "오도메트리는 0.52 m 전진을 보고하는데 "
+                                      "스캔 변위는 0.00 m — 바퀴 헛돎"}, seq=1)
+    fp.feed("scout01", "evt", {"kind": "assistance", "code": "LOCALIZATION_LOST",
+                               "msg": "8초째 위치 보정 실패"}, seq=2)
+    fp.feed("scout01", "evt", {"kind": "estop", "msg": "비상정지"}, seq=3)
+    assert sorted(_open_ivs(factory)) == ["ESTOP_REMOTE", "LOCALIZATION_LOST",
+                                          "TRACTION_LOSS"]

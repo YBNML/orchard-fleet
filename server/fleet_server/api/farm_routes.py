@@ -26,9 +26,21 @@ router = APIRouter(tags=["farm"])          # /api/v1 프리픽스로 얹는다
 assets_router = APIRouter(tags=["assets"])  # 이미지는 프리픽스 없이(정적 자산)
 
 
+# 정사영상 출처 표기 — **라이선스 의무의 이행 지점**.
+#
+# sim/assets/imagery/LICENSE-DATA.md 는 "이 이미지를 사용하는 모든 산출물
+# (시뮬레이션 월드, 스크린샷, **대시보드 배경** 등)"에 표기를 요구한다(CC BY 4.0).
+# 문구는 그 문서의 축약형을 **그대로** 옮긴다 — 두 곳에서 따로 손보면 갈라진다.
+#
+# 화면이 아니라 API 가 들고 있는 이유: 다른 농장·다른 영상으로 바꿔도 표기가
+# 데이터를 따라오게 하려는 것이다(기하와 같은 원칙). farm.json 에 `attribution`
+# 이 있으면 그것을 우선한다.
+ORTHO_ATTRIBUTION = ("PNOA cedido por © Instituto Geográfico Nacional · CC BY 4.0")
+
+
 @router.get("/farm")
 def get_farm(request: Request, user: User = Depends(current_user)) -> dict:
-    """farm.json 전문 + ortho_url. 로그인 사용자면 역할 무관하게 전원 허용."""
+    """farm.json 전문 + ortho_url + attribution. 로그인 사용자면 전원 허용."""
     farm = request.app.state.farm
     if farm is None:
         raise HTTPException(404, "농장 매니페스트가 설정되지 않았습니다")
@@ -36,6 +48,7 @@ def get_farm(request: Request, user: User = Depends(current_user)) -> dict:
     out = dict(farm)
     out["ortho_url"] = f"/assets/{farm['image']}"
     out["farm_id"] = settings.farm_id            # I2 — 설정으로 선언한 단일 농장 id
+    out["attribution"] = farm.get("attribution") or ORTHO_ATTRIBUTION
     return out
 
 
