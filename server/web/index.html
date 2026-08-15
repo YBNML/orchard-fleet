@@ -169,6 +169,17 @@ canvas{display:block; width:100%; height:100%}
   border:1px solid var(--line-soft); border-radius:9px; padding:6px 10px;
   backdrop-filter:blur(6px);
 }
+/* 실사/벡터 토글 — 정사영상 바탕이 없을(농장 미등록·이미지 로드 실패) 때는
+   눌러도 아무 효과가 없으므로 비활성화해 그 사실을 그대로 보여준다. */
+#mapModeBtn{
+  position:absolute; left:14px; top:14px; font:inherit; font-size:11.5px;
+  font-weight:600; cursor:pointer; color:var(--ink);
+  background:color-mix(in srgb, var(--surface) 88%, transparent);
+  border:1px solid var(--line-soft); border-radius:9px; padding:6px 11px;
+  backdrop-filter:blur(6px);
+}
+#mapModeBtn:hover:not(:disabled){border-color:var(--dim)}
+#mapModeBtn:disabled{opacity:.45; cursor:not-allowed}
 
 /* ── 통로 레일 — 이 화면의 서명 요소 ──────────────────────────────────
    과수원의 통로를 그대로 띠로 세운다. 한 물체가 임무 선택·진행률·현재 위치를
@@ -205,6 +216,14 @@ canvas{display:block; width:100%; height:100%}
   opacity:.5; animation:sweep 2.6s linear infinite;
 }
 @keyframes sweep{0%{top:100%}100%{top:-3px}}
+/* 진입 금지 통로(농로·측위 공백 등, farm.no_go_alleys) — 빗금으로 다른 상태와
+   함께 있어도(picked 등) 항상 구분되게 마지막에 둔다. 새 색 변수는 안 쓴다. */
+.band.nogo{
+  background:repeating-linear-gradient(45deg, var(--danger-soft), var(--danger-soft) 5px,
+             var(--sunk) 5px, var(--sunk) 10px);
+  border-color:var(--danger);
+}
+.band.nogo .no{color:var(--danger)}
 #railTail{flex:none; display:flex; gap:6px; align-items:center}
 #railTail button{padding:7px 11px; font-size:12px}
 
@@ -526,6 +545,7 @@ kbd{background:var(--bg); border:1px solid var(--line); border-bottom-width:2px;
   <div id="stage">
     <div id="mapwrap">
       <canvas id="map"></canvas>
+      <button id="mapModeBtn" type="button" title="지도 바탕 전환(실사/벡터)">실사</button>
       <div id="hud">
         위치 <b id="hPos" class="mono">—</b><br>
         방위 <b id="hYaw" class="num">—</b> · 기울기 <b id="hTilt" class="num">—</b>
@@ -825,7 +845,7 @@ async function boot() {
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
     refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
-    refreshBT(); refreshAlleyLocks();
+    refreshBT(); refreshAlleyLocks(); loadFarm();
   } catch (e) { /* 로그인 대기 */ }
 }
 
@@ -842,7 +862,7 @@ $("login-form").addEventListener("submit", async ev => {
     hideLogin(); applyRoleVisibility();
     await loadRobots(); connectServer();
     refreshHistory(); refreshUsers(); refreshQueue(); refreshMetrics();
-    refreshBT(); refreshAlleyLocks();
+    refreshBT(); refreshAlleyLocks(); loadFarm();
   } catch (e) { $("login-err").textContent = e.message; }
 });
 
@@ -1057,10 +1077,15 @@ function buildAlleys(r){
   const box = $("bands");
   box.innerHTML = "";
   if (!r?.geom){ $("railCount").textContent = "—"; return; }
+  const noGo = new Set(FARM && Array.isArray(FARM.no_go_alleys) ? FARM.no_go_alleys : []);
   for (let k = 0; k < r.geom.alleys; k++){
     const b = document.createElement("button");
     b.className = "band"; b.dataset.k = k;
     b.title = `통로 ${k}`;
+    if (noGo.has(k)){
+      b.classList.add("nogo");
+      b.title = `통로 ${k} — 진입 금지(농로·측위 공백 등)`;
+    }
     b.setAttribute("aria-pressed", "false");
     b.innerHTML = `<span class="fill"></span><span class="no num">${k}</span>`;
     b.onclick = () => toggleAlley(k);
@@ -1319,6 +1344,15 @@ let view = {cx:0, cy:0, scale:8};
 function fitView(){
   const g = sel()?.geom || [...robots.values()].find(r => r.geom)?.geom;
   if (!g) return;
+  // farm 이 있으면 이미지 전체(bounds_m, 텍스처의 world AABB)가 처음부터
+  // 보이게 잡는다 — 실사 바탕과 오버레이의 정합을 한눈에 볼 수 있어야 한다.
+  if (FARM && Array.isArray(FARM.bounds_m) && FARM.bounds_m.length === 2){
+    const [[bx0,by0],[bx1,by1]] = FARM.bounds_m;
+    const w = (bx1-bx0) + 6, h = (by1-by0) + 6;
+    view.cx = (bx0+bx1)/2; view.cy = (by0+by1)/2;
+    view.scale = Math.min(cv.width/w, cv.height/h) * 0.96;
+    return;
+  }
   const w = g.rows * g.row_spacing + 6;
   const h = g.col_len + 2*g.headland + 6;
   view.cx = g.x0 + (g.rows-1)*g.row_spacing/2;
@@ -1362,6 +1396,149 @@ cv.addEventListener("pointermove", ev => {
 cv.addEventListener("dblclick", () => { fitView(); draw(); });
 const W2S = (x,y) => [cv.width/2 + (x-view.cx)*view.scale,
                       cv.height/2 - (y-view.cy)*view.scale];
+
+/* ── 농장 매니페스트 · 정사영상 배경 ──────────────────────────────────────
+   T3 N-3 인계: 로봇 hello geom(g)의 x0/row_spacing 은 통로 폭을 균일하다고
+   가정한 근사값이다 — 실사 농장은 통로 간격이 4.75~15.25 m 로 불균일해서
+   그 근사가 최대 8 m 이상 어긋난다(row_origins 실측 대비). GET /api/v1/farm
+   이 있으면 그 row_origins(x)를 실제 열 위치로 써서 통로 중심·경계·클릭
+   판정을 다시 계산한다 — farm 이 없거나(404) rows 개수가 안 맞으면 아래
+   함수들은 전부 기존 g 균일 격자 공식으로 그대로 떨어진다(계단식 하위호환,
+   그 경로의 산식은 한 글자도 바뀌지 않는다). */
+let FARM = null;                 // GET /api/v1/farm 응답, 없으면 null(폴백)
+let FARM_ROW_X = null;           // [x, …] row_origins 의 x 만 뽑은 배열(길이 = FARM.rows)
+let farmWarned = false, imgWarned = false;   // 콘솔 경고는 딱 1회만
+let orthoImg = null, orthoReady = false;
+const MAPMODE_KEY = "orchard.mapmode";
+let mapMode = "photo";           // 기본 실사 — localStorage 로 기억
+try { mapMode = localStorage.getItem(MAPMODE_KEY) || "photo"; } catch (e) {}
+
+function rowXOf(g, k){
+  if (FARM_ROW_X && FARM_ROW_X.length === g.rows) return FARM_ROW_X[k];
+  return g.x0 + k*g.row_spacing;
+}
+// 통로 k 의 [xL,xR] — farm 있으면 이웃 두 열의 실측 x, 없으면 균일 격자(기존 그대로)
+function alleyXRange(g, k){
+  if (FARM_ROW_X && FARM_ROW_X.length === g.rows){
+    const a = FARM_ROW_X[k], b = FARM_ROW_X[k+1];
+    return [Math.min(a,b), Math.max(a,b)];
+  }
+  const xL = g.x0 + k*g.row_spacing;
+  return [xL, xL + g.row_spacing];
+}
+function alleyCenterX(g, k){
+  const [xL, xR] = alleyXRange(g, k);
+  return (xL + xR) / 2;
+}
+// 클릭 판정 — farm 있으면 실측 구간을 훑어 찾고(불균일 폭 대응), 없으면
+// 기존 균일 격자 역산 그대로(무수정 — 검증 대상).
+function alleyAtX(g, wx){
+  if (FARM_ROW_X && FARM_ROW_X.length === g.rows){
+    for (let k = 0; k < g.alleys; k++){
+      const [xL, xR] = alleyXRange(g, k);
+      if (wx >= xL && wx < xR) return k;
+    }
+    return -1;
+  }
+  const k = Math.round((wx - g.x0) / g.row_spacing - 0.5);
+  return (k < 0 || k >= g.alleys) ? -1 : k;
+}
+
+// 정사영상 픽셀 → world — farm.json axes_note 의 아핀(px = origin_px +
+// px_per_m·R(rotation_deg)·(wx,wy))을 그대로 역변환한다(y 부호는 손대지
+// 않는다 — world +y = image +y = 지리적 남, axes_note 그대로).
+function imgPxToWorld(px, py, farm){
+  const [ox, oy] = farm.origin_px, ppm = farm.px_per_m;
+  const th = farm.rotation_deg * Math.PI / 180;
+  const dpx = px - ox, dpy = py - oy;
+  return [(Math.cos(th)*dpx + Math.sin(th)*dpy) / ppm,
+          (-Math.sin(th)*dpx + Math.cos(th)*dpy) / ppm];
+}
+// 이미지 픽셀→world(위 함수)→screen(W2S) 은 아핀의 합성이라 그 자체로 아핀이다
+// — 원점·(1,0)·(0,1) 세 표본점만 찍으면 캔버스 변환행렬이 근사가 아니라
+// 정확히 나온다(회전·스케일·이동을 손으로 다시 합성하지 않는다).
+function drawOrthoBackground(farm, img){
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) return;
+  const p00 = W2S(...imgPxToWorld(0, 0, farm));
+  const p10 = W2S(...imgPxToWorld(1, 0, farm));
+  const p01 = W2S(...imgPxToWorld(0, 1, farm));
+  const a = p10[0]-p00[0], b = p10[1]-p00[1];
+  const cc = p01[0]-p00[0], d = p01[1]-p00[1];
+  ctx.save();
+  ctx.setTransform(a, b, cc, d, p00[0], p00[1]);
+  ctx.drawImage(img, 0, 0, w, h);
+  ctx.restore();
+}
+
+function preloadOrtho(farm){
+  orthoReady = false;
+  const img = new Image();
+  img.onload = () => { orthoReady = true; orthoImg = img; updateMapModeUI(); if (mapReady) draw(); };
+  img.onerror = () => {
+    orthoReady = false;
+    if (!imgWarned){
+      console.warn("[지도] 정사영상 로드 실패 — 벡터 지도로 대체합니다:", farm.ortho_url);
+      imgWarned = true;
+    }
+    updateMapModeUI(); if (mapReady) draw();
+  };
+  img.src = farm.ortho_url;
+  orthoImg = img;
+}
+
+// GET /api/v1/farm — 404(농장 매니페스트 미등록)면 벡터 폴백 + 콘솔 경고 1회
+// (무음 빈 지도 금지). 성공하면 row_origins 로 위 통로 기하 함수들이 그
+// 순간부터 실측값을 쓰기 시작한다.
+async function loadFarm(){
+  try {
+    FARM = await api("/farm");
+  } catch (e) {
+    FARM = null; FARM_ROW_X = null;
+    if (!farmWarned){
+      console.warn("[지도] GET /api/v1/farm 실패 — 벡터 지도(로봇 geom)로 대체합니다:", e.message);
+      farmWarned = true;
+    }
+    updateMapModeUI(); updateScoutGate();
+    if (mapReady) { fitView(); draw(); }
+    return;
+  }
+  FARM_ROW_X = (Array.isArray(FARM.row_origins) && FARM.row_origins.length === FARM.rows)
+    ? FARM.row_origins.map(p => p[0]) : null;
+  preloadOrtho(FARM);
+  updateMapModeUI(); updateScoutGate();
+  // hello(로봇 geom)가 이 farm 응답보다 먼저 왔을 수 있다 — 그때 그린 통로
+  // 레일에는 no_go 빗금이 없으니 다시 그린다(경합 순서 무관하게 반영).
+  if (sel()?.geom) buildAlleys(sel());
+  if (mapReady) { fitView(); draw(); }
+}
+
+function updateMapModeUI(){
+  const btn = $("mapModeBtn");
+  const avail = !!(FARM && FARM.ortho_url && orthoReady);
+  btn.textContent = mapMode === "photo" ? "실사" : "벡터";
+  btn.disabled = !avail;
+  btn.title = avail ? "지도 바탕 전환(실사/벡터)"
+                     : "정사영상을 불러오지 못해 벡터 지도만 쓸 수 있습니다";
+}
+$("mapModeBtn").onclick = () => {
+  mapMode = mapMode === "photo" ? "vector" : "photo";
+  try { localStorage.setItem(MAPMODE_KEY, mapMode); } catch (e) {}
+  updateMapModeUI();
+  if (mapReady) draw();
+};
+updateMapModeUI();
+
+// 전체 정찰(alleys 생략 = 와일드카드) 은 no_go 통로가 하나라도 있으면 서버가
+// 항상 400 을 낸다(mission_ops.farm_no_go_check, T5 §8 I1(b)) — 눌러서
+// 실패하게 두지 않고 미리 비활성화 + 문구로 안내한다.
+function updateScoutGate(){
+  const btn = $("scoutStart");
+  const hasNoGo = !!(FARM && Array.isArray(FARM.no_go_alleys) && FARM.no_go_alleys.length);
+  btn.disabled = hasNoGo;
+  btn.title = hasNoGo ? "전 통로 임무 불가 — 분담 프리셋 사용" : "";
+}
+
 function resize(){
   const r = cv.parentElement.getBoundingClientRect(), d = window.devicePixelRatio || 1;
   cv.width = r.width*d; cv.height = r.height*d;
@@ -1379,8 +1556,8 @@ cv.addEventListener("click", ev => {
   const rect = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
   const px = (ev.clientX - rect.left) * d;
   const wx = view.cx + (px - cv.width/2) / view.scale;
-  const k = Math.round((wx - g.x0) / g.row_spacing - 0.5);
-  if (k < 0 || k >= g.alleys) return;
+  const k = alleyAtX(g, wx);
+  if (k < 0) return;
   if ($("pane-mission").classList.contains("on") &&
       $("pane-mission").style.display !== "none") toggleAlley(k);
 });
@@ -1395,9 +1572,9 @@ function robotColor(r, isSel, c){
 }
 
 // 통로 점유 오버레이 — GET /alley-locks 를 로봇 색 반투명 밴드로 얹는다.
-// 좌표 변환은 위 통로선 렌더와 같은 기하(g.x0·g.row_spacing)를 그대로 쓴다.
-// alleys 가 null(와일드카드 — traffic.py 의 "전체 점유" 센티널)이면 그
-// farm 의 통로를 전부 밴드로 그린다(브리프: null 처리 필수).
+// x 좌표는 alleyXRange(위 통로선 렌더와 같은 함수 — farm 있으면 실측, 없으면
+// 균일 격자)를 그대로 쓴다. alleys 가 null(와일드카드 — traffic.py 의
+// "전체 점유" 센티널)이면 그 farm 의 통로를 전부 밴드로 그린다(브리프: null 처리 필수).
 function drawAlleyLocks(g, c){
   if (!ALLEY_LOCKS.length) return;
   ctx.save(); ctx.globalAlpha = 0.22;
@@ -1407,11 +1584,38 @@ function drawAlleyLocks(g, c){
     if (!ks.length) continue;
     ctx.fillStyle = robotColor(robots.get(lock.robot_id), lock.robot_id === selKey, c);
     for (const k of ks){
-      const xL = g.x0 + k*g.row_spacing, xR = xL + g.row_spacing;
+      const [xL, xR] = alleyXRange(g, k);
       const [ax, ay] = W2S(xL, -g.col_len/2 - g.headland);
       const [bx, by] = W2S(xR, g.col_len/2 + g.headland);
       ctx.fillRect(ax, by, bx-ax, ay-by);
     }
+  }
+  ctx.restore();
+}
+
+// no_go 통로(farm.no_go_alleys — 농로·측위 공백 등, 사람이 큐레이션한 값,
+// T5 §8 C2) — 진입 금지 구간을 빗금으로 표시한다. farm 이 없으면(폴백) 이
+// 필드 자체가 없으므로 아무것도 그리지 않는다.
+function drawNoGoAlleys(g, c){
+  if (!FARM || !Array.isArray(FARM.no_go_alleys) || !FARM.no_go_alleys.length) return;
+  const s = view.scale;
+  ctx.save();
+  for (const k of FARM.no_go_alleys){
+    if (k < 0 || k >= g.alleys) continue;
+    const [xL, xR] = alleyXRange(g, k);
+    const [ax, ay] = W2S(xL, -g.col_len/2 - g.headland);
+    const [bx, by] = W2S(xR, g.col_len/2 + g.headland);
+    const x = Math.min(ax,bx), y = Math.min(ay,by), w = Math.abs(bx-ax), h = Math.abs(ay-by);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+    ctx.strokeStyle = c.danger; ctx.globalAlpha = 0.5; ctx.lineWidth = Math.max(1, s*0.04);
+    const step = Math.max(7, s*0.5);
+    for (let off = -h; off < w + h; off += step){
+      ctx.beginPath(); ctx.moveTo(x+off, y+h); ctx.lineTo(x+off+h, y); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.strokeStyle = c.danger; ctx.globalAlpha = 0.9; ctx.lineWidth = Math.max(1.5, s*0.05);
+    ctx.strokeRect(x, y, w, h);
   }
   ctx.restore();
 }
@@ -1446,10 +1650,16 @@ function draw(){
   if (!g) return;
   const s = view.scale;
 
-  // 나무 열 — 밭의 뼈대
+  // 정사영상 바탕 — 최하층, 나무 열·통로·로봇 오버레이보다 먼저 그린다.
+  // 토글이 "벡터"거나 이미지가 아직(또는 끝내) 없으면 조용히 건너뛴다(폴백).
+  if (mapMode === "photo" && FARM && orthoReady && orthoImg)
+    drawOrthoBackground(FARM, orthoImg);
+
+  // 나무 열 — 밭의 뼈대. farm 있으면 row_origins 의 실측 x(rowXOf), 없으면
+  // 기존 균일 격자(g.x0 + k*row_spacing) 그대로.
   ctx.lineWidth = Math.max(1, s*0.05);
   for (let k = 0; k < g.rows; k++){
-    const x = g.x0 + k*g.row_spacing;
+    const x = rowXOf(g, k);
     const [a,b] = W2S(x, -g.col_len/2), [d,e] = W2S(x, g.col_len/2);
     ctx.strokeStyle = c["canvas-row"];
     ctx.beginPath(); ctx.moveTo(a,b); ctx.lineTo(d,e); ctx.stroke();
@@ -1457,7 +1667,7 @@ function draw(){
   // 통로 — 고른 통로는 계획선 색으로 도드라지게 (레일과 같은 언어)
   ctx.setLineDash([s*0.45, s*0.45]);
   for (let k = 0; k < g.alleys; k++){
-    const x = g.x0 + (k+0.5)*g.row_spacing;
+    const x = alleyCenterX(g, k);
     const [a,b] = W2S(x, -g.col_len/2), [d,e] = W2S(x, g.col_len/2);
     const on = picked.has(k);
     ctx.strokeStyle = on ? c.plan : c["canvas-alley"];
@@ -1470,19 +1680,24 @@ function draw(){
     ctx.font = `${Math.max(11, s*0.55)}px "Noto Sans KR",sans-serif`;
     ctx.textAlign = "center";
     for (let k = 0; k < g.alleys; k++){
-      const x = g.x0 + (k+0.5)*g.row_spacing;
+      const x = alleyCenterX(g, k);
       const [a,b] = W2S(x, g.col_len/2);
       ctx.fillStyle = picked.has(k) ? c.plan : c.dim;
       ctx.fillText(k, a, b - Math.max(6, s*0.35));
     }
     ctx.textAlign = "start";
   }
-  const [lx,ly] = W2S(g.x0 - g.row_spacing/2, g.col_len/2);
-  const [rx,ry] = W2S(g.x0 + (g.rows-0.5)*g.row_spacing, -g.col_len/2);
+  // 가장자리 여백 — farm 있으면 첫/끝 통로 실측 폭의 절반, 없으면 기존
+  // row_spacing/2 그대로(폴백에서 이전과 완전히 같은 값이 나온다).
+  const marginL = FARM_ROW_X ? (FARM_ROW_X[1]-FARM_ROW_X[0])/2 : g.row_spacing/2;
+  const marginR = FARM_ROW_X ? (FARM_ROW_X[g.rows-1]-FARM_ROW_X[g.rows-2])/2 : g.row_spacing/2;
+  const [lx,ly] = W2S(rowXOf(g, 0) - marginL, g.col_len/2);
+  const [rx,ry] = W2S(rowXOf(g, g.rows-1) + marginR, -g.col_len/2);
   ctx.strokeStyle = c["canvas-edge"]; ctx.lineWidth = 1;
   ctx.strokeRect(lx, ly, rx-lx, ry-ly);
 
   drawAlleyLocks(g, c);
+  drawNoGoAlleys(g, c);
 
   // 장애물 — 모든 로봇이 본 것을 겹쳐 그린다 (같은 밭이므로 서로 보완된다)
   for (const r of robots.values()){
@@ -1500,7 +1715,7 @@ function draw(){
     ctx.strokeStyle = c.plan; ctx.lineWidth = Math.max(1.5, s*0.06);
     ctx.globalAlpha = .7; ctx.beginPath();
     srv.state.mission.alleys.forEach((k,i) => {
-      const x = srv.geom.x0 + (k+0.5)*srv.geom.row_spacing, up = i % 2 === 0;
+      const x = alleyCenterX(srv.geom, k), up = i % 2 === 0;
       const [a,b] = W2S(x, up ? -srv.geom.col_len/2 : srv.geom.col_len/2);
       const [d,e] = W2S(x, up ?  srv.geom.col_len/2 : -srv.geom.col_len/2);
       ctx.moveTo(a,b); ctx.lineTo(d,e);
