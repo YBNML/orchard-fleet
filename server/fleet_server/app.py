@@ -74,7 +74,7 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
         app.state.fleet_service.attach(fleet)
 
     from .bt.engine import BTEngine
-    app.state.bt_engine = BTEngine(session_factory, app.state.fleet)
+    app.state.bt_engine = BTEngine(session_factory, app.state.fleet, farm=app.state.farm)
     app.state.retention = RetentionTask(session_factory, settings.event_ttl_days,
                                         safe_ttl_days=settings.event_ttl_safe_days)
 

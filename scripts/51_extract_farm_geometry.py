@@ -652,6 +652,57 @@ def make_synthetic_image(spacing_px=14.0, angle_deg=7.0, px_per_m=4.0,
     return arr, px_per_m
 
 
+def run_merge_preservation_test() -> bool:
+    """보존 시험(Task5 수정 라운드1 C2) — 51 이 재실행돼도 사람이 손으로 얹은
+    필드(no_go_alleys·no_go_note 류)가 사라지지 않고, 자동 추출 필드는 매번
+    새로 계산한 값으로 갱신되는지 블랙박스로 확인한다."""
+    import tempfile
+
+    print("[merge-test] 재실행 시 수동 필드(no_go_alleys 등) 보존 확인")
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        out_json = os.path.join(td, "farm.json")
+        arr, px_per_m = make_synthetic_image(spacing_px=14.0, angle_deg=7.0, px_per_m=4.0)
+        geo = extract_geometry(arr, px_per_m)
+        h_img, w_img = arr.shape[:2]
+
+        # 1회차 — 자동 추출만 있는 첫 산출물을 쓴다.
+        manifest1 = build_farm_manifest(geo, "self_test.png", px_per_m,
+                                        "0" * 64, geo["headland_m"], 1.5, w_img, h_img)
+        with open(out_json, "w") as f:
+            json.dump(manifest1, f)
+
+        # 사람이 no_go_alleys/no_go_note 를 손으로 덧붙였다고 가정.
+        with open(out_json) as f:
+            hand_edited = json.load(f)
+        hand_edited["no_go_alleys"] = [2, 3]
+        hand_edited["no_go_note"] = "merge-test 고정 문구"
+        with open(out_json, "w") as f:
+            json.dump(hand_edited, f)
+
+        # 2회차 — 같은 이미지로 도구를 재실행(자동 필드는 처음부터 다시 계산됨).
+        manifest2 = build_farm_manifest(geo, "self_test.png", px_per_m,
+                                        "0" * 64, geo["headland_m"], 1.5, w_img, h_img)
+        merged = merge_manual_fields(manifest2, out_json)
+
+        if merged.get("no_go_alleys") != [2, 3]:
+            print(f"[merge-test] FAIL no_go_alleys 유실: {merged.get('no_go_alleys')!r}")
+            ok = False
+        if merged.get("no_go_note") != "merge-test 고정 문구":
+            print(f"[merge-test] FAIL no_go_note 유실: {merged.get('no_go_note')!r}")
+            ok = False
+        if merged["rows"] != manifest2["rows"] or merged["row_origins"] != manifest2["row_origins"]:
+            print("[merge-test] FAIL 자동 필드(rows/row_origins)가 최신 계산값이 아님 "
+                  "— 옛 파일이 새 계산을 덮어썼을 가능성")
+            ok = False
+
+    if ok:
+        print("[merge-test] GREEN — 수동 필드 보존 + 자동 필드는 항상 최신값")
+    else:
+        print("[merge-test] RED")
+    return ok
+
+
 def run_self_test():
     print("[self-test] 합성 줄무늬 이미지(간격14px=3.5m@4px/m, 회전7deg) 생성")
     true_angle = 7.0
@@ -739,6 +790,30 @@ def run_self_test():
 # ---------------------------------------------------------------------------
 
 
+def merge_manual_fields(fresh_manifest: dict, out_json_path: str) -> dict:
+    """재실행 보존 — 이 도구가 만들지 않는 키(사람이 out_json_path 에 직접 덧붙인
+    필드, 예: no_go_alleys·no_go_note, Task5 수정 라운드1 C2)를 새 매니페스트에
+    옮겨 담는다.
+
+    기존 파일에 있고 새 매니페스트에 없는 키만 옮긴다 — 자동 추출 필드(rows·
+    row_origins·... 이 함수가 만드는 모든 키)는 겹치면 **항상 새로 계산한 값이
+    이긴다**(추출 로직이 바뀌면 갱신돼야 하므로, 옛 값으로 덮어쓰지 않는다).
+    out_json_path 가 아직 없으면(첫 실행) fresh_manifest 를 그대로 돌려준다."""
+    if not os.path.exists(out_json_path):
+        return fresh_manifest
+    with open(out_json_path) as f:
+        old = json.load(f)
+    merged = dict(fresh_manifest)
+    kept = []
+    for k, v in old.items():
+        if k not in merged:
+            merged[k] = v
+            kept.append(k)
+    if kept:
+        print(f"[extract] 기존 파일의 수동 필드 보존: {kept}")
+    return merged
+
+
 def sha256_of_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -767,6 +842,7 @@ def main():
 
     if args.self_test:
         ok = run_self_test()
+        ok = run_merge_preservation_test() and ok
         sys.exit(0 if ok else 1)
 
     if not os.path.exists(args.image):
@@ -818,6 +894,7 @@ def main():
     manifest = build_farm_manifest(geo, os.path.basename(args.image), px_per_m,
                                     image_sha256, headland_m, args.tree_spacing_m,
                                     im.size[0], im.size[1])
+    manifest = merge_manual_fields(manifest, args.out_json)   # 수동 필드 보존(no_go_* 등)
 
     os.makedirs(os.path.dirname(args.out_overlay) or ".", exist_ok=True)
     render_overlay(arr, geo, manifest, args.out_overlay)

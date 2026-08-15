@@ -23,6 +23,7 @@ class Settings:
     event_ttl_safe_days: int = 90         # T6 리뷰 I2 — 안전·수명주기 kind 는 더 길게(기본 90일)
     farm_manifest_path: Path = _REPO_ROOT / "maps/orchard_real/farm.json"   # Task 5
     imagery_dir: Path = _REPO_ROOT / "sim/assets/imagery"                   # Task 5 — ortho 원본 위치
+    farm_id: int = 1     # Task5 수정 라운드1 I2 — 단일 매니페스트 배치 전제(다중 농장 정합은 범위 밖)
 
 
 def load_settings() -> Settings:
@@ -44,4 +45,5 @@ def load_settings() -> Settings:
         s.farm_manifest_path = Path(os.environ["FLEET_FARM_MANIFEST"])
     if os.environ.get("FLEET_IMAGERY_DIR"):
         s.imagery_dir = Path(os.environ["FLEET_IMAGERY_DIR"])
+    s.farm_id = int(os.environ.get("FLEET_FARM_ID", s.farm_id))
     return s

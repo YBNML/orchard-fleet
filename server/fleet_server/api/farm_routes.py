@@ -1,6 +1,14 @@
 """농장 매니페스트 API (Task 5) — 대시보드(T6)가 아핀·ortho_url·비균일 통로
 기하를 이 API 하나에서 읽는다. T3 N-3: 로봇 hello 기하는 균일 격자가 남아
-있다 — 대시보드 오버레이의 정확한 소스는 여기(farm.json 전문)다."""
+있다 — 대시보드 오버레이의 정확한 소스는 여기(farm.json 전문)다.
+
+**단일 매니페스트 배치 한계(Task5 수정 라운드1 I2).** 이 서버는 농장을
+여러 개 등록할 수 있지만(admin API 의 `/farms`), 지리 매니페스트는
+`FLEET_FARM_MANIFEST` 파일 하나뿐이다 — 여러 농장이 각자 다른 지리를 가지는
+다중 농장 배치의 정합은 이번 스펙 범위 밖이다(원장 이연). 응답에 실리는
+`farm_id` 는 이 매니페스트가 속한다고 **설정으로 선언한** 농장(기본 1,
+`FLEET_FARM_ID`)일 뿐 — admin API 의 실제 farms 테이블 id 와 자동으로
+맞물리지 않는다. 단일 농장 배치를 전제한다."""
 from __future__ import annotations
 
 import hashlib
@@ -24,8 +32,10 @@ def get_farm(request: Request, user: User = Depends(current_user)) -> dict:
     farm = request.app.state.farm
     if farm is None:
         raise HTTPException(404, "농장 매니페스트가 설정되지 않았습니다")
+    settings = request.app.state.settings
     out = dict(farm)
     out["ortho_url"] = f"/assets/{farm['image']}"
+    out["farm_id"] = settings.farm_id            # I2 — 설정으로 선언한 단일 농장 id
     return out
 
 

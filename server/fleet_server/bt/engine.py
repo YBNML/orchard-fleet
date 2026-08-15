@@ -50,12 +50,13 @@ def mission_ids(state: dict | None) -> list[int]:
 class EngineCtx:
     """노드가 보는 바깥 세계 — DB 세션 하나와 FleetPort 하나에 묶인다.
 
-    인스턴스 단위로 만들어지므로 farm·발주자(created_by)를 안다: BT 가 만드는
-    임무의 감사 기록은 그 인스턴스를 만든 사람 앞으로 남는다(role="bt").
+    인스턴스 단위로 만들어지므로 farm(농장 매니페스트, mission_ops no_go
+    검증용)·발주자(created_by)를 안다: BT 가 만드는 임무의 감사 기록은 그
+    인스턴스를 만든 사람 앞으로 남는다(role="bt").
     """
 
-    def __init__(self, db, fleet, inst: BTInstance):
-        self.db, self.fleet, self.inst = db, fleet, inst
+    def __init__(self, db, fleet, inst: BTInstance, farm: dict | None = None):
+        self.db, self.fleet, self.inst, self.farm = db, fleet, inst, farm
 
     # ── 조건 ────────────────────────────────────────────────────────────────
     async def alley_free(self, alleys) -> bool:
@@ -80,13 +81,19 @@ class EngineCtx:
         robot = self.db.get(Robot, spec.get("robot"))
         if robot is None or robot.farm_id != self.inst.farm_id:
             self._audit("rejected", str(spec.get("robot")), "로봇 없음/농장 불일치")
+            self.inst.note = "발진 거부 — 로봇 없음/농장 불일치"[:160]
             return None
         try:
             ms, lock_reason = await mission_ops.create_and_dispatch(
                 self.db, self.fleet, robot=robot, alleys=spec.get("alleys"),
-                work=spec.get("work"), created_by=self.inst.created_by)
+                work=spec.get("work"), created_by=self.inst.created_by, farm=self.farm)
         except MissionOpError as e:
+            # M4 — 발진 거부 사유를 inst.note 에 남긴다(감사 로그만으로는 대시보드
+            # 인스턴스 화면에서 "왜 안 나갔는지"가 안 보였다). 프리셋이 미리
+            # 검증하므로(범위·no_go·인접) 정상 경로에선 거의 안 나지만, 방어선
+            # 이중화의 결과가 조용히 사라지면 안 된다.
             self._audit("rejected", robot.id, e.detail)
+            self.inst.note = f"발진 거부: {e.message}"[:160]
             return None                        # 발진 거부 — Action 실패(Retry 가 받는다)
         if lock_reason is not None:            # QUEUED_LOCK — 실패가 아니라 대기
             self._audit("rejected", robot.id, f"mission={ms.id} {lock_reason}")
@@ -122,9 +129,11 @@ class BTEngine:
 
     def __init__(self, session_factory, fleet, *, period_s: float = 1.0,
                  max_tick_errors: int = 5, stall_ticks: int = 30,
-                 queued_stall_ticks: int = 60, track_fresh_s: float = 20.0):
+                 queued_stall_ticks: int = 60, track_fresh_s: float = 20.0,
+                 farm: dict | None = None):
         self._factory = session_factory
         self.fleet = fleet                      # lifespan 이 레거시 포트로 교체할 수 있다
+        self.farm = farm                        # app.state.farm — mission_ops no_go 검증용
         self.period_s = period_s
         self.max_tick_errors = max_tick_errors  # 연속 틱 예외 한계(넘으면 종착)
         self.stall_ticks = stall_ticks          # RUNNING 임무 정체 판정 틱 수
@@ -232,7 +241,7 @@ class BTEngine:
                 return
             result: str | None = None
             try:
-                result = await tree.tick(EngineCtx(db, self.fleet, inst))
+                result = await tree.tick(EngineCtx(db, self.fleet, inst, farm=self.farm))
             except Exception as e:              # 한 인스턴스의 사고로 큐 전체가 멈추면 안 된다
                 log.exception("BT#%s 틱 실패", instance_id)
                 errors = self._tick_errors.get(instance_id, 0) + 1

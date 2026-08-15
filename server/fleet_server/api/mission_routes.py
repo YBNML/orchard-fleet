@@ -58,7 +58,7 @@ async def create_mission(body: MissionBody, request: Request, db=Depends(get_db)
     try:
         ms, lock_reason = await mission_ops.create_and_dispatch(
             db, request.app.state.fleet, robot=robot, alleys=body.alleys,
-            work=body.work, created_by=user.id)
+            work=body.work, created_by=user.id, farm=request.app.state.farm)
     except MissionOpError as e:
         audit.record(db, action="mission_start", result="rejected", user_id=user.id,
                      role=user.role, target=robot.id, detail=e.detail)
