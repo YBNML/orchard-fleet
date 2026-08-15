@@ -19,6 +19,12 @@ robomw 는 ROS 를 모른다 — 이 파일이 아는 것은 블랙보드에 꽂
 그것이다 — 통로 간격·열 길이는 현장마다 다르고, hello 로 관제에 알리는 값과
 여기서 쓰는 값이 갈라지면 운영자가 화면에서 고른 통로와 로봇이 뛰어드는
 통로가 달라진다. 한 벌(site_geom)만 본다.
+
+**SDK 계약 개정(additive, 2026-08-15)**: site_geom 에 선택 키
+`alley_centers_x`·`row_span_y` 를 더했다 — 불균일 통로 간격·열별 길이 차이·
+비대칭 블록(실사 정사영상 농장, 스펙 ④)을 표현하기 위해서다. 없으면 기존
+균일 격자로 폴백하므로 계단식 경로는 불변이다. 상세는 `_grid_pose` 독스트링,
+계약표는 robomw/README.md §2 참조.
 """
 from __future__ import annotations
 
@@ -128,15 +134,36 @@ class MaintenanceFeature(Feature):
         기하는 호스트가 얹은 bb.extra["site_geom"](hello 의 site.geometry 와
         **같은 사전**)에서만 읽는다. 그 키가 없으면 계산하지 않는다 — 기본값을
         지어내면 화면이 말한 통로와 로봇이 믿는 통로가 갈라진다.
+
+        ── SDK 계약 개정 (additive, 2026-08-15) ────────────────────────────
+        기존 계산은 `x0 + (k+0.5)·row_spacing` / `±col_len/2` 라는 **균일 직사각
+        격자**를 전제했다. 실사 정사영상 농장(스펙 ④)은 그 전제를 깬다: 열
+        간격이 4.75~5.25 m 로 불균일하고, 열마다 길이가 다르며(128~141 m),
+        블록이 y 축 대칭도 아니다. 그 월드에서 균일 격자로 풀면 통로 25 가
+        x 8.5 m·y 170 m·헤딩 180° 어긋난 자리로 재정위된다 — 즉 계산이 조용히
+        거짓말을 한다.
+
+        그래서 site_geom 에 **선택 키** 둘을 더한다(있으면 우선, 없으면 기존
+        균일 격자 그대로 — 계단식 경로는 바이트 단위로 불변):
+
+          alley_centers_x : [x, ...]  통로별 중심 x (길이 = alleys)
+          row_span_y      : [y_남단, y_북단]                    (전 통로 공통) 또는
+                            [[y_남단, y_북단], ...]             (통로별, 길이 = alleys)
+
+        **row_span_y 의 원소 순서가 곧 남단/북단의 정의다.** 0번이 'south',
+        1번이 'north' 다 — 부호 규약이 현장마다 다르기 때문에(계단식 월드는
+        남단이 y 최솟값, 실사 농장은 farm.json axes_note 상 world +y 가 지리적
+        남이라 남단이 y 최댓값) 배열의 위치로 못박는다. 값의 크기 비교로
+        추론하지 않는다.
+
+        정지선(END_STANDOFF_M)은 그 단에서 **블록 바깥쪽**으로 물러난 자리이고,
+        요는 언제나 **블록 안쪽**을 본다(그 자리에서 바로 훑기 시작한다).
         """
         geom = self.ctx.bb.extra.get("site_geom")
         if not geom:
             return None, "현장 기하 미배선"
         try:
             n = int(geom["alleys"])
-            S = float(geom["row_spacing"])
-            x0 = float(geom["x0"])
-            half = float(geom["col_len"]) / 2.0
         except (KeyError, TypeError, ValueError):
             return None, "현장 기하 형식 오류"
         try:
@@ -147,12 +174,58 @@ class MaintenanceFeature(Feature):
             return None, f"통로 번호 범위 밖 (0~{n - 1})"
         if end not in ("north", "south"):
             return None, "단은 north 또는 south"
-        sign = 1.0 if end == "north" else -1.0
-        # 북단에 선 로봇은 남(-π/2)을, 남단에 선 로봇은 북(+π/2)을 본다 —
-        # 어느 쪽이든 **통로 안쪽**이 정면이다(그 자리에서 바로 훑기 시작한다).
-        return (x0 + (k + 0.5) * S,
-                sign * (half + END_STANDOFF_M),
-                -sign * math.pi / 2.0), None
+
+        cx, err = self._alley_center_x(geom, k, n)
+        if err:
+            return None, err
+        span, err = self._alley_span_y(geom, k, n)
+        if err:
+            return None, err
+        y_s, y_n = span
+        y_end = y_s if end == "south" else y_n
+        y_in = y_n if end == "south" else y_s
+        if y_end == y_in:
+            return None, "현장 기하 형식 오류"
+        out = 1.0 if y_end > y_in else -1.0      # 블록 밖으로 나가는 +y 방향
+        return (cx, y_end + out * END_STANDOFF_M,
+                -out * math.pi / 2.0), None
+
+    @staticmethod
+    def _alley_center_x(geom, k, n):
+        """통로 k 의 중심 x. alley_centers_x 우선, 없으면 균일 격자 폴백."""
+        cxs = geom.get("alley_centers_x")
+        if cxs is not None:
+            try:
+                cxs = [float(v) for v in cxs]
+            except (TypeError, ValueError):
+                return None, "alley_centers_x 형식 오류"
+            if len(cxs) != n:
+                return None, f"alley_centers_x 길이 불일치 ({len(cxs)} vs {n})"
+            return cxs[k], None
+        try:
+            return float(geom["x0"]) + (k + 0.5) * float(geom["row_spacing"]), None
+        except (KeyError, TypeError, ValueError):
+            return None, "현장 기하 형식 오류"
+
+    @staticmethod
+    def _alley_span_y(geom, k, n):
+        """통로 k 의 (y_남단, y_북단). row_span_y 우선, 없으면 ±col_len/2 폴백."""
+        span = geom.get("row_span_y")
+        if span is not None:
+            try:
+                if len(span) == 2 and not hasattr(span[0], "__len__"):
+                    return (float(span[0]), float(span[1])), None   # 전 통로 공통
+                if len(span) != n:
+                    return None, f"row_span_y 길이 불일치 ({len(span)} vs {n})"
+                pair = span[k]
+                return (float(pair[0]), float(pair[1])), None
+            except (TypeError, ValueError, IndexError):
+                return None, "row_span_y 형식 오류"
+        try:
+            half = float(geom["col_len"]) / 2.0
+        except (KeyError, TypeError, ValueError):
+            return None, "현장 기하 형식 오류"
+        return (-half, half), None      # 계단식 규약: 남단 = y 최솟값
 
     def _target_pose(self, payload):
         """payload → (x, y, yaw). 좌표 직접 지정이 우선, 없으면 격자 변환."""

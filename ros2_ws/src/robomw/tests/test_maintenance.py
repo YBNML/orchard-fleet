@@ -150,6 +150,97 @@ def test_relocalize_grid_north_end():
     assert math.isclose(p.yaw, -math.pi / 2)
 
 
+# ── site_geom v2 (SDK 계약 개정, additive) ──────────────────────────────────
+# alley_centers_x / row_span_y — 불균일 통로·열별 길이·비대칭 블록을 표현한다.
+# 실사 정사영상 농장(스펙 ④) 값을 축약해 썼다: 통로 간격이 4.75~5.25 로
+# 불균일하고, 남단이 y **최댓값**이며(farm.json axes_note: world +y = 지리적 남),
+# 통로마다 남단 y 가 다르다.
+GEOM_V2 = dict(
+    rows=4, alleys=3, row_spacing=4.9903, x0=-66.9167,
+    col_len=141.109, headland=2.043,
+    alley_centers_x=[-64.4167, -59.5417, -54.5417],
+    row_span_y=[[34.920, -89.078],       # 통로 0 (남단 y 최대)
+                [37.575, -97.948],       # 통로 1
+                [39.198, -97.025]],      # 통로 2
+)
+
+
+def test_grid_pose_prefers_nonuniform_arrays():
+    """배열이 있으면 균일 격자를 **무시**한다 — 통로 2 남단.
+
+    x = alley_centers_x[2] = -54.5417 (균일 격자였다면 -54.4409 → 다른 값)
+    남단이 y 최댓값이므로 정지선은 +y 로 물러나고(39.198+1.5), 요는 안쪽(-y).
+    """
+    loc = FakeLocalizer()
+    f, ctx = mk_feature(loc=loc, geom=GEOM_V2)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v1", "alley": 2, "end": "south"})
+    p = loc.calls[0]
+    assert (round(p.x, 4), round(p.y, 4)) == (-54.5417, 40.698)
+    assert math.isclose(p.yaw, -math.pi / 2)
+
+
+def test_grid_pose_north_end_on_nonuniform():
+    """같은 통로의 북단 — y 최솟값 쪽으로 물러나고 요가 뒤집힌다."""
+    loc = FakeLocalizer()
+    f, ctx = mk_feature(loc=loc, geom=GEOM_V2)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v2", "alley": 2, "end": "north"})
+    p = loc.calls[0]
+    assert (round(p.x, 4), round(p.y, 4)) == (-54.5417, -98.525)
+    assert math.isclose(p.yaw, math.pi / 2)
+
+
+def test_grid_pose_boundary_alleys_use_own_span():
+    """경계 통로 0 과 마지막 통로가 **각자의** y 구간을 쓴다(공용 col_len 아님)."""
+    loc = FakeLocalizer()
+    f, _ = mk_feature(loc=loc, geom=GEOM_V2)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v3", "alley": 0, "end": "south"})
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v4", "alley": 2, "end": "south"})
+    assert round(loc.calls[0].y, 4) == 36.420      # 34.920 + 1.5
+    assert round(loc.calls[1].y, 4) == 40.698      # 39.198 + 1.5
+    assert loc.calls[0].y != loc.calls[1].y
+
+
+def test_grid_pose_shared_span_pair_applies_to_all_alleys():
+    """row_span_y 를 [남,북] 한 쌍으로 주면 전 통로 공통으로 쓴다."""
+    loc = FakeLocalizer()
+    geom = dict(GEOM_V2, row_span_y=[50.0, -50.0])
+    f, _ = mk_feature(loc=loc, geom=geom)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v5", "alley": 0, "end": "south"})
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v6", "alley": 2, "end": "south"})
+    assert round(loc.calls[0].y, 4) == round(loc.calls[1].y, 4) == 51.5
+
+
+def test_grid_pose_falls_back_to_uniform_grid():
+    """신규 키가 없으면 종전 균일 격자 그대로 — 계단식 경로 불변 보증."""
+    loc = FakeLocalizer()
+    f, _ = mk_feature(loc=loc, geom=GEOM)          # v1 기하(배열 없음)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v7", "alley": 3, "end": "south"})
+    p = loc.calls[0]
+    assert (round(p.x, 6), round(p.y, 6)) == (-3.5, -31.5)
+    assert math.isclose(p.yaw, math.pi / 2)
+
+
+def test_grid_pose_rejects_wrong_length_arrays():
+    """길이가 안 맞으면 조용히 폴백하지 않고 실패한다(무음 오정위 금지)."""
+    loc = FakeLocalizer()
+    geom = dict(GEOM_V2, alley_centers_x=[-64.4167, -59.5417])   # 3 이어야 함
+    f, ctx = mk_feature(loc=loc, geom=geom)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v8", "alley": 1, "end": "south"})
+    assert loc.calls == []
+    last = ctx.results[-1]
+    assert last["status"] == "rejected" and last["code"] == "BAD_PARAM"
+    assert "alley_centers_x" in last["data"]["reason"]
+
+
+def test_grid_pose_alley_range_from_alleys_key():
+    """통로 번호 범위는 alleys 가 정한다 — 배열이 있어도 동일."""
+    loc = FakeLocalizer()
+    f, ctx = mk_feature(loc=loc, geom=GEOM_V2)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v9", "alley": 3, "end": "south"})
+    assert loc.calls == []
+    assert ctx.results[-1]["code"] == "BAD_PARAM"
+
+
 def test_relocalize_busy_while_driving():
     """주행 중에는 재초기화 불가 — 어댑터를 부르지도 않는다."""
     loc = FakeLocalizer()

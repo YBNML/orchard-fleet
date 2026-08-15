@@ -46,6 +46,7 @@ import time
 
 import rclpy
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, PointCloud2
@@ -173,6 +174,18 @@ class ControlAgent(Node):
         # 과수원 기하 (기능이 param 으로 읽는다 — gen_world 와 같아야 한다)
         d("rows", 10); d("trees_per_row", 41)
         d("row_spacing", 3.5); d("tree_spacing", 1.5); d("headland", 6.0)
+        # 불균일 현장 기하(스펙 ④ 실사 농장) — robomw site_geom v2 의 선택 키를
+        # 채우는 통로다. 비우면 균일 격자 폴백(계단식 경로 불변).
+        # alley_south_y/alley_north_y 는 통로별 [남단, 북단] y 를 두 배열로 나눈
+        # 것이다 — ROS 2 파라미터에 중첩 배열이 없어서 여기서 다시 짝짓는다.
+        #
+        # dynamic_typing 이 필요한 이유: 빈 목록 `[]` 의 추론 타입은 BYTE_ARRAY 라
+        # 기본값을 그렇게 선언해 두면 런치가 실수 배열을 얹는 순간
+        # InvalidParameterTypeException 으로 노드가 죽는다(2026-08-15 실측).
+        _dyn = ParameterDescriptor(dynamic_typing=True)
+        for _k in ("alley_centers_x", "alley_south_y", "alley_north_y"):
+            if not self.has_parameter(_k):
+                self.declare_parameter(_k, [], _dyn)
         # 주행
         d("speed", 0.7); d("turn_speed", 0.5)
         d("y_slow_in", 25.0); d("slow_factor", 0.40); d("decel_dist", 3.0)
@@ -241,6 +254,24 @@ class ControlAgent(Node):
             rows=_R, alleys=_R - 1, row_spacing=_S, x0=-((_R - 1) * _S) / 2.0,
             col_len=(int(g("trees_per_row", 41)) - 1) * float(g("tree_spacing", 1.5)),
             headland=float(g("headland", 6.0)))
+        # ── site_geom v2 (SDK 계약 개정, additive — robomw/README.md §2) ─────
+        # 균일 직사각 격자로 표현할 수 없는 현장(실사 정사영상 농장: 통로 간격
+        # 4.75~5.25 m 불균일, 열별 길이 128~141 m, y 비대칭)을 위한 선택 키.
+        # 파라미터가 비어 있으면 얹지 않는다 — 그래야 robomw 가 폴백한다.
+        _cx = [float(v) for v in (g("alley_centers_x", []) or [])]
+        _sy = [float(v) for v in (g("alley_south_y", []) or [])]
+        _ny = [float(v) for v in (g("alley_north_y", []) or [])]
+        _n = _R - 1
+        if _cx:
+            if len(_cx) != _n:
+                raise SystemExit(f"alley_centers_x 길이 {len(_cx)} ≠ 통로 수 {_n}")
+            self.bb.extra["site_geom"]["alley_centers_x"] = _cx
+        if _sy or _ny:
+            if not (len(_sy) == len(_ny) == _n):
+                raise SystemExit(
+                    f"alley_south_y/alley_north_y 길이 ({len(_sy)}/{len(_ny)}) ≠ 통로 수 {_n}")
+            # 순서가 곧 정의다 — 0번이 남단, 1번이 북단 (robomw _grid_pose 참조)
+            self.bb.extra["site_geom"]["row_span_y"] = [[s, n_] for s, n_ in zip(_sy, _ny)]
 
         # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
         # 센서 해석과 /cmd_vel 발행은 기체마다 다르다. 코어(안전·라우팅·계약)를
@@ -517,6 +548,50 @@ class ControlAgent(Node):
         else:
             self._blocked_since = None
 
+    # 블록 안쪽으로 이만큼 들어온 자리부터 "통로 안"으로 본다. 종전 하드코딩
+    # `abs(y) > 28.0` 이 col_len/2 = 30.0 에서 2.0 m 물린 값이었고, 그 여유가
+    # 있어야 열 끝 직전의 슬립을 헤드랜드 사건으로 잡는다.
+    IN_BLOCK_MARGIN_M = 2.0
+
+    def _in_headland(self, pose):
+        """이 자세가 **블록 밖(헤드랜드)** 인가.
+
+        종전에는 `abs(pose[1]) > 28.0` 하드코딩이었다 — 계단식 월드(블록 y
+        −30~+30)에서만 맞는 숫자다. 실사 정사영상 농장은 블록이 y −102~+109 로
+        비대칭이고 통로마다 끝이 다르므로, 그 상수를 그대로 두면 **통로 한복판의
+        59%가 헤드랜드로 오분류**된다(2026-08-15 리뷰 실측) → 주행 중 슬립이
+        "헤드랜드 슬립"으로 잡혀 임무 중간에 후진 재시도가 돈다.
+
+        그래서 기하(site_geom)에서 그 통로의 y 구간을 읽어 판정한다. 신규 키가
+        없으면 `±(col_len/2 − 2.0)` 으로 떨어지며, 계단식 기본값에서는 정확히
+        종전의 28.0 이 나온다(col_len 60.0).
+        """
+        geom = self.bb.extra.get("site_geom") or {}
+        y = float(pose[1])
+        span = geom.get("row_span_y")
+        if span:
+            try:
+                if len(span) == 2 and not hasattr(span[0], "__len__"):
+                    pair = span
+                else:
+                    # x 로 가장 가까운 통로를 고른다 — 통로마다 끝이 다르다
+                    cxs = geom.get("alley_centers_x")
+                    if not cxs:
+                        x0 = float(geom["x0"]); S = float(geom["row_spacing"])
+                        cxs = [x0 + (k + 0.5) * S for k in range(len(span))]
+                    k = min(range(len(cxs)), key=lambda i: abs(float(cxs[i]) - float(pose[0])))
+                    pair = span[k]
+                lo, hi = sorted((float(pair[0]), float(pair[1])))
+                m = min(self.IN_BLOCK_MARGIN_M, max((hi - lo) / 4.0, 0.0))
+                return not (lo + m <= y <= hi - m)
+            except (KeyError, TypeError, ValueError, IndexError):
+                pass                     # 형식 오류 → 아래 폴백
+        try:
+            half = float(geom["col_len"]) / 2.0
+        except (KeyError, TypeError, ValueError):
+            return False                 # 기하를 모르면 헤드랜드라고 단정하지 않는다
+        return abs(y) > max(half - self.IN_BLOCK_MARGIN_M, 0.0)
+
     def _on_loc_diag(self, msg):
         """로컬라이저 진단을 관제 이벤트로 올린다 (code 가 개입 큐 라우팅 키).
 
@@ -540,7 +615,7 @@ class ControlAgent(Node):
             # traverse 라도 헤드랜드(블록 밖)면 복구 대상 — 횡단이 조기 완료로
             # 위장하면 정체가 traverse 단계에 떨어진다 (실측 3회, 08-03)
             pose = self.bb.pose
-            headland = pose is not None and abs(pose[1]) > 28.0
+            headland = pose is not None and self._in_headland(pose)
             eligible = (phase in ("exit", "cross", "enter")
                         or (phase == "traverse" and headland))
             if (code == "TRACTION_LOSS" and eligible

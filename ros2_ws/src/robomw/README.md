@@ -93,6 +93,38 @@ Registry·CommandRouter)을 조립하고, ROS 콜백에서 그 부품들을 호�
   5개 키로 보고해야 "같은 결과"다:
   `MISSION_REPORT_KEYS = ("alleys_done", "distance_m", "duration_s", "interventions", "coverage")`
 
+### 현장 기하 `site_geom` — 통로 좌표의 단일 출처 (개정 v2, additive)
+
+호스트가 `bb.extra["site_geom"]` 에 얹고, `hello` 의 최상위 기하와
+`site.geometry` 가 **같은 객체**를 가리킨다. `relocalize {alley,end}` 의 좌표
+환산(`features/maintenance.py::_grid_pose`)이 이 표만 본다.
+
+| 키 | 필수 | 뜻 |
+|---|---|---|
+| `rows` / `alleys` | ✔ | 수목열 수 / 통로 수(= rows-1) |
+| `row_spacing` | ✔ | 열 간격 m (균일 격자 폴백에 쓰인다) |
+| `x0` | ✔ | 0번 열의 x (균일 격자 폴백) |
+| `col_len` | ✔ | 대표 열 길이 m (균일 격자 폴백: 블록이 ±col_len/2) |
+| `headland` | ✔ | 선회 구간 폭 m |
+| **`alley_centers_x`** | ✱ | **신규(선택)** 통로별 중심 x 배열, 길이 = `alleys`. 있으면 `x0`+균일 간격 대신 이걸 쓴다 |
+| **`row_span_y`** | ✱ | **신규(선택)** `[y_남단, y_북단]`(전 통로 공통) 또는 `[[y_남단, y_북단], …]`(통로별, 길이 = `alleys`). **원소 순서가 곧 남단/북단의 정의다** — 0번이 south, 1번이 north |
+
+- **하위 호환**: 두 신규 키가 없으면 종전 균일 격자 계산 그대로다(계단식
+  월드 경로 불변). 있으면 우선한다.
+- **왜 필요한가**: 균일 직사각 격자 전제(`x0 + (k+0.5)·row_spacing`, `±col_len/2`)는
+  실사 정사영상 농장(스펙 ④)에서 깨진다 — 열 간격 4.75~5.25 m 불균일, 열별
+  길이 128~141 m, y 비대칭 블록. 그 월드에서 균일 격자로 풀면 통로 25 재정위가
+  x 8.5 m·y 170 m·헤딩 180° 어긋난다.
+- **남단/북단의 부호는 현장마다 다르다**: 계단식 월드는 남단이 y 최솟값,
+  실사 농장은 `farm.json` `axes_note` 상 world +y 가 지리적 남이라 남단이 y
+  최댓값이다. 그래서 크기 비교로 추론하지 않고 배열 위치로 못박는다.
+- 정지선 `END_STANDOFF_M = 1.5 m` 는 그 단에서 **블록 바깥**으로 물러난 자리,
+  요는 언제나 **블록 안쪽**을 본다.
+- 호스트 구현: `orchard_sim/control_agent.py` 가 런치 파라미터
+  (`alley_centers_x`·`alley_south_y`·`alley_north_y`)를 조립한다. 그 값은
+  `control.launch.py` 가 `world:=real` 일 때 `maps/orchard_real/farm.json` 에서
+  계산한다(통로 중심 = 인접 `row_origins` x 중점, y 는 `axes_note` 규약).
+
 ### hello v2 (additive)
 
 기존 키(`robot_id`, `protocol`, 기하, `limits`, `deadman_ms`, `link_loss_ms`,

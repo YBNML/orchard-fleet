@@ -68,12 +68,40 @@ def _farm_geom(farm_path):
     # trees_per_row 는 실사 농장에서 열마다 다르다(row_lengths_m). 에이전트는
     # col_len 계산에만 쓰므로 **중앙값 열 길이**로 환산해 넘긴다.
     tps = float(farm["tree_spacing_m"])
+    hl = float(farm["headland_m"])
+    n = int(farm["rows"])
+
+    # ── site_geom v2 배열 (robomw SDK 계약 개정, additive) ──────────────────
+    # 균일 격자로는 이 농장을 표현할 수 없다(통로 간격 4.75~5.25 m, 열별 길이
+    # 128~141 m, y 비대칭). 그래서 통로별 중심 x 와 [남단, 북단] y 를 직접 준다.
+    #
+    # **부호 규약**: farm.json axes_note — world +y 는 이미지 +y 와 나란하고
+    # 그 이미지의 맨 윗행이 최대 northing 이다. 즉 **world +y = 지리적 남**이라
+    # 이 현장에서 '남단' 은 y 가 **큰** 쪽이다(계단식 월드와 부호가 반대).
+    #
+    # y 구간은 캐노피 구간(row_origins ± headland_m)의 **더 안쪽**을 쓴다 —
+    # 이웃 두 열 중 짧은 쪽이 통로의 실질 끝이다(gen_world.farm_alley_spawn 과
+    # 같은 규약. 긴 쪽으로 잡으면 통로 중앙에서 정사영상 프레임을 넘어간다).
+    def canopy(r):
+        x, y0 = farm["row_origins"][r]
+        return float(x), float(y0) + hl, float(y0) + float(farm["row_lengths_m"][r]) - hl
+
+    centers, south, north = [], [], []
+    for k in range(n - 1):
+        xa, ya0, ya1 = canopy(k)
+        xb, yb0, yb1 = canopy(k + 1)
+        centers.append((xa + xb) / 2.0)
+        south.append(min(ya1, yb1))      # y 최대 쪽 = 지리적 남
+        north.append(max(ya0, yb0))      # y 최소 쪽 = 지리적 북
     return {
-        "rows": int(farm["rows"]),
+        "rows": n,
         "row_spacing": float(farm["row_spacing_m"]),
         "tree_spacing": tps,
         "trees_per_row": int(round(float(farm["row_length_m"]) / tps)) + 1,
-        "headland": float(farm["headland_m"]),
+        "headland": hl,
+        "alley_centers_x": centers,
+        "alley_south_y": south,
+        "alley_north_y": north,
     }
 
 
