@@ -75,7 +75,7 @@ DEFAULT_BUNDLE = {"real": "maps/orchard_real", "terraced": "maps/orchard_v1"}
 #      최악 한 칸 건너 전이 39.1 m → 132 시뮬초 (통로 20→22 북측)
 #      → 132 × 여유 1.5 ≈ 198, 리뷰어 독립 산정(145 시뮬초 × 1.5 ≈ 220) 중
 #        **큰 쪽을 취해 220**. 두 통로 이상 건너뛰는 전이는 이 예산 밖이다
-#        (예: 0→25 는 733 시뮬초 = 예산의 3.3배 — 리포트 §8-8).
+#        (예: 0→25 는 733 시뮬초 = 예산의 3.3배 — 리포트 §5.2).
 LOST_CRITICAL_S = {"real": "220.0", "terraced": "150.0"}
 LOST_CLOCK = {"real": "sim", "terraced": "wall"}
 

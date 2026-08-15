@@ -33,7 +33,12 @@ def test_sim_mode_uses_ros_clock():
 
 
 def test_sim_mode_falls_back_to_wall_before_clock_arrives():
-    """/clock 이 아직이면(sim<=0) 벽시계로 폴백한다 — rates() 와 같은 방향."""
+    """`/clock` **최초 도착 전**(sim<=0)에만 벽시계로 폴백한다.
+
+    도착 후 끊겨도 rclpy TimeSource 는 노화 타임아웃이 없어 마지막 값을 계속
+    돌려주므로 이 분기로 되돌아오지 않는다 — 이 시험은 '두절 감지'가 아니라
+    **기동 순간의 공백**을 고정한다.
+    """
     assert ml.lost_clock_now("sim", 0.0, 400000.0) == (400000.0, "wall")
     assert ml.lost_clock_now("sim", -1.0, 400000.0) == (400000.0, "wall")
 
@@ -83,11 +88,16 @@ def test_lost_t_anchors_on_first_call():
 
 
 def test_lost_t_resets_reference_when_clock_switches():
-    """sim → wall 폴백에서 기준점을 안 옮기면 '수십만 초 상실'로 즉시 격상된다."""
+    """시계 전환에서 기준점을 안 옮기면 '수십만 초 상실'로 즉시 격상된다.
+
+    실제 배치에서 일어나는 전환은 **기동 직후 wall → sim** 한 번뿐이지만,
+    판정은 방향에 무관해야 한다 — 여기서는 값이 큰 쪽(sim → wall)으로 걸어
+    최악을 고정한다(반대 방향은 경과가 음수라 무해하다).
+    """
     s = _Stub("sim", 3000.0)
     s._lost_t()
     s.last_ok_t = 2900.0                       # 100 시뮬초 전에 마지막 보정
-    s._sim = 0.0                               # /clock 두절 → 벽시계 폴백
+    s._sim = 0.0                               # sim 시각 무효 → 벽시계 경로
     t = s._lost_t()
     assert s._lost_src == "wall" and t > 1000.0
     assert s.last_ok_t == t and s.last_anchor_t == t   # 경과 0 으로 재설정

@@ -307,10 +307,18 @@ def _load_farm():
     return None
 
 
+# 횡단선이 넘는 열의 끝 나무에서 최소한 이만큼은 떨어져야 한다 [m].
+# 로봇 반폭 0.29 + 수관 반경 여유 — '넘기는 넘었다'와 '안전하게 넘었다'는 다르다.
+MIN_ROW_CLEARANCE_M = 1.0
+
+
 def test_cross_lines_clear_every_row_for_all_650_transitions():
     farm = _load_farm()
     if farm is None:
         import pytest
+        import warnings
+        warnings.warn("maps/orchard_real/farm.json 없음 — 650쌍 속성 시험이 "
+                      "건너뛰어졌다(조용한 무검증 방지 경고)", stacklevel=2)
         pytest.skip("maps/orchard_real/farm.json 없음 — 실사 농장 속성 시험 건너뜀")
     hl = float(farm["headland_m"])
     ts = float(farm["tree_spacing_m"])
@@ -348,11 +356,15 @@ def test_cross_lines_clear_every_row_for_all_650_transitions():
             cs, cn = m.cross_lines(a, b)
             # a→b 로 건널 때 넘는 열은 min+1 … max (통로 k 는 열 k·k+1 사이)
             for r in range(min(a, b) + 1, max(a, b) + 1):
-                if cs <= last_trunk(r):         # 남단은 y 가 큰 쪽이 바깥
-                    bad.append((a, b, r, "남", cs, last_trunk(r)))
-                if cn >= first_trunk(r):        # 북단은 y 가 작은 쪽이 바깥
-                    bad.append((a, b, r, "북", cn, first_trunk(r)))
-    assert not bad, f"열을 못 넘는 전이 {len(bad)}건 (예: {bad[:3]})"
+                # 넘었는가만이 아니라 **얼마나 여유 있게** 넘었는가까지 본다
+                gap_s = cs - last_trunk(r)      # 남단은 y 가 큰 쪽이 바깥
+                gap_n = first_trunk(r) - cn     # 북단은 y 가 작은 쪽이 바깥
+                if gap_s < MIN_ROW_CLEARANCE_M:
+                    bad.append((a, b, r, "남", round(gap_s, 3)))
+                if gap_n < MIN_ROW_CLEARANCE_M:
+                    bad.append((a, b, r, "북", round(gap_n, 3)))
+    assert not bad, (f"여유 {MIN_ROW_CLEARANCE_M} m 미만인 전이 {len(bad)}건 "
+                     f"(예: {bad[:3]})")
 
 
 def test_property_suite_covers_650_ordered_pairs():
@@ -360,6 +372,9 @@ def test_property_suite_covers_650_ordered_pairs():
     farm = _load_farm()
     if farm is None:
         import pytest
+        import warnings
+        warnings.warn("maps/orchard_real/farm.json 없음 — 커버리지 단언 건너뜀",
+                      stacklevel=2)
         pytest.skip("maps/orchard_real/farm.json 없음")
     a_n = int(farm["rows"]) - 1
     assert a_n * (a_n - 1) == 650
