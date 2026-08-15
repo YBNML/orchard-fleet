@@ -36,9 +36,12 @@ CC BY 4.0은 출처 표기(attribution)를 요구한다. 이 이미지를 사용
 > (IGN) de España / CNIG, licencia CC BY 4.0. Fuente:
 > https://www.ign.es/wms-inspire/pnoa-ma
 
-간단 표기가 필요한 경우(예: 화면 하단 워터마크):
+간단 표기가 필요한 경우(예: 화면 하단 워터마크) — 코드 상수 `ORTHO_ATTRIBUTION`
+(`server/fleet_server/api/farm_routes.py`)과 동일한 문구를 쓴다:
 
-> © IGN España — PNOA — CC BY 4.0
+> PNOA cedido por © Instituto Geográfico Nacional · CC BY 4.0
+
+※ 대시보드 렌더 문구와 동일하게 유지할 것.
 
 ## 원본 데이터 조회 경로 (재현용)
 

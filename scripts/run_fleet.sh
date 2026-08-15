@@ -6,6 +6,7 @@
 #
 # 월드 SDF·gz 월드 이름·런치 world 인자를 한 곳에서 고른다. **기본은 real**
 # (스펙 ④ T7 게이트 통과, 2026-08-15 — docs/findings/2026-08-15-photoreal-world.md).
+# 주의: 기본 월드(real)에서 10통로급 장주행 임무는 열 끝 감시 오탐(수리 예정)으로 아직 완주가 보장되지 않는다 — docs/findings/2026-08-15-photoreal-world.md §9
 #   real      sim/worlds/orchard_real.sdf  · gz 월드 orchard_real
 #             기하(rows·row_spacing·통로 중심·열 구간)를 maps/orchard_real/farm.json
 #             에서 읽어 control_agent 파라미터로 넘긴다 (robomw 무관, 데이터 주도)
