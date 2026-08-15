@@ -289,3 +289,77 @@ def test_cross_line_identity_on_adjacent_transitions_uniform_grid():
     ctx.bb.extra["site_geom"] = dict(rows=10, alleys=9, row_spacing=3.5, x0=-15.75,
                                      col_len=60.0, headland=6.0)
     assert m.build_waypoints([0, 1, 2]) == base
+
+
+# ── m4 (수정 라운드 2) — farm.json 직독 속성 시험: 650쌍 전수 ────────────────
+#
+# 위 두 시험은 리뷰어가 짚은 두 사례를 고정한다. 이것은 **모든 전이**를 본다 —
+# 26개 통로의 순서쌍 650개 각각에서 합성 횡단선이 그 사이의 열을 전부 넘는지.
+# farm.json 이 바뀌면(열 추출 재실행) 이 시험이 먼저 깨진다.
+def _load_farm():
+    import json
+    import pathlib
+    here = pathlib.Path(__file__).resolve()
+    for up in here.parents:
+        p = up / "maps" / "orchard_real" / "farm.json"
+        if p.exists():
+            return json.loads(p.read_text())
+    return None
+
+
+def test_cross_lines_clear_every_row_for_all_650_transitions():
+    farm = _load_farm()
+    if farm is None:
+        import pytest
+        pytest.skip("maps/orchard_real/farm.json 없음 — 실사 농장 속성 시험 건너뜀")
+    hl = float(farm["headland_m"])
+    ts = float(farm["tree_spacing_m"])
+    xs = [float(p[0]) for p in farm["row_origins"]]
+    cy0 = [float(p[1]) + hl for p in farm["row_origins"]]                       # 북단 캐노피 끝
+    cy1 = [float(p[1]) + float(L) - hl
+           for p, L in zip(farm["row_origins"], farm["row_lengths_m"])]         # 남단 캐노피 끝
+    n = int(farm["rows"])
+    a_n = n - 1
+    # control.launch.py::_farm_geom 과 **같은 식**으로 site_geom 을 만든다
+    geom = dict(
+        rows=n, alleys=a_n, row_spacing=float(farm["row_spacing_m"]),
+        x0=-((n - 1) * float(farm["row_spacing_m"])) / 2.0,
+        col_len=141.0, headland=hl,
+        alley_centers_x=[(xs[k] + xs[k + 1]) / 2.0 for k in range(a_n)],
+        row_span_y=[[min(cy1[k], cy1[k + 1]), max(cy0[k], cy0[k + 1])]
+                    for k in range(a_n)],
+        alley_cross_y=[[max(cy1[k], cy1[k + 1]) + hl, min(cy0[k], cy0[k + 1]) - hl]
+                       for k in range(a_n)])
+    m, ctx = mk_mission()
+    ctx.bb.extra["site_geom"] = geom
+
+    def first_trunk(r):     # gen_world.build_farm_trees 의 식재 규약
+        return _math.ceil(cy0[r] / ts) * ts
+
+    def last_trunk(r):
+        y0 = first_trunk(r)
+        return y0 + _math.floor((cy1[r] - y0) / ts) * ts
+
+    bad = []
+    for a in range(a_n):
+        for b in range(a_n):
+            if a == b:
+                continue
+            cs, cn = m.cross_lines(a, b)
+            # a→b 로 건널 때 넘는 열은 min+1 … max (통로 k 는 열 k·k+1 사이)
+            for r in range(min(a, b) + 1, max(a, b) + 1):
+                if cs <= last_trunk(r):         # 남단은 y 가 큰 쪽이 바깥
+                    bad.append((a, b, r, "남", cs, last_trunk(r)))
+                if cn >= first_trunk(r):        # 북단은 y 가 작은 쪽이 바깥
+                    bad.append((a, b, r, "북", cn, first_trunk(r)))
+    assert not bad, f"열을 못 넘는 전이 {len(bad)}건 (예: {bad[:3]})"
+
+
+def test_property_suite_covers_650_ordered_pairs():
+    """위 시험이 실제로 650쌍을 도는지 — 커버리지 자체를 고정한다."""
+    farm = _load_farm()
+    if farm is None:
+        import pytest
+        pytest.skip("maps/orchard_real/farm.json 없음")
+    a_n = int(farm["rows"]) - 1
+    assert a_n * (a_n - 1) == 650

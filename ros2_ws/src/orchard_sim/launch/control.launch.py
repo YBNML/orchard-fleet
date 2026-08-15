@@ -52,20 +52,32 @@ TERRACED_WORLD_NAME = "orchard_10x41"
 DEFAULT_FARM = "maps/orchard_real/farm.json"
 DEFAULT_BUNDLE = {"real": "maps/orchard_real", "terraced": "maps/orchard_v1"}
 
-# 측위 상실 격상(자동 정지) 문턱 [초, **벽시계**] — world 별 기본값.
+# 측위 상실 격상(자동 정지) 문턱 — world 별 기본값. **단위가 world 마다 다르다**:
+# 어느 시계로 재는지를 `lost_clock` 이 정하고, 문턱은 그 시계의 초다.
 #
-# 계단식 150 은 그 월드에서 실측한 값이다(정상 횡단 최대 ~120초).
-# **실사 월드는 420 이다.** 근거 둘:
-#   ① 이 월드에는 겉보기 벽이 하나도 없다(47 캘리브레이션 52/52 미검출).
-#      `map_localizer._tick` 의 격상 조건은 `(now-last_ok) > T AND
-#      (now-last_anchor) > T` 인데, 앵커가 영원히 안 잡히면 last_anchor_t 는
-#      기동 시각에 멈춘 채 영구 노화한다 — AND 가 사실상 last_ok 단독으로
-#      환원되고, 그 순간 이 문턱이 **유일한 방어선**이 된다.
-#   ② 문턱은 벽시계인데 판단 대상은 시뮬 사건이다. 실사 월드 RTF 실측 0.37
-#      에서 150초 벽시계는 시뮬 55초뿐이라, 열 끝 밖 구조점 사막(통로 종단 →
-#      횡단선 → 다음 통로 진입, 약 19 m)을 못 버틴다. 420초는 시뮬 약 155초로
-#      원 설계 의도(">120초")를 복원한 값이다.
-LOST_CRITICAL_S = {"real": "420.0", "terraced": "150.0"}
+# ── terraced: 150초, 벽시계 (기존 실측 그대로 불변) ─────────────────────────
+#
+# ── real: 220 **시뮬초**, sim 시계 ─────────────────────────────────────────
+# ① 왜 문턱이 유일한 방어선인가 — 이 월드에는 겉보기 벽이 하나도 없다
+#    (47 캘리브레이션 52/52 미검출). `map_localizer._tick` 의 격상 조건은
+#    `(now-last_ok) > T AND (now-last_anchor) > T` 인데, 앵커가 영원히 안 잡히면
+#    `last_anchor_t` 는 기동 시각에 멈춘 채 **영구 노화**한다 — AND 가 사실상
+#    `last_ok` 단독으로 환원된다.
+# ② 왜 sim 시계인가 — 판정 대상('횡단 한 번')은 시뮬 시간의 사건인데 문턱을
+#    벽시계로 두면 판정이 **RTF 에 딸려 흔들린다**. 1대 실측 RTF 0.374 에
+#    맞춰 놓은 벽시계 상수는 2대 동시 운용에서 RTF 가 조금만 떨어져도 같은
+#    횡단이 갑자기 문턱을 넘는다(T7 게이트가 반드시 실패한다).
+# ③ 220 의 산정 — 구조점 사막(통로 종단 → 횡단선 → 다음 통로 진입) 왕복
+#    거리를 farm.json 기하로 전수 계산하고, 실측 실효 속도로 나눈다.
+#      실효 속도: 게이트 실측 통로 0→1 북측 왕복 17.7 m 를 무보정 160.8초
+#                (벽) = 60.1 시뮬초에 통과 → 0.295 m/s(피벗·구조 소실 선행분 포함)
+#      최악 인접 전이      31.7 m → 107 시뮬초 (통로 20↔21 북측)
+#      최악 한 칸 건너 전이 39.1 m → 132 시뮬초 (통로 20→22 북측)
+#      → 132 × 여유 1.5 ≈ 198, 리뷰어 독립 산정(145 시뮬초 × 1.5 ≈ 220) 중
+#        **큰 쪽을 취해 220**. 두 통로 이상 건너뛰는 전이는 이 예산 밖이다
+#        (예: 0→25 는 733 시뮬초 = 예산의 3.3배 — 리포트 §8-8).
+LOST_CRITICAL_S = {"real": "220.0", "terraced": "150.0"}
+LOST_CLOCK = {"real": "sim", "terraced": "wall"}
 
 
 def _farm_geom(farm_path):
@@ -163,8 +175,13 @@ def generate_launch_description():
         DeclareLaunchArgument("init_yaw", default_value="0.0"),
         DeclareLaunchArgument(
             "lost_critical_s", default_value="",
-            description="측위 상실 격상(자동 정지) 문턱 [s, 벽시계]. 비우면 "
-                        "world 에서 정한다 — terraced 150 / real 420"),
+            description="측위 상실 격상(자동 정지) 문턱 [s, 단위는 lost_clock 의 "
+                        "시계]. 비우면 world 에서 정한다 — terraced 150(벽) / "
+                        "real 220(시뮬)"),
+        DeclareLaunchArgument(
+            "lost_clock", default_value="",
+            description="상실 타이머의 시계: wall | sim. 비우면 world 에서 "
+                        "정한다 — terraced wall(불변) / real sim"),
         DeclareLaunchArgument("speed", default_value="0.7"),
         DeclareLaunchArgument("cameras", default_value="false"),
         # 보안 — 비우면 개방 모드로 뜨고 기동 로그에 경고가 남는다.
@@ -266,7 +283,8 @@ def _launch_setup(context, *a, **kw):
                          "init_y": LaunchConfiguration("init_y"),
                          "init_yaw": LaunchConfiguration("init_yaw"),
                          "lost_critical_s": float(
-                             cfg("lost_critical_s") or LOST_CRITICAL_S[world])}]))
+                             cfg("lost_critical_s") or LOST_CRITICAL_S[world]),
+                         "lost_clock": cfg("lost_clock") or LOST_CLOCK[world]}]))
 
     nodes.append(
         Node(package="orchard_sim", executable="control_agent",

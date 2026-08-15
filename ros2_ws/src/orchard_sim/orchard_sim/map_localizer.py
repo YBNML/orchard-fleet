@@ -96,6 +96,29 @@ def wrap(t):
 REINIT_ACK_S = 2.5
 
 
+def lost_clock_now(mode, sim_s, wall_s):
+    """상실 타이머가 쓸 시각과 그 시계 이름. (t, "sim"|"wall")
+
+    `RosSensors.rates()` 가 수신율에 대해 세운 관례를 상실 판정에 그대로
+    옮긴 것이다 — **판정 문턱이 어느 시계의 초로 적힌 값인가**에 시계를 맞춘다.
+
+    * `mode="wall"`(기본) → 단조시계. 실기에서 옳고, 계단식 월드의 기존 실측
+      (`lost_critical_s=150`)이 전부 이 시계의 초다. **기본값을 바꾸지 않는다.**
+    * `mode="sim"` → ROS 시각(sim time). 시뮬에서 '횡단 한 번'은 시뮬 시간의
+      사건인데 문턱을 벽시계로 재면 판정이 **RTF 에 딸려 흔들린다** — RTF 0.37
+      에서 150초 벽시계는 시뮬 55초뿐이고, RTF 가 더 떨어지면 같은 횡단이
+      갑자기 문턱을 넘는다(2대 동시 운용에서 실제로 일어날 수 있다).
+
+    `/clock` 이 아직 안 왔으면(sim_s <= 0) 벽시계로 **폴백**한다 — rates() 가
+    "표본이 없으면 0.0" 으로 답하는 것과 같은 방향의 보수적 선택이다. 시계가
+    바뀌는 순간의 처리는 호출측(`MapLocalizer._lost_t`)이 한다: 두 시계의 값은
+    비교할 수 없으므로 기준점을 다시 잡는다.
+    """
+    if mode == "sim" and sim_s > 0.0:
+        return sim_s, "sim"
+    return wall_s, "wall"
+
+
 class MapLocalizer(Node):
 
     def __init__(self):
@@ -142,6 +165,11 @@ class MapLocalizer(Node):
                                         # 다음 설계: 첫 빈 거리가 아니라 구조
                                         # 전체의 가상-실측 상관으로 칸 가설검정.
         d("lost_critical_s", 150.0)     # 격상 대기 — 정상 횡단(피벗2+등판+진입)이 최대 ~120초라 그보다 길게. 환상 주행은 여전히 잡는다(이전 사고는 5분+)
+        d("lost_clock", "wall")         # 상실 타이머의 시계: wall | sim.
+                                        # **기본 wall — 계단식 경로 불변**(기존
+                                        # 실측 150 은 벽시계 초다). sim 은 시뮬
+                                        # 게이트용: 문턱이 RTF 에 딸려 흔들리는
+                                        # 것을 막는다(lost_clock_now 머리말).
         d("imu_topic", gzt.ns_topic(_rid, "imu"))   # 요는 자이로 적분 — 바퀴는 회전을 속인다
         g = lambda k: self.get_parameter(k).value                     # noqa: E731
 
@@ -198,10 +226,19 @@ class MapLocalizer(Node):
         self.T_ob = (0.0, 0.0, 0.0)     # 휠 오도메트리가 채운다
         self._have_odom = False
 
+        # ── 상실 타이머 시계 ────────────────────────────────────────────────
+        # `last_ok_t`·`last_anchor_t` 와 그 경과 판정만 이 시계를 쓴다.
+        # `last_fix_t`(보정 주기)와 `_reinit_ack_until`(확인 창)은 **벽시계 그대로**다
+        # — 그 둘은 '얼마나 자주 도느냐'는 속도 조절이지 사건 판정이 아니다.
+        self.lost_clock = str(g("lost_clock")).lower()
+        if self.lost_clock not in ("wall", "sim"):
+            raise SystemExit(f"lost_clock 은 wall | sim 이어야 합니다: {self.lost_clock!r}")
+        self._lost_src = None           # 첫 _lost_t() 가 정한다
+
         self.last_cloud = None
         self.last_fix_t = 0.0
-        self.last_ok_t = time.monotonic()
-        self.last_anchor_t = time.monotonic()
+        self.last_ok_t = self._lost_t()
+        self.last_anchor_t = self.last_ok_t
         self.drift_ref = None           # 마지막 채택 보정 시점의 odom 자세
         self.stat = dict(n_fix=0, n_reject=0, quality=0.0, n_struct=0, gate="")
         self._lost_reported = False
@@ -231,6 +268,33 @@ class MapLocalizer(Node):
         self.get_logger().info(
             f"초기 자세 map→odom = ({self.T_mo[0]:.2f}, {self.T_mo[1]:.2f}, "
             f"{math.degrees(self.T_mo[2]):.1f}°)")
+
+    # ── 상실 타이머 시계 ────────────────────────────────────────────────────
+    def _lost_t(self):
+        """상실 타이머의 현재 시각 [s]. 시계가 바뀌면 기준점을 다시 잡는다.
+
+        `lost_clock:=sim` 이면 **시뮬이 멈출 때 타이머도 멈춘다** — 의도한
+        동작이다. 시뮬을 세워 놓고 사람이 들여다보는 동안 '150초째 위치 상실'
+        경보가 쌓이면 그 정지는 관측 행위 자체가 만든 것이지 로봇의 상태가
+        아니다. 반대로 벽시계 모드에서는 종전대로 계속 흐른다(실기 기준).
+
+        `/clock` 이 아직 안 왔거나 끊기면 벽시계로 폴백하는데, 두 시계의 값은
+        서로 비교할 수 없다 — 그대로 두면 sim(수천) ↔ monotonic(수십만) 차이가
+        '수십만 초 상실'로 읽혀 즉시 격상된다. 그래서 **시계가 바뀌는 순간
+        기준점을 지금으로 옮긴다**(보수적: 방금 잡았다고 본다).
+        """
+        t, src = lost_clock_now(
+            self.lost_clock,
+            self.get_clock().now().nanoseconds * 1e-9,
+            time.monotonic())
+        if src != self._lost_src:
+            if self._lost_src is not None:
+                self.get_logger().warning(
+                    f"상실 타이머 시계 전환 {self._lost_src} → {src} — 기준점 재설정")
+            self._lost_src = src
+            self.last_ok_t = t
+            self.last_anchor_t = t
+        return t
 
     # ── 초기화 ──────────────────────────────────────────────────────────────
     def _anchor_dead_reckoning(self, raw):
@@ -282,11 +346,11 @@ class MapLocalizer(Node):
         self._row_jump_streak = {}
         self._tree_snap_streak = {}
         self._anchor_big_streak = {}
-        now = time.monotonic()
-        self.last_ok_t = now
-        self.last_anchor_t = now
+        self.last_ok_t = self._lost_t()
+        self.last_anchor_t = self.last_ok_t
         self.last_fix_t = 0.0            # 다음 틱에 곧바로 보정 — 품질을 새로 잰다
-        self._reinit_ack_until = now + REINIT_ACK_S
+        # 확인 창은 사람이 기다리는 시간이라 **벽시계**다 (상실 타이머와 별개)
+        self._reinit_ack_until = time.monotonic() + REINIT_ACK_S
         self.get_logger().warning(
             f"재정위 — 자세를 ({pose[0]:+.2f}, {pose[1]:+.2f}, "
             f"{math.degrees(pose[2]):+.1f}°) 로 다시 잡는다")
@@ -547,7 +611,7 @@ class MapLocalizer(Node):
             self._slip_anchor = new_pose
             self._slip_ob_yaw0 = self.T_ob[2]
         self.drift_ref = self.T_ob
-        self.last_anchor_t = time.monotonic()
+        self.last_anchor_t = self._lost_t()
         self.stat["n_anchor"] = self.stat.get("n_anchor", 0) + 1
         self.stat["anchor_err"] = round(err, 2)
 
@@ -624,7 +688,7 @@ class MapLocalizer(Node):
             self._slip_anchor = new_pose
             self._slip_ob_yaw0 = self.T_ob[2]
         self.drift_ref = self.T_ob
-        self.last_anchor_t = time.monotonic()
+        self.last_anchor_t = self._lost_t()
         self.stat["n_anchor"] = self.stat.get("n_anchor", 0) + 1
         self.stat["anchor_err"] = round(err, 2)
 
@@ -702,7 +766,7 @@ class MapLocalizer(Node):
             self._slip_anchor = new_pose
             self._slip_ob_yaw0 = self.T_ob[2]
         self.drift_ref = self.T_ob
-        self.last_anchor_t = time.monotonic()
+        self.last_anchor_t = self._lost_t()
         self.get_logger().warning(
             f"칸 스냅 — 나무선 대조로 진행방향 {jump:+.1f} m 도약 (잔차 {frac:+.2f})")
         self.stat["n_tree_anchor"] = self.stat.get("n_tree_anchor", 0) + 1
@@ -804,7 +868,7 @@ class MapLocalizer(Node):
         est = self.pose()
         # 오래 못 잡았으면 요 탐색을 넓혀 재획득 — 선회 직후에는 오도메트리
         # 요 오차가 ±12° 를 넘을 수 있다 (실측 19.5°)
-        lost_for = time.monotonic() - self.last_ok_t
+        lost_for = self._lost_t() - self.last_ok_t
         if lost_for > self.reacquire_after:
             fix = rl.estimate(pts, est, self.geom,
                               yaw_range_deg=self.reacquire_yaw,
@@ -864,7 +928,7 @@ class MapLocalizer(Node):
         if self.slip_active:
             self._slip_anchor = new_pose    # 동결 중에도 횡·요는 계속 다듬는다
             self._slip_ob_yaw0 = self.T_ob[2]
-        self.last_ok_t = time.monotonic()
+        self.last_ok_t = self._lost_t()
         self.stat["n_fix"] += 1
         if self._lost_reported:
             self._lost_reported = False
@@ -895,7 +959,9 @@ class MapLocalizer(Node):
     def _tick(self):
         if not self._have_odom:
             return
+        # 보정 주기·확인 창은 벽시계(속도 조절), 상실 판정은 lost_clock.
         now = time.monotonic()
+        lost_now = self._lost_t()
         if now - self.last_fix_t >= self.fix_period:
             self.last_fix_t = now
             measured = self._try_fix()
@@ -918,10 +984,10 @@ class MapLocalizer(Node):
                                severity="warn", pose=pose3)
 
         # 오래 못 잡으면 개입 요청 — 관제의 개입 큐로 올라간다
-        if (now - self.last_ok_t) > self.lost_timeout and not self._lost_reported:
+        if (lost_now - self.last_ok_t) > self.lost_timeout and not self._lost_reported:
             self._lost_reported = True
             self._emit("assistance", "LOCALIZATION_LOST",
-                       f"{now - self.last_ok_t:.0f}초째 위치 보정 실패 "
+                       f"{lost_now - self.last_ok_t:.0f}초째 위치 보정 실패 "
                        f"({self.stat.get('gate') or '구조 부족'})")
 
         # 아주 오래 못 잡으면 격상 — 이 상태로 임무를 계속하면 추정은 순수
@@ -930,12 +996,12 @@ class MapLocalizer(Node):
         # 아니다** — 헤드랜드에는 열이 없어 열 보정이 원래 없고, 그때의
         # 절대 기준이 바로 둑 앵커다 (헤드랜드 출발 85초 만에 오발로 임무를
         # 세운 실측이 있다, 08-02).
-        if ((now - self.last_ok_t) > self.lost_critical
-                and (now - self.last_anchor_t) > self.lost_critical
+        if ((lost_now - self.last_ok_t) > self.lost_critical
+                and (lost_now - self.last_anchor_t) > self.lost_critical
                 and not self._lost_critical_reported):
             self._lost_critical_reported = True
             self._emit("assistance", "LOCALIZATION_LOST",
-                       f"{now - self.last_ok_t:.0f}초째 위치 상실 — 정지 필요",
+                       f"{lost_now - self.last_ok_t:.0f}초째 위치 상실 — 정지 필요",
                        severity="critical")
 
         # TF 소비자는 map→base 를 (여기서 낸 map→odom) ∘ (바퀴 odom→base) 로
