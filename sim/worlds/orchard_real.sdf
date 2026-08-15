@@ -29440,7 +29440,7 @@
     <include>
       <name>scout02</name>
       <uri>model://scout_mini_mid70</uri>
-      <pose>5.083 72.188 0.214 0 0 -1.5708</pose>
+      <pose>-9.917 64.338 0.209 0 0 -1.5708</pose>
     </include>
 
   </world>
