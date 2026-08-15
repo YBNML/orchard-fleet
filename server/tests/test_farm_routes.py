@@ -486,3 +486,48 @@ def test_bt_launch_rejection_records_note_on_instance(tmp_path):
     rows = client.get("/api/v1/bt", headers=h).json()
     row = next(r for r in rows if r["id"] == ids[0])
     assert row["note"] and "발진 거부" in row["note"]
+
+
+# ── 수정 라운드2 — N1·N2·N3(잔여 Minor) ───────────────────────────────────────
+
+def test_n1_terraced_farm_still_rejects_no_go_alley():
+    """N1 — terraced 분기도 no_go 교집합을 본다(현행 도달 불가지만 C1 과 같은
+    종류의 발산을 봉인). [2,3,4,5] 는 parity_safe 로는 통과(오름차순·첫 통로
+    짝수)하지만 통로 4 가 no_go 라 여전히 400 이어야 한다."""
+    farm = {"terrain": "terraced", "no_go_alleys": [4]}
+    assert presets.parity_safe([2, 3, 4, 5])          # parity 만 보면 통과하는 목록
+    with pytest.raises(presets.PresetError):
+        presets.sequential_retry("scout01", [2, 3, 4, 5], farm=farm)
+
+
+def test_n2_explicit_n_alleys_mismatch_with_farm_400():
+    """N2 — flat 경로에서 명시 n_alleys 가 farm 유도값과 다르면 조용히 무시하지
+    않고 400 이다."""
+    farm = {"terrain": "flat", "rows": 8}             # n_alleys_of == 7
+    with pytest.raises(presets.PresetError, match="n_alleys 는 farm 기하와 불일치"):
+        presets.full_split_patrol("scout01", "scout02", n_alleys=9, farm=farm)
+
+
+def test_n3_load_farm_rejects_missing_image_key(tmp_path, caplog):
+    manifest_path = tmp_path / "farm.json"
+    manifest_path.write_text(json.dumps({"rows": 10, "row_spacing_m": 5.0,
+                                         "terrain": "flat"}), encoding="utf-8")
+    settings = _test_settings(farm_manifest_path=manifest_path)
+    with caplog.at_level(logging.WARNING, logger="fleet_server.farm"):
+        app = create_app(settings, fleet=InMemoryFleetPort())
+    assert app.state.farm is None
+    assert any("필수 키" in rec.message and "image" in rec.message
+              for rec in caplog.records)
+
+
+def test_n3_load_farm_rejects_non_integer_no_go_alleys(tmp_path, caplog):
+    manifest_path = tmp_path / "farm.json"
+    manifest_path.write_text(json.dumps({
+        "image": "x.jpg", "rows": 10, "row_spacing_m": 5.0, "terrain": "flat",
+        "no_go_alleys": ["스물", 23],                  # 비정수 섞임
+    }), encoding="utf-8")
+    settings = _test_settings(farm_manifest_path=manifest_path)
+    with caplog.at_level(logging.WARNING, logger="fleet_server.farm"):
+        app = create_app(settings, fleet=InMemoryFleetPort())
+    assert app.state.farm is None
+    assert any("no_go_alleys" in rec.message for rec in caplog.records)

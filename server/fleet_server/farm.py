@@ -16,7 +16,21 @@ log = logging.getLogger("fleet_server.farm")
 # M1(수정 라운드1) — 이 서버가 farm.json 에서 실제로 읽는 필수 키. 없으면
 # 매니페스트가 손상됐거나 다른 스펙 버전이라는 뜻이라 500 으로 죽이지 않고
 # (기동은 계속돼야 한다) 등록 자체를 건너뛴다 — 파일 부재와 같은 폴백 경로다.
-_REQUIRED_KEYS = ("rows", "row_spacing_m", "terrain")
+# N3(수정 라운드2) — "image" 도 필수다: farm_routes.get_farm/get_asset 이
+# farm["image"] 를 그대로 읽어 ortho_url·서빙 파일명을 만든다(KeyError 로
+# 500 을 내는 대신, 여기서 미리 걸러 등록을 건너뛴다).
+_REQUIRED_KEYS = ("rows", "row_spacing_m", "terrain", "image")
+
+
+def _no_go_alleys_well_typed(farm: dict) -> bool:
+    """N3 — no_go_alleys 가 있다면 정수 목록이어야 한다(문자열·실수·None 섞임
+    방지). bool 은 파이썬에서 int 의 서브클래스라 명시적으로 제외한다."""
+    no_go = farm.get("no_go_alleys")
+    if no_go is None:
+        return True
+    if not isinstance(no_go, list):
+        return False
+    return all(isinstance(a, int) and not isinstance(a, bool) for a in no_go)
 
 
 def load_farm(settings: Settings) -> dict | None:
@@ -31,5 +45,10 @@ def load_farm(settings: Settings) -> dict | None:
     if missing:
         log.warning("농장 매니페스트에 필수 키가 없어 등록하지 않습니다(대시보드는 폴백 "
                    "경로를 씁니다) — 결여 키 %s, 파일 %s", missing, path)
+        return None
+    if not _no_go_alleys_well_typed(farm):
+        log.warning("농장 매니페스트의 no_go_alleys 가 정수 목록이 아니어서 등록하지 "
+                   "않습니다(대시보드는 폴백 경로를 씁니다) — 값 %r, 파일 %s",
+                   farm.get("no_go_alleys"), path)
         return None
     return farm

@@ -186,7 +186,17 @@ def flat_terrain_safe(alleys: list[int], farm: dict | None) -> tuple[bool, str]:
 
 
 def _check_alleys(alleys: list[int], who: str, farm: dict | None) -> None:
-    """terrain 에 따라 파리티(terraced) 또는 no_go+인접(그 외) 을 검증한다."""
+    """terrain 에 따라 파리티(terraced) 또는 no_go+인접(그 외) 을 검증한다.
+
+    N1(수정 라운드2) — no_go 교집합은 terrain 과 무관하게 **항상 먼저** 본다.
+    terraced farm 이 no_go_alleys 도 함께 들고 있는 조합은 이 저장소에 실물이
+    없어 지금은 도달 불가능하지만, "두 지형 분기가 몰래 다른 규칙을 본다"는
+    C1 과 같은 종류의 발산을 애초에 봉인해 둔다."""
+    hit = sorted(set(no_go_alleys_of(farm)) & set(alleys))
+    if hit:
+        note = farm.get("no_go_note") if farm else None
+        raise PresetError(f"{who} 통로 목록 {alleys}: 통로 {hit} 은 진입 금지 구간"
+                          f"(no_go_alleys)입니다" + (f" — {note}" if note else ""))
     if terrain_of(farm) == "terraced":
         if not parity_safe(alleys):
             raise PresetError(
@@ -237,6 +247,14 @@ def full_split_patrol(robot_a: str, robot_b: str, split_k: int | None = None,
             raise PresetError(f"split_k 는 1..{n - 2} 범위여야 합니다: {k}")
         a, b = list(range(0, k)), list(range(k + 1, n))
     else:
+        # N2(수정 라운드2) — 블록 계산은 항상 farm 유도값(n_alleys_of)을 쓴다
+        # (drivable_blocks 가 그렇게 만들어져 있다). 그래서 호출자가 명시
+        # n_alleys 를 farm 과 다르게 주면 그 값이 조용히 무시되던 것이 예전
+        # 버그였다 — 지금은 불일치를 400 으로 명시한다(무음 무시 금지).
+        farm_n = n_alleys_of(farm)
+        if n_alleys is not None and _int("n_alleys", n_alleys) != farm_n:
+            raise PresetError(f"n_alleys 는 farm 기하와 불일치: 요청 {n_alleys}, "
+                              f"farm {farm_n}")
         no_go = set(no_go_alleys_of(farm))
         if split_k is None:
             block = largest_drivable_block(farm)
