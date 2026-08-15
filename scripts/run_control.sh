@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# 통합관제 기동 — 시뮬레이터 + 로봇 스택 + 웹 관제
+# 통합관제 기동 — 시뮬레이터 + 로봇 스택 + 웹 관제 (1대)
 #   scripts/run_control.sh [groundtruth|fastlio] [포트] [로봇] [terraced|real]
+#   SLAM=… PORT=… ROBOT=… WORLD=… LOG_DIR=… scripts/run_control.sh   (환경변수도 가능)
 #
 # 로봇 이름(기본 scout01)은 월드의 <include><name> 이자 토픽·TF 접두다.
 # 4번째 인자로 월드를 고른다 — **기본은 terraced**(실사 월드로의 기본 전환은
 # 스펙 ④ T7 게이트 이후다). real 은 지면이 정사영상인 평탄 월드다.
+# 2대 편대는 scripts/run_fleet.sh 를 쓴다.
 #
 # 뜨고 나면 브라우저로 안내된 주소를 열면 된다. 관제 PC 에는 아무것도 안 깔아도 된다.
 set -o pipefail   # set -u 금지 — ROS setup.bash 가 미정의 변수를 참조한다
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-SLAM=${1:-groundtruth}
-PORT=${2:-8080}
-ROBOT=${3:-scout01}
-WORLD_KIND=${4:-terraced}
+SLAM=${1:-${SLAM:-groundtruth}}
+PORT=${2:-${PORT:-8080}}
+ROBOT=${3:-${ROBOT:-scout01}}
+WORLD_KIND=${4:-${WORLD:-terraced}}
 case "$WORLD_KIND" in
-  terraced) WORLD=orchard_10x41; WORLD_SDF=sim/worlds/orchard_nav.sdf ;;
-  real)     WORLD=orchard_real;  WORLD_SDF=sim/worlds/orchard_real.sdf ;;
-  *) echo "!! 4번째 인자는 terraced | real 입니다: $WORLD_KIND"; exit 2 ;;
+  terraced) WORLD_NAME=orchard_10x41; WORLD_SDF=sim/worlds/orchard_nav.sdf ;;
+  real)     WORLD_NAME=orchard_real;  WORLD_SDF=sim/worlds/orchard_real.sdf ;;
+  *) echo "!! 월드는 terraced | real 입니다: $WORLD_KIND"; exit 2 ;;
 esac
-LOG=/tmp/claude-1000/-home-myhome-YBNML/691d883b-bd7f-499c-9b36-a59b0bd14a8a/scratchpad
+WORLD=$WORLD_NAME
+# 로그는 저장소·세션과 무관한 곳에 둔다 (LOG_DIR 로 덮어쓸 수 있다)
+LOG=${LOG_DIR:-${TMPDIR:-/tmp}/orchard_logs}
 mkdir -p "$LOG"
 
 source /opt/ros/jazzy/setup.bash

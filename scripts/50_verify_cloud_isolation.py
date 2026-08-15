@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -159,8 +160,13 @@ def cloud(fields=("x", "y", "z"), n=300):
         width=n, height=1, point_step=12, data=pts.tobytes())
 
 
+# 라이다 광학 원점의 지상 높이 — model.sdf livox_frame z 와 같아야 한다.
+# 2026-08-15 상부 하이브리드(스펙 ④ §3)에서 마스트 0.645 → 아치 상단 0.80.
+# 하드코딩을 남기면 model.sdf 가 움직일 때마다 이 검증이 조용히 옛 기하를 재현한다.
+SENSOR_Z = float(os.environ.get("LIDAR_Z", "0.80"))
+
 tr = SimpleNamespace(transform=SimpleNamespace(
-    translation=SimpleNamespace(x=0.0, y=0.0, z=0.645),
+    translation=SimpleNamespace(x=0.0, y=0.0, z=SENSOR_Z),
     rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
 node = SimpleNamespace(_tf_buffer=SimpleNamespace(lookup_transform=lambda *a, **k: tr),
                        get_logger=lambda: Logger())
