@@ -8,6 +8,9 @@
     ros2 launch orchard_sim control.launch.py \
         robot_id:=scout02 ns:=scout02 port:=8081 clock:=false
 
+    # 실사 월드 (sim/worlds/orchard_real.sdf) — 기하를 farm.json 에서 받는다
+    ros2 launch orchard_sim control.launch.py world:=real
+
 띄우는 것
     stage0        브리지 · 정적TF · 참값 로컬라이저 · Livox 계약
     fastlio       (선택) FAST-LIO2 — slam:=fastlio 일 때만
@@ -21,25 +24,68 @@
 **이 launch 는 로봇 PC 에서 돈다.** 관제 PC 에는 아무것도 깔지 않는다 — 브라우저로
 http://<로봇IP>:8080/ 을 열면 된다. ROS 2 도, 파이썬 패키지도 필요 없다.
 근거와 통신 선택 이유는 docs/findings/2026-07-30-fleet-stack-decision.md 참조.
+
+월드 선택 (`world:=terraced|real`, **기본 terraced**):
+    terraced  sim/worlds/orchard_nav.sdf   · gz 월드 이름 orchard_10x41
+              기하는 control_agent 의 기본 파라미터(rows=10, row_spacing=3.5 …)
+    real      sim/worlds/orchard_real.sdf  · gz 월드 이름 orchard_real
+              기하(rows·row_spacing·tree_spacing·headland)를 `farm:=`(기본
+              maps/orchard_real/farm.json)에서 읽어 control_agent 파라미터로 넘긴다.
+              로봇 코드는 무수정 — 기하는 데이터로만 들어간다(스펙 ④).
+**기본값을 real 로 바꾸는 것은 스펙 ④ T7 게이트의 몫이다.** 여기서는 경로만 낸다.
+이 런치는 gz 를 띄우지 않는다(월드 SDF 기동은 scripts/run_control.sh 또는 gz sim).
 """
+import json
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+# world:=real 일 때 gz 월드 이름 (gen_world --farm 의 --world-name 기본값과 같아야 한다)
+REAL_WORLD_NAME = "orchard_real"
+TERRACED_WORLD_NAME = "orchard_10x41"
+DEFAULT_FARM = "maps/orchard_real/farm.json"
+
+
+def _farm_geom(farm_path):
+    """farm.json → 에이전트 기하 파라미터.
+
+    로봇 계약은 무수정이다(스펙 ④ Global Constraints) — 기하는 코드가 아니라
+    **파라미터**로 흘러간다. 여기가 그 유일한 통로다. 파일이 없으면 조용히
+    기본값으로 떨어지지 않고 죽는다(스펙 ④ §6: 무음 기본값 금지).
+    """
+    if not os.path.exists(farm_path):
+        raise RuntimeError(
+            f"world:=real 인데 농장 매니페스트가 없습니다: {farm_path}\n"
+            f"    farm:=<경로> 로 지정하거나 world:=terraced 로 띄우세요.")
+    with open(farm_path) as f:
+        farm = json.load(f)
+    # trees_per_row 는 실사 농장에서 열마다 다르다(row_lengths_m). 에이전트는
+    # col_len 계산에만 쓰므로 **중앙값 열 길이**로 환산해 넘긴다.
+    tps = float(farm["tree_spacing_m"])
+    return {
+        "rows": int(farm["rows"]),
+        "row_spacing": float(farm["row_spacing_m"]),
+        "tree_spacing": tps,
+        "trees_per_row": int(round(float(farm["row_length_m"]) / tps)) + 1,
+        "headland": float(farm["headland_m"]),
+    }
+
 
 def generate_launch_description():
-    pkg = get_package_share_directory("orchard_sim")
-    fastlio_cfg = os.path.join(pkg, "config", "fastlio_mid70.yaml")
-
     args = [
-        DeclareLaunchArgument("world_name", default_value="orchard_10x41"),
+        DeclareLaunchArgument("world", default_value="terraced",
+                              description="terraced | real. 기본은 terraced — "
+                                          "실사 월드로의 기본 전환은 스펙 ④ T7 게이트 이후다"),
+        DeclareLaunchArgument("farm", default_value=DEFAULT_FARM,
+                              description="world:=real 일 때 읽는 농장 기하 매니페스트"),
+        DeclareLaunchArgument("world_name", default_value="",
+                              description="gz 월드 이름(토픽 스코프). 비우면 world 인자에서 정한다"),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("port", default_value="8080"),
         DeclareLaunchArgument("bind", default_value="0.0.0.0",
@@ -77,6 +123,23 @@ def generate_launch_description():
         DeclareLaunchArgument("tls_cert", default_value=""),
         DeclareLaunchArgument("tls_key", default_value=""),
     ]
+    return LaunchDescription(args + [OpaqueFunction(function=_launch_setup)])
+
+
+def _launch_setup(context, *a, **kw):
+    pkg = get_package_share_directory("orchard_sim")
+    fastlio_cfg = os.path.join(pkg, "config", "fastlio_mid70.yaml")
+
+    def cfg(name):
+        return LaunchConfiguration(name).perform(context)
+
+    world = cfg("world")
+    if world not in ("terraced", "real"):
+        raise RuntimeError(f"world 는 terraced | real 여야 합니다: {world!r}")
+    world_name = cfg("world_name") or (
+        REAL_WORLD_NAME if world == "real" else TERRACED_WORLD_NAME)
+    geom = _farm_geom(cfg("farm")) if world == "real" else {}
+
     ust = LaunchConfiguration("use_sim_time")
     robot_id = LaunchConfiguration("robot_id")
     # ns 를 비워 두면 robot_id 를 쓴다. 런치 인자에는 "비었으면 다른 값" 이라는
@@ -91,32 +154,31 @@ def generate_launch_description():
     # 주면 브리지는 /<ns>/... 로 뜨고 control_agent 는 /<robot_id>/... 를
     # 구독/발행해 서로 어긋난다. 에러도 경고도 없이 그냥 데이터가 안
     # 온다(무증상 무데이터) — 다중 로봇으로 늘릴 때 가장 조용히 새는 지점.
-    ns = PythonExpression(["'", LaunchConfiguration("ns"), "' or '", robot_id, "'"])
-    use_fastlio = IfCondition(PythonExpression(
-        ["'", LaunchConfiguration("slam"), "' == 'fastlio'"]))
-
-    return LaunchDescription(args + [
+    ns = cfg("ns") or cfg("robot_id")
+    nodes = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg, "launch", "stage0.launch.py")),
-            launch_arguments={"world_name": LaunchConfiguration("world_name"),
+            launch_arguments={"world_name": world_name,
                               "use_sim_time": ust,
                               "robot_id": robot_id,
                               "ns": ns,
                               "clock": LaunchConfiguration("clock"),
                               "cameras": LaunchConfiguration("cameras")}.items()),
+    ]
+    # FAST-LIO2 는 토픽을 절대 이름(/Odometry 등)으로 발행한다 — 네임스페이스를
+    # 씌워도 갈라지지 않는다. 다중 로봇 SLAM 은 별건이라 여기서는 손대지 않고,
+    # 참값 경로(slam:=groundtruth)만 다중화 대상이다.
+    if cfg("slam") == "fastlio":
+        nodes.append(Node(package="fast_lio", executable="fastlio_mapping",
+                          name="fastlio_mapping", namespace=ns, output="screen",
+                          parameters=[fastlio_cfg, {"use_sim_time": ust}]))
 
-        # FAST-LIO2 는 토픽을 절대 이름(/Odometry 등)으로 발행한다 — 네임스페이스를
-        # 씌워도 갈라지지 않는다. 다중 로봇 SLAM 은 별건이라 여기서는 손대지 않고,
-        # 참값 경로(slam:=groundtruth)만 다중화 대상이다.
-        Node(package="fast_lio", executable="fastlio_mapping",
-             name="fastlio_mapping", namespace=ns, output="screen",
-             condition=use_fastlio,
-             parameters=[fastlio_cfg, {"use_sim_time": ust}]),
-
+    nodes.append(
         Node(package="orchard_sim", executable="control_agent",
              name="control_agent", namespace=ns, output="screen",
-             parameters=[{"use_sim_time": ust,
+             parameters=[dict(geom, **{
+                          "use_sim_time": ust,
                           "robot_id": robot_id,
                           "port": LaunchConfiguration("port"),
                           "bind": LaunchConfiguration("bind"),
@@ -130,5 +192,5 @@ def generate_launch_description():
                           "auth_token": ParameterValue(
                               LaunchConfiguration("auth_token"), value_type=str),
                           "tls_cert": LaunchConfiguration("tls_cert"),
-                          "tls_key": LaunchConfiguration("tls_key")}]),
-    ])
+                          "tls_key": LaunchConfiguration("tls_key")})]))
+    return nodes

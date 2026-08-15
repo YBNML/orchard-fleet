@@ -95,7 +95,8 @@ def main():
         r = np.hypot(lvl[:, 0], lvl[:, 1])
         ang = np.abs(np.arctan2(lvl[:, 1], lvl[:, 0]))
         cone = (ang < math.radians(8.0)) & (r > 2.0) \
-            & (lvl[:, 2] > -0.35) & (lvl[:, 2] < 0.9)  # 수관·자기반사 제외
+            & (lvl[:, 2] > -0.50) & (lvl[:, 2] < 0.75)  # 수관·자기반사 제외
+        # 센서 기준 대역 = 지상 0.3~1.5 m. 라이다 0.645→0.80 m (스펙 ④ §3) 재도출.
         if cone.sum() < 40:
             return None
         return float(np.percentile(r[cone], 10))

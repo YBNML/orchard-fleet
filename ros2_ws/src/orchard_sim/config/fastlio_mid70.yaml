@@ -30,8 +30,10 @@
             fov_degree: 75.0         # MID-70 원형 FOV 70.4° + 여유
             det_range: 100.0         # 과수원 규모. 450 은 불필요하게 크다
             extrinsic_est_en: false
-            # IMU 기준 LiDAR 위치. model.sdf: imu_link (0,0,0.245), livox_frame (0.275,0,0.645)
-            extrinsic_T: [ 0.275, 0.0, 0.400 ]
+            # IMU 기준 LiDAR 위치. model.sdf: imu_link (0,0,0.245), livox_frame (0.275,0,0.800)
+            # 2026-08-15 상부 하이브리드(스펙 ④ §3)로 라이다가 아치 상단 0.80 m 로
+            # 올라갔다. z = 0.800 - 0.245 = 0.555 (x 는 그대로 0.275).
+            extrinsic_T: [ 0.275, 0.0, 0.555 ]
             extrinsic_R: [ 1., 0., 0.,
                            0., 1., 0.,
                            0., 0., 1. ]

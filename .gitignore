@@ -32,3 +32,8 @@ __pycache__/
 maps/
 backups/
 .superpowers/
+
+# 실사 월드 지형 (재생성 가능 — gen_heightmap.py --flat-gentle --farm)
+sim/models/orchard_terrain_real/materials/textures/*.png
+sim/models/orchard_terrain_real/heightmap.npy
+sim/models/orchard_terrain_real/heightmap_meta.json

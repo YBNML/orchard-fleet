@@ -38,9 +38,11 @@ Gazebo 하이트맵 하드 요구사항: 정사각형, 한 변 2^n+1, 8-bit gray
   <out>/model.sdf, model.config
 """
 import argparse
+import hashlib
 import json
 import math
 import os
+import shutil
 import struct
 import zlib
 import numpy as np
@@ -213,6 +215,112 @@ TERRAIN_CONFIG = """<?xml version="1.0"?>
 """
 
 
+# ── 평탄+완경사 (--flat-gentle, 스펙 ④ §3) ──────────────────────────────────
+# 계단식 템플릿과 **분리한다**. 한 템플릿에 분기를 넣으면 기존 계단식 경로의
+# 바이트 출력이 흔들릴 위험이 있는데, 그 경로는 orchard_nav.sdf 재생성 동일성
+# 증명의 전제라 건드리지 않는 것이 맞다.
+FLAT_TERRAIN_SDF = """<?xml version="1.0" ?>
+<!-- 자동 생성 (gen_heightmap.py --flat-gentle)
+     실사 정사영상 월드용 평탄 지형: 경사 {slope:.2f}° (방위 {azim:.0f}°),
+     기복 노이즈 ±{noise:.1f} cm. 계단·법면·선회 패드 없음.
+     지면 diffuse 는 정사영상을 월드축에 맞춰 재투영한 {diffuse} 다
+     (farm.json 아핀과 UV 정합 — bake_ortho_texture 참조). -->
+<sdf version="1.9">
+  <model name="{name}">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <geometry><heightmap>
+          <uri>model://{name}/materials/textures/orchard_heightmap.png</uri>
+          <size>{sx} {sy} {sz:.4f}</size><pos>0 0 0</pos>
+        </heightmap></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><heightmap>
+          <uri>model://{name}/materials/textures/orchard_heightmap.png</uri>
+          <size>{sx} {sy} {sz:.4f}</size><pos>0 0 0</pos>
+          <!-- texture size = 지형 한 변. Ogre 지형 레이어는 uv = 정규화 월드좌표
+               × (지형변/레이어변) 이므로 둘을 같게 두면 이미지 1장이 지형 전체를
+               정확히 한 번 덮는다 (반복 없음). -->
+          <texture><size>{sx}</size>
+            <diffuse>model://{name}/materials/textures/{diffuse}</diffuse>
+            <normal>model://{name}/materials/textures/flat_normal.png</normal>
+          </texture>
+        </heightmap></geometry>
+        <material><ambient>0.62 0.60 0.55 1</ambient><diffuse>1.0 1.0 1.0 1</diffuse></material>
+        <plugin filename="gz-sim-label-system" name="gz::sim::systems::Label"><label>10</label></plugin>
+      </visual>
+    </link>
+  </model>
+</sdf>
+"""
+
+FLAT_TERRAIN_CONFIG = """<?xml version="1.0"?>
+<model>
+  <name>{name}</name>
+  <version>1.0</version>
+  <sdf version="1.9">model.sdf</sdf>
+  <description>과수원 평탄 지형 + 정사영상 지면 텍스처 (자동 생성, gen_heightmap.py --flat-gentle)</description>
+</model>
+"""
+
+
+def world_to_px(farm, wx, wy):
+    """farm.json 아핀: px = origin_px + px_per_m * R(rotation_deg) @ (wx, wy).
+
+    farm.json 의 `axes_note` 가 정의한 식 그대로다 — 여기서 부호를 바꾸면
+    지면 텍스처와 나무 배치가 어긋난다(월드 +y 는 이미지 +y, 즉 아래쪽 행
+    증가 방향이며 지리적 북이 아니다).
+    """
+    th = math.radians(float(farm["rotation_deg"]))
+    c, s = math.cos(th), math.sin(th)
+    k = float(farm["px_per_m"])
+    ox, oy = farm["origin_px"]
+    return (ox + k * (c * wx - s * wy), oy + k * (s * wx + c * wy))
+
+
+def bake_ortho_texture(farm, image_path, extent, tex_px):
+    """정사영상을 **월드축 정렬** 텍스처로 재투영한다.
+
+    왜 원본을 그대로 diffuse 로 못 쓰는가: gz(Ogre) 하이트맵 레이어의 UV 는
+    월드축에 정렬돼 있다(uv ∝ 정규화 월드 x,y). 그런데 이 농장의 열 방향은
+    이미지 축에서 rotation_deg=62.5° 돌아가 있어서, 원본 JPEG 를 그대로
+    입히면 지면 무늬가 나무열과 62.5° 어긋난다. 그래서 **텍스처 쪽을 미리
+    회전·재표본**해 월드 (wx,wy) → 이미지 픽셀 대응을 아핀 그대로 굽는다.
+    결과적으로 월드 어느 점의 지면 색 = farm.json 아핀이 지목하는 원본 픽셀
+    색이 되고, 나무는 이미지의 열 위에 정확히 선다.
+
+    반환: (RGB uint8 (tex_px,tex_px,3) — 행 0 = 월드 y = -half, 덮개 비율)
+    """
+    from PIL import Image
+    src = np.asarray(Image.open(image_path).convert("RGB"))
+    ih, iw = src.shape[:2]
+
+    half = extent / 2.0
+    # 텍셀 중심의 월드 좌표
+    axis = -half + (np.arange(tex_px) + 0.5) * (extent / tex_px)
+    wx = np.tile(axis, (tex_px, 1))
+    wy = np.tile(axis.reshape(-1, 1), (1, tex_px))
+    px, py = world_to_px(farm, wx, wy)
+
+    col = np.rint(px).astype(np.int64)
+    row = np.rint(py).astype(np.int64)
+    inside = (col >= 0) & (col < iw) & (row >= 0) & (row < ih)
+
+    # 이미지 밖(텍스처가 실존하지 않는 영역)은 원본의 중앙값 색으로 채운다 —
+    # 무음으로 검게 두면 월드 가장자리가 절벽처럼 보여 실사감을 깬다.
+    fill = np.median(src.reshape(-1, 3), axis=0).astype(np.uint8)
+    out = np.empty((tex_px, tex_px, 3), dtype=np.uint8)
+    out[:] = fill
+    out[inside] = src[np.clip(row, 0, ih - 1)[inside], np.clip(col, 0, iw - 1)[inside]]
+    return out, float(inside.mean())
+
+
+def write_rgb_png(path, arr):
+    from PIL import Image
+    Image.fromarray(arr, mode="RGB").save(path)
+
+
 def write_gray_png(path, arr):
     h, w = arr.shape
     raw = bytearray()
@@ -229,6 +337,115 @@ def write_gray_png(path, arr):
         f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0)))
         f.write(chunk(b"IDAT", zlib.compress(bytes(raw), 9)))
         f.write(chunk(b"IEND", b""))
+
+
+def main_flat(args):
+    """--flat-gentle: 평탄(+완경사) 지형 + 정사영상 지면 텍스처.
+
+    계단식 경로(main)와 코드를 공유하지 않는다 — 계단·램프·선회 패드는
+    이 월드에 존재하지 않는 개념이고(스펙 ④ §3), 섞으면 두 경로가 서로의
+    회귀 위험이 된다.
+    """
+    if not (0.0 <= args.gentle_deg <= 3.0):
+        raise SystemExit(f"--gentle-deg 는 0~3.0° 여야 합니다(스펙 ④ §3). 받은 값: {args.gentle_deg}")
+
+    n = args.size_px
+    E = args.extent
+    half = E / 2.0
+    name = args.model_name or os.path.basename(os.path.normpath(args.out))
+
+    farm = None
+    if args.farm:
+        with open(args.farm) as f:
+            farm = json.load(f)
+
+    coords = np.linspace(-half, half, n)
+    wx = np.tile(coords, (n, 1))
+    wy = np.tile(coords.reshape(-1, 1), (1, n))
+
+    # 단일 완경사 — 평면. 계단·법면·패드 없음.
+    g = math.tan(math.radians(args.gentle_deg))
+    az = math.radians(args.gentle_azimuth_deg)
+    H = g * (wx * math.cos(az) + wy * math.sin(az))
+    # 롤링 노이즈 — 평탄성을 해치지 않을 만큼만 (계단식과 같은 진폭)
+    H = H + (fractal((n, n), args.seed, octaves=4, base=3) - 0.5) * 2 * args.noise_amp
+
+    H -= float(H.min())
+    size_z = float(H.max())
+
+    tex_dir = os.path.join(args.out, "materials", "textures")
+    os.makedirs(tex_dir, exist_ok=True)
+    png = (H / max(size_z, 1e-9) * 255).astype(np.uint8)
+    # 계단식과 같은 규약: gz 는 이미지 첫 행을 +y 에 맵핑하므로 뒤집어 쓴다.
+    write_gray_png(os.path.join(tex_dir, "orchard_heightmap.png"), png[::-1])
+
+    # ── 지면 diffuse — 정사영상 재투영 ──────────────────────────────────
+    diffuse = "ground_ortho.png"
+    cover = None
+    if farm is not None:
+        img = args.ortho or os.path.join("sim", "assets", "imagery", farm["image"])
+        if not os.path.exists(img):
+            raise SystemExit(f"[heightmap] ✘ 정사영상을 찾을 수 없습니다: {img}")
+        # 무음 불일치 금지(스펙 ④ §6) — 매니페스트가 가리키는 그 이미지인지 확인
+        h = hashlib.sha256(open(img, "rb").read()).hexdigest()
+        if farm.get("image_sha256") and h != farm["image_sha256"]:
+            raise SystemExit(
+                f"[heightmap] ✘ 이미지 해시 불일치\n    farm.json: {farm['image_sha256']}\n"
+                f"    {img}: {h}")
+        tex, cover = bake_ortho_texture(farm, img, E, args.tex_px)
+        # 하이트맵과 같은 규약으로 뒤집는다 (첫 행 = +y)
+        write_rgb_png(os.path.join(tex_dir, diffuse), tex[::-1])
+    else:
+        diffuse = "grass.png"
+
+    # flat_normal.png 는 계단식 지형 모델과 같은 1x1 평평한 노멀맵을 쓴다
+    fn = os.path.join(tex_dir, "flat_normal.png")
+    if not os.path.exists(fn):
+        src_fn = os.path.join("sim", "models", "orchard_terrain",
+                              "materials", "textures", "flat_normal.png")
+        if os.path.exists(src_fn):
+            shutil.copyfile(src_fn, fn)
+        else:
+            write_gray_png(fn, np.full((1, 1), 128, dtype=np.uint8))
+
+    np.save(os.path.join(args.out, "heightmap.npy"), H.astype(np.float32))
+    meta = dict(size_x=E, size_y=E, size_z=size_z, half=half, size_px=n,
+                headland=args.headland, noise_amp=args.noise_amp,
+                gentle_deg=args.gentle_deg, gentle_azimuth_deg=args.gentle_azimuth_deg,
+                profile="flat_gentle", model_name=name,
+                turn_pads=[], pad_y=None)
+    if farm is not None:
+        # gen_world 의 격자 정합 검사가 읽는 키 — 지형과 월드가 같은
+        # farm.json 에서 나왔음을 강제한다. trees_per_row 는 열마다 달라
+        # (row_lengths_m) 스칼라로 넣지 않는다.
+        meta.update(rows=int(farm["rows"]),
+                    row_spacing=float(farm["row_spacing_m"]),
+                    tree_spacing=float(farm["tree_spacing_m"]),
+                    farm=os.path.relpath(args.farm),
+                    farm_image=farm["image"],
+                    farm_image_sha256=farm.get("image_sha256"),
+                    ortho_texture=diffuse, ortho_cover_frac=round(cover, 4),
+                    tex_px=args.tex_px)
+    with open(os.path.join(args.out, "heightmap_meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+
+    with open(os.path.join(args.out, "model.sdf"), "w") as f:
+        f.write(FLAT_TERRAIN_SDF.format(name=name, sx=E, sy=E, sz=size_z,
+                                        diffuse=diffuse, slope=args.gentle_deg,
+                                        azim=args.gentle_azimuth_deg,
+                                        noise=args.noise_amp * 100))
+    with open(os.path.join(args.out, "model.config"), "w") as f:
+        f.write(FLAT_TERRAIN_CONFIG.format(name=name))
+
+    print(f"[heightmap] {tex_dir}/orchard_heightmap.png  ({n}x{n}, 8-bit gray)")
+    print(f"[heightmap]   평탄+완경사 — 경사 {args.gentle_deg:.2f}° "
+          f"(방위 {args.gentle_azimuth_deg:.0f}°) · 계단·법면·선회 패드 없음")
+    print(f"[heightmap]   지형 {E:.0f} x {E:.0f} m · size_z {size_z:.3f} m "
+          f"· 노이즈 ±{args.noise_amp * 100:.1f} cm")
+    if farm is not None:
+        print(f"[heightmap]   지면 diffuse: {diffuse} ({args.tex_px}x{args.tex_px}, "
+              f"정사영상 덮개 {cover:.1%}) — farm.json 아핀 재투영")
+    print(f"[heightmap]   모델 이름 model://{name}")
 
 
 def main():
@@ -277,11 +494,31 @@ def main():
                     help="통로 평탄성을 해치지 않을 만큼만. 기본 2.5 cm")
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--out", default="sim/models/orchard_terrain")
+    # ── 평탄+완경사 모드 (스펙 ④ §3 — 실사 정사영상 월드) ────────────────
+    ap.add_argument("--flat-gentle", action="store_true",
+                    help="계단·법면·선회 패드 없이 평탄(+선택 완경사 ≤3°) 지형을 만든다. "
+                         "--farm 과 함께 쓰면 정사영상을 지면 diffuse 로 굽는다")
+    ap.add_argument("--gentle-deg", type=float, default=0.0,
+                    help="--flat-gentle 의 단일 경사각(도). 스펙 상한 3.0")
+    ap.add_argument("--gentle-azimuth-deg", type=float, default=0.0,
+                    help="경사가 올라가는 방위(도, 월드 +x 기준 반시계)")
+    ap.add_argument("--farm", default=None,
+                    help="농장 기하 매니페스트(maps/orchard_real/farm.json). "
+                         "지면 텍스처 UV 정합·격자 메타의 단일 출처")
+    ap.add_argument("--ortho", default=None,
+                    help="정사영상 경로. 기본은 sim/assets/imagery/<farm.image>")
+    ap.add_argument("--tex-px", type=int, default=1024,
+                    help="구운 지면 텍스처 한 변 픽셀 수")
+    ap.add_argument("--model-name", default=None,
+                    help="지형 모델 이름(model://<이름>). 기본은 --out 의 디렉터리명")
     args = ap.parse_args()
 
     n = args.size_px
     if not (n >= 3 and ((n - 1) & (n - 2)) == 0):
         raise SystemExit(f"--size-px 는 2^k+1 이어야 합니다. 받은 값: {n}")
+
+    if args.flat_gentle:
+        return main_flat(args)
 
     E = args.extent
     half = E / 2.0

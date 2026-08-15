@@ -198,6 +198,11 @@ class ControlAgent(Node):
         # 다중 로봇 SLAM 은 별건이라 여기서는 전역 이름 그대로 둔다.
         d("lio_odom_topic", "/Odometry")
         d("tilt_limit_deg", 35.0)
+        # 라이다 광학 원점의 지상 높이 (model.sdf livox_frame z). robomw 의
+        # telemetry_map 이 AGL 대역을 재는 데 쓴다 — robomw 는 무수정이므로
+        # 기하는 **파라미터로** 넘긴다(스펙 ④ Global Constraints). 2026-08-15
+        # 상부 하이브리드에서 마스트 0.645 → 아치 상단 0.80 으로 올라갔다.
+        d("sensor_height", 0.80)
         # 대기/비상정지에서 0 속도를 계속 낼지. True 가 안전하지만, 다른 주행
         # 노드와 같이 띄워 관찰만 할 때는 False 로 둔다.
         d("idle_publish", True)

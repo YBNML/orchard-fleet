@@ -234,6 +234,7 @@ LBL_ROCK = 64           # 돌무더기 등 자연 장애물
 LBL_ROAD = 65           # 진입로
 LBL_SOIL = 66           # 수관하부 청경(나지) 대
 LBL_IRRIGATION = 67     # 점적관수 호스
+LBL_TREE = 20           # 나무 통째 (저상세 배경목 — 부위 분리 없음, 줄기 라벨을 대표로 쓴다)
 
 
 class Prop:
@@ -901,6 +902,475 @@ def instrumented_tree(inst_name, model, x, y, z, yaw, body_parts, body_mesh, cfg
     return "".join(parts)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# --farm 모드 — 실사 정사영상 기반 농장 (스펙 ④ §3)
+# ═══════════════════════════════════════════════════════════════════════════
+# 기존 --rows/--trees-per-row 격자 모드와 **코드를 공유하지 않는다**. 계단식
+# 월드(orchard_nav.sdf)는 재생성 바이트 동일성이 요구되는 자산이라, 공유
+# 함수에 분기를 심으면 그 증명이 매번 흔들린다.
+#
+# farm.json 이 단일 출처다. 특히:
+#   · row_origins[r] = 열 r 의 "t(along-row) 가 작은 끝"(월드 y 최솟값 끝)
+#   · row_lengths_m[r] = 그 열의 실측 길이 — 스칼라 row_length_m(중앙값)이
+#     아니라 **이 배열을 쓴다**(axes_note 지시. 최대 12.9 m 차이).
+#   · axes_note: world +y 는 이미지 +y 와 나란하고 **지리적 남쪽**이다.
+#     따라서 이 파일에서 "남단"은 y 가 **큰** 끝이다(§farm_alley_spawn).
+
+
+def load_farm(path, imagery_dir=os.path.join("sim", "assets", "imagery")):
+    """농장 기하 매니페스트를 읽고 이미지 해시를 검증한다.
+
+    스펙 ④ §6: 없거나 이미지 해시 불일치면 **명시적 실패**. 무음 기본값 금지 —
+    지면 텍스처와 나무 배치가 서로 다른 이미지에서 나오면 정합이 조용히
+    깨지는데, 그건 화면으로만 보면 알아채기 어렵다.
+    """
+    import hashlib
+    if not os.path.exists(path):
+        raise SystemExit(f"[gen_world] ✘ farm.json 이 없습니다: {path}")
+    with open(path) as f:
+        farm = json.load(f)
+    img = os.path.join(imagery_dir, farm["image"])
+    if not os.path.exists(img):
+        raise SystemExit(f"[gen_world] ✘ 정사영상이 없습니다: {img}")
+    h = hashlib.sha256(open(img, "rb").read()).hexdigest()
+    if farm.get("image_sha256") and h != farm["image_sha256"]:
+        raise SystemExit(
+            f"[gen_world] ✘ 이미지 해시 불일치 — farm.json 과 다른 이미지입니다\n"
+            f"    farm.json: {farm['image_sha256']}\n    {img}: {h}")
+    n = int(farm["rows"])
+    for k in ("row_origins", "row_lengths_m"):
+        if len(farm[k]) != n:
+            raise SystemExit(
+                f"[gen_world] ✘ farm.json 불일치: rows={n} 인데 {k} 길이가 {len(farm[k])} 입니다")
+    return farm
+
+
+def farm_px_of(farm, wx, wy):
+    """farm.json 아핀(axes_note 식 그대로) — 월드 → 이미지 픽셀."""
+    th = math.radians(float(farm["rotation_deg"]))
+    c, s = math.cos(th), math.sin(th)
+    k = float(farm["px_per_m"])
+    ox, oy = farm["origin_px"]
+    return (ox + k * (c * wx - s * wy), oy + k * (s * wx + c * wy))
+
+
+def farm_in_footprint(farm, wx, wy, image_wh=None):
+    """그 월드 좌표에 **텍스처가 실존하는가**(이미지 픽셀 범위 안인가).
+
+    bounds_m 은 AABB 라 모서리 상당수가 텍스처 밖이다(farm.json bounds_note).
+    포함 판정은 아핀 역변환 → 픽셀 범위 검사로 한다 — 다각형 내부판정과
+    같은 답을 주면서 훨씬 단순하고, image_footprint_world 와 정의가 같다.
+    """
+    if image_wh is None:
+        image_wh = farm.get("image_wh")
+    px, py = farm_px_of(farm, wx, wy)
+    if image_wh is None:
+        # footprint 다각형에서 이미지 크기를 되짚는다 (모서리 = (0,0),(w,0),(w,h),(0,h))
+        fp = farm["image_footprint_world"]
+        p1 = farm_px_of(farm, *fp[1])
+        p2 = farm_px_of(farm, *fp[2])
+        image_wh = (p1[0], p2[1])
+    w, h = image_wh
+    return (0.0 <= px <= w) and (0.0 <= py <= h)
+
+
+def farm_row_span(farm, r):
+    """열 r 의 (x, y_시작, y_끝) — y_시작 < y_끝. 끝 = 시작 + row_lengths_m[r].
+
+    이 구간은 **이미지 프레임이 그 열을 잘라내는 가용 구간**이지 캐노피가 아니다
+    (T2 §2.2). 캐노피는 양끝에서 headland_m 만큼 안쪽에 있다 — farm_row_canopy 참조.
+    """
+    x, y0 = farm["row_origins"][r]
+    return float(x), float(y0), float(y0) + float(farm["row_lengths_m"][r])
+
+
+def farm_row_canopy(farm, r):
+    """열 r 의 **캐노피** 구간 (x, y_시작, y_끝).
+
+    headland_m 은 "캐노피 가장자리 ~ 그 열이 이미지 프레임과 만나는 지점"의
+    실측 거리다(farm.json bounds_note). 그러므로 나무를 가용 구간 전체에
+    심으면 이미지에서 나지(헤드랜드)로 찍힌 자리에 나무가 서서 UV 정합이
+    눈에 띄게 깨진다 — 양끝을 headland_m 만큼 물린다.
+    """
+    x, y0, y1 = farm_row_span(farm, r)
+    h = float(farm["headland_m"])
+    return x, y0 + h, y1 - h
+
+
+def farm_alley_spawn(farm, k, end="south", clearance=None):
+    """통로 k(열 k 와 열 k+1 사이)의 '남단' 스폰 자세를 farm.json 에서 계산한다.
+
+    **'남단'의 정의(문서화 요구 사항)**: farm.json `axes_note` 는 이 월드의
+    world +y 가 이미지 +y(행 증가) 와 나란하고, 그 이미지의 맨 윗행이 실제
+    최대 northing(지리적 북)이라고 못박는다. 즉 **world +y = 지리적 남쪽**이다.
+    그러므로 여기서 '남단'은 통로의 **y 가 큰 쪽 끝**이고, 로봇은 -y 를 향해
+    (yaw = -90°) 통로로 진입한다. — 계단식 월드에서 '남단'이 y 최솟값이었던
+    것과 **부호가 반대**다(그 월드는 지리 좌표에 묶여 있지 않았다). 이 차이가
+    T4 이후로 조용히 새지 않도록 리포트·이 독스트링·생성 로그 세 곳에 남긴다.
+
+    자리는 통로 중심 x, 두 이웃 열 중 **짧은 쪽 캐노피 끝** 바로 바깥이다.
+    긴 쪽을 기준으로 잡으면 통로 중앙에서 이미지 프레임을 넘어간다(헤드랜드가
+    2.04 m 뿐이라 여유가 없다) — 실제로 그렇게 잡아 프레임 밖 실패를 봤다.
+
+    반환: (x, y, yaw_deg)
+    """
+    if not 0 <= k < int(farm["rows"]) - 1:
+        raise SystemExit(f"[gen_world] ✘ 통로 번호는 0..{int(farm['rows']) - 2} 여야 합니다: {k}")
+    xa, ya0, ya1 = farm_row_canopy(farm, k)
+    xb, yb0, yb1 = farm_row_canopy(farm, k + 1)
+    cx = (xa + xb) / 2.0
+    m = float(clearance if clearance is not None else float(farm["headland_m"]) / 2.0)
+    if end == "south":                       # y 최대 쪽 (지리적 남)
+        return cx, min(ya1, yb1) + m, -90.0
+    return cx, max(ya0, yb0) - m, 90.0       # y 최소 쪽 (지리적 북)
+
+
+def tree_visual_parts(models_dir, name):
+    """나무 모델의 (submesh, label, mesh_uri) 목록을 model.sdf 에서 읽는다.
+
+    묶음 배치(build_farm_trees --tree-group row)가 <include> 대신 같은 메시를
+    직접 참조하려면 이 표가 필요하다. model.sdf 를 진실의 근원으로 삼는다 —
+    여기에 다시 적어두면 gen_tree.py 가 부위를 바꿨을 때 조용히 어긋난다.
+    """
+    import xml.etree.ElementTree as ET
+    root = ET.parse(os.path.join(models_dir, name, "model.sdf")).getroot()
+    out = []
+    for vis in root.iter("visual"):
+        mesh = vis.find("./geometry/mesh")
+        if mesh is None:
+            continue
+        uri = mesh.findtext("uri").strip()
+        sub = mesh.findtext("./submesh/name")
+        lbl = vis.findtext("./plugin/label")
+        out.append((uri, sub.strip() if sub else None, int(lbl) if lbl else 0))
+    return out
+
+
+def grouped_row_trees(model_name, trees, parts_cache, gt_cache, merged=False):
+    """열 하나의 배경목 전부를 **모델 엔티티 하나**로 묶는다.
+
+    왜: 2026-08-15 실측 — 실사 농장(열 27, 나무 2,374)을 그루당 <include> 로
+    심으면 로봇을 한 대도 안 띄운 상태에서 RTF 0.112 였다. 같은 장면을 열 단위
+    모델로 묶으면 엔티티가 2,403 → 56 으로 줄어든다. 비용은 삼각형이 아니라
+    **모델 엔티티 수**에 붙는다는 2026-07-25 벤치마크(554→1.21 / 1,754→0.30)의
+    결론이 6배 규모에서 다시 확인된 것이고, Prop 클래스가 환경 오브젝트에
+    적용하던 규율을 나무에도 적용한다.
+
+    잃는 것: 배경목의 **인스턴스** 분리(panoptic). 원래 배경목은 semantic
+    라벨만 갖도록 설계돼 있어(gen_world 머리말) 실질 손실이 없고, 과실별
+    인스턴스가 필요한 계측목은 그대로 최상위 <include>/모델로 남는다 —
+    이것이 브리프가 요구한 "저상세 기본 + 선별 고상세"의 실체다.
+    """
+    vis = []
+    col = []
+    for i, (mdl, x, y, z, yaw) in enumerate(trees):
+        parts = parts_cache[mdl]
+        if merged:
+            # 부위 서브메시를 나누지 않고 GLB 통째로 하나의 visual 로. gz-sim 은
+            # visual 마다 ECS 엔티티를 만들기 때문에 이게 5배 차이가 난다.
+            # 대가: 배경목의 **부위별 semantic 라벨**(줄기20/깃21/잎30·31/과실40)이
+            # 나무 라벨 하나로 합쳐진다 — 계측 행은 그대로 부위별을 유지한다.
+            parts = [(parts[0][0], None, LBL_TREE)]
+        for uri, sub, lbl in parts:
+            sm = f"<submesh><name>{sub}</name></submesh>" if sub else ""
+            vis.append(
+                f'        <visual name="t{i}_{sub or "all"}">\n'
+                f'          <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 {yaw:.4f}</pose>\n'
+                f'          <geometry><mesh><uri>{uri}</uri>{sm}</mesh></geometry>\n'
+                f'          <plugin filename="gz-sim-label-system" '
+                f'name="gz::sim::systems::Label"><label>{lbl}</label></plugin>\n'
+                f'        </visual>\n')
+        g = gt_cache[mdl]["geometry"]
+        h, r = float(g["height"]), float(g["trunk_base_dia"]) / 2
+        col.append(
+            f'        <collision name="c{i}">\n'
+            f'          <pose>{x:.3f} {y:.3f} {z + h / 2:.3f} 0 0 0</pose>\n'
+            f'          <geometry><cylinder><radius>{r:.4f}</radius>'
+            f'<length>{h:.3f}</length></cylinder></geometry>\n'
+            f'        </collision>\n')
+    if not vis:
+        return ""
+    return (f'    <model name="{model_name}">\n      <static>true</static>\n'
+            f'      <pose>0 0 0 0 0 0</pose>\n      <link name="link">\n'
+            + "".join(vis) + "".join(col) + "      </link>\n    </model>\n")
+
+
+def build_farm_trees(farm, terrain, rng, cfg, bg_pool, body_pool, models_dir,
+                     inst_rows, inst_trees, stats, group="row"):
+    """열별 실측 길이에 맞춰 나무를 격자 스냅해 심는다.
+
+    스냅 규약: y 는 **전 열 공통 격자**(y = i*tree_spacing, 월드 원점 기준)에
+    스냅한다 — 실제 과수원도 열마다 주간 위상이 제멋대로가 아니고, 로컬라이저의
+    종위상 추정(rowlocalize)이 공통 위상을 전제한다. x 는 row_origins 실측값
+    그대로다(균일 격자로 이상화하지 않는다 — farm.json row_selection_note).
+    y 범위는 캐노피 구간(farm_row_canopy) — 헤드랜드 나지에는 심지 않는다.
+    """
+    ts = float(farm["tree_spacing_m"])
+    names = sorted({t["name"] for t in bg_pool} | {t["name"] for t in body_pool})
+    gt_cache = {n: json.load(open(os.path.join(models_dir, n, "ground_truth.json")))
+                for n in names}
+    parts_cache = {n: tree_visual_parts(models_dir, n) for n in names}
+    out = []
+    for r in range(int(farm["rows"])):
+        rx, y0, y1 = farm_row_canopy(farm, r)
+        y0 = math.ceil(y0 / ts) * ts                 # 전 열 공통 격자에 스냅
+        nt = int(math.floor((y1 - y0) / ts)) + 1
+        is_inst_row = r in inst_rows
+        row_bg = []
+        for t in range(nt):
+            ty = y0 + t * ts
+            if rng.random() < cfg["missing_prob"]:
+                stats["missing"] += 1
+                continue
+            jx = rx + rng.gauss(0, cfg["pos_jitter"])
+            jy = ty + rng.gauss(0, cfg["pos_jitter"])
+            yaw = rng.gauss(0, cfg["yaw_jitter"])
+            tz = terrain.z(jx, jy)
+            if is_inst_row and t < inst_trees:
+                pick = rng.choice(body_pool)
+                gt = gt_cache[pick["name"]]
+                inst = f"{pick['name']}__r{r}t{t}"
+                out.append(instrumented_tree(
+                    inst, pick["name"], jx, jy, tz, yaw,
+                    gt["body_parts"], gt.get("body_mesh", "tree_body.glb"),
+                    gt["geometry"]["height"], gt["geometry"]["trunk_base_dia"] / 2,
+                    gt["apples"]))
+                stats["instrumented"] += 1
+                stats["apples"] += len(gt["apples"])
+            else:
+                pick = rng.choice(bg_pool)
+                if group.startswith("row"):
+                    row_bg.append((pick["name"], jx, jy, tz, yaw))
+                else:
+                    out.append(bg_tree_include(f"{pick['name']}__r{r}t{t}",
+                                               pick["name"], jx, jy, tz, yaw))
+                stats["bg"] += 1
+        if row_bg:
+            out.append(grouped_row_trees(f"row_trees_r{r}", row_bg,
+                                         parts_cache, gt_cache,
+                                         merged=(group == "row-merged")))
+            stats["groups"] = stats.get("groups", 0) + 1
+    return out
+
+
+def build_farm_row_details(farm, terrain, rng, cfg, detail):
+    """열 구조물 — 지주·3단 와이어(열당 모델 1개) + 선택 디테일.
+
+    계단식 월드의 `build_row_details` 와 **의도적으로 다른 점**: 수관하부
+    청경(나지) 대를 깔지 않는다. 이 월드의 지면은 정사영상 그 자체라, 갈색
+    박스를 열 위에 덮으면 (a) 실사감이 깨지고 (b) UV 정합 검증(나무가 이미지
+    열 위에 서는지)을 가린다. 실제 청경대는 이미 이미지에 찍혀 있다.
+    """
+    out = []
+    for r in range(int(farm["rows"])):
+        rx, y_lo, y_hi = farm_row_canopy(farm, r)
+        p = Prop(f"trellis_r{r}")
+        y = y_lo
+        while y <= y_hi:
+            z = terrain.z(rx, y)
+            p.add(_cyl(0.0375, 2.96), (rx, y, z + 1.48, 0, 0, 0), (0.35, 0.28, 0.20),
+                  LBL_TRELLIS, "post")
+            y += cfg["post_spacing"]
+        # 계단식 월드의 와이어는 지형을 따라가려고 열마다 12분절 × 3단을 썼다.
+        # 이 월드는 평탄(--flat-gentle)이라 분절이 아무 정보도 더하지 않는데,
+        # 27열 × 3단 × 24분절 = 1,944개의 렌더러블이 그대로 라이다 렌더 예산을
+        # 갉아먹는다(2026-08-15 실측: 라이다 sim 수신율이 문턱 8 Hz 아래로).
+        # 평탄 지형에서는 한 줄이면 충분하다.
+        nseg = 1
+        for hz in (1.00, 2.00, 2.90):
+            for i in range(nseg):
+                ya = y_lo + (y_hi - y_lo) * i / nseg
+                yb = y_lo + (y_hi - y_lo) * (i + 1) / nseg
+                za, zb = terrain.z(rx, ya), terrain.z(rx, yb)
+                L = yb - ya
+                p.add(_box(0.006, L * 1.02, 0.006),
+                      (rx, (ya + yb) / 2, (za + zb) / 2 + hz,
+                       math.atan2(zb - za, L), 0, 0),
+                      (0.55, 0.55, 0.58), LBL_WIRE, "wire")
+        if detail >= 2:
+            for i in range(nseg):
+                ya = y_lo + (y_hi - y_lo) * i / nseg
+                yb = y_lo + (y_hi - y_lo) * (i + 1) / nseg
+                za, zb = terrain.z(rx, ya), terrain.z(rx, yb)
+                L = yb - ya
+                p.add(_cyl(0.011, L * 1.02),
+                      (rx + 0.28, (ya + yb) / 2, (za + zb) / 2 + 0.05,
+                       math.atan2(zb - za, L) + 1.5708, 0, 0),
+                      (0.10, 0.10, 0.11), LBL_IRRIGATION, "drip")
+        out.append(p.build())
+
+    # ── 열 말단 앵커 조립체 (전 열, 양끝) — 모델 하나 ────────────────
+    # 계단식 월드에서 이 조립체가 존재하는 이유(2026-07-30: 통로를 나오는
+    # 순간 기하가 퇴화해 FAST-LIO2 구간오차가 38%로 튀었다)는 평탄 월드에도
+    # 그대로 있다. 실제 과수원의 열 끝도 비어 있지 않다.
+    # 헤드랜드가 2.04 m 뿐이라 조립체 전체(앵커+버팀대+데드맨)를 그 안에 넣는다
+    # — 밖으로 삐져나가면 정사영상이 없는 자리에 구조물이 서서 top-view 검증이
+    # 지저분해진다.
+    p = Prop("row_end_anchors")
+    for r in range(int(farm["rows"])):
+        rx, y0, y1 = farm_row_canopy(farm, r)
+        for ye, sgn in ((y0 - 0.3, -1), (y1 + 0.3, 1)):
+            z = terrain.z(rx, ye)
+            p.add(_cyl(0.07, 2.9), (rx, ye, z + 1.45, 0, 0, 0),
+                  (0.33, 0.26, 0.18), LBL_TRELLIS, "endpost")
+            p.add_collision(_cyl(0.08, 2.9), (rx, ye, z + 1.45, 0, 0, 0))
+            by = ye + sgn * 0.7
+            p.add(_cyl(0.055, 2.0), (rx, (ye + by) / 2, z + 1.0, sgn * 0.70, 0, 0),
+                  (0.33, 0.26, 0.18), LBL_TRELLIS, "brace")
+            dy = ye + sgn * 1.2
+            p.add(_box(0.5, 0.4, 0.35), (rx, dy, terrain.z(rx, dy) + 0.12, 0, 0, 0),
+                  (0.62, 0.62, 0.60), LBL_STRUCTURE, "deadman")
+            p.add(_box(0.012, 1.4, 0.012), (rx, (ye + dy) / 2, z + 1.5, sgn * 0.95, 0, 0),
+                  (0.55, 0.55, 0.58), LBL_WIRE, "guy")
+            # 관수 입상관 — 열 x 위치라 통로를 막지 않는다
+            sy = ye + sgn * 0.15
+            p.add(_cyl(0.05, 1.05), (rx, sy, terrain.z(rx, sy) + 0.525, 0, 0, 0),
+                  (0.20, 0.35, 0.55), LBL_IRRIGATION, "standpipe")
+    out.append(p.build())
+    return [o for o in out if o]
+
+
+def main_farm(args):
+    """--farm: farm.json 의 실측 열 기하로 실사 월드를 조립한다."""
+    rng = random.Random(args.seed)
+    models_dir = os.path.abspath(args.models_dir)
+    farm = load_farm(args.farm)
+
+    if args.environment:
+        raise SystemExit(
+            "[gen_world] ✘ --farm 과 --environment 는 함께 쓸 수 없습니다.\n"
+            "    환경/선회 구조물 배치는 계단식 격자(균일 열 길이·headland 6 m)를 전제로\n"
+            "    좌표를 잡습니다. 실사 농장은 열마다 길이가 다르고(row_lengths_m) 주변\n"
+            "    맥락이 이미 정사영상에 찍혀 있어, 그대로 얹으면 울타리·물탱크가 이미지\n"
+            "    위 엉뚱한 자리에 서게 됩니다 — 조용히 틀리느니 여기서 멈춥니다.\n"
+            "    열 말단 구조물은 --detail 1 이상에서 farm.json 기준으로 배치됩니다.")
+
+    trees = discover_trees(models_dir)
+    bg_pool = [t for t in trees if t["full"]]
+    body_pool = [t for t in trees if t["body"]]
+    if not bg_pool or not body_pool:
+        raise SystemExit("배경용/계측용 나무 모델이 부족합니다. gen_tree.py 를 먼저 실행하세요.")
+
+    terrain = Terrain(models_dir, args.terrain_model)
+    if not terrain.ok:
+        raise SystemExit(
+            f"[gen_world] ✘ 지형 높이필드가 없습니다: {models_dir}/{args.terrain_model}\n"
+            f"    python3 scripts/gen_heightmap.py --flat-gentle --farm {args.farm} "
+            f"--out sim/models/{args.terrain_model}")
+    prof = str(terrain.m.get("profile", ""))
+    if not prof.startswith("flat"):
+        raise SystemExit(
+            f"[gen_world] ✘ --farm 은 평탄 지형을 전제합니다(스펙 ④ §3). "
+            f"지형 profile={prof!r}\n    --flat-gentle 로 만든 지형을 --terrain-model 로 주세요.")
+    # 지형과 월드가 **같은 farm.json** 에서 나왔는지 — 아니면 지면 텍스처와
+    # 나무 배치가 서로 다른 기하를 쓰게 되고, 증상은 "나무가 열에서 조금씩
+    # 밀린다" 뿐이라 눈으로 놓치기 쉽다.
+    if terrain.m.get("farm_image_sha256") and \
+            terrain.m["farm_image_sha256"] != farm.get("image_sha256"):
+        raise SystemExit(
+            "[gen_world] ✘ 지형이 다른 farm.json/이미지로 구워졌습니다 "
+            f"(지형 {terrain.m['farm_image_sha256'][:12]}… vs farm {farm['image_sha256'][:12]}…)")
+    for k, fk in (("rows", "rows"), ("row_spacing", "row_spacing_m"),
+                  ("tree_spacing", "tree_spacing_m")):
+        if terrain.m.get(k) is not None and abs(float(terrain.m[k]) - float(farm[fk])) > 1e-6:
+            raise SystemExit(f"[gen_world] ✘ 지형과 farm.json 의 {k} 가 다릅니다: "
+                             f"{terrain.m[k]} vs {farm[fk]}")
+
+    cfg = {k: getattr(args, k) for k in DEFAULTS}
+    cfg["row_spacing"] = float(farm["row_spacing_m"])
+    cfg["tree_spacing"] = float(farm["tree_spacing_m"])
+    cfg["headland"] = float(farm["headland_m"])
+
+    R = int(farm["rows"])
+    inst_rows = set()
+    if args.instrumented_rows > 0:
+        mid, half = R // 2, args.instrumented_rows // 2
+        inst_rows = set(range(max(0, mid - half), min(R, mid - half + args.instrumented_rows)))
+
+    stats = dict(bg=0, instrumented=0, apples=0, missing=0)
+    body = build_farm_trees(farm, terrain, rng, cfg, bg_pool, body_pool, models_dir,
+                            inst_rows, args.instrumented_trees, stats,
+                            group=args.tree_group)
+
+    if args.detail > 0:
+        rd = build_farm_row_details(farm, terrain, rng, cfg, args.detail)
+        body.append("\n    <!-- 열 구조물 (지주·3단 와이어·말단 앵커·입상관) -->\n")
+        body.extend(rd)
+        stats["rowdetail"] = len(rd)
+
+    # ── 로봇 스폰 ──────────────────────────────────────────────────────
+    if args.robot:
+        raise SystemExit("[gen_world] ✘ --farm 모드에서는 --robots 또는 --robots-alleys 를 쓰세요.")
+    if args.robots and args.robots_alleys:
+        raise SystemExit("[gen_world] ✘ --robots 와 --robots-alleys 는 동시에 쓸 수 없습니다.")
+    robot_specs = []
+    spawn_notes = []
+    if args.robots_alleys:
+        for tok in args.robots_alleys.split():
+            parts = tok.split(":")
+            if len(parts) not in (2, 3):
+                raise SystemExit(f"[gen_world] ✘ --robots-alleys 형식 오류 (이름:통로[:끝]): {tok!r}")
+            name, alley = parts[0], int(parts[1])
+            end = parts[2] if len(parts) == 3 else "south"
+            if end not in ("south", "north"):
+                raise SystemExit(f"[gen_world] ✘ 끝은 south|north 여야 합니다: {tok!r}")
+            sx, sy, syaw = farm_alley_spawn(farm, alley, end)
+            if not farm_in_footprint(farm, sx, sy):
+                raise SystemExit(
+                    f"[gen_world] ✘ {name} 스폰 ({sx:.3f}, {sy:.3f}) 이 정사영상 밖입니다 "
+                    f"(image_footprint_world). 텍스처 없는 자리에 로봇을 세우지 않습니다.")
+            robot_specs.append((name, ROBOT_MODEL, sx, sy, math.radians(syaw)))
+            spawn_notes.append(f"{name}: 통로 {alley} {end}단 → ({sx:.3f}, {sy:.3f}, {syaw:.0f}°)")
+    elif args.robots:
+        for name, rx, ry, yaw_rad in parse_robots(args.robots):
+            robot_specs.append((name, ROBOT_MODEL, rx, ry, yaw_rad))
+
+    robot_block = ""
+    for name, model, rx, ry, yaw_rad in robot_specs:
+        robot_block += robot_include(name, model, rx, ry, terrain.z(rx, ry) + 0.20, yaw_rad)
+
+    world_name = args.world_name or "orchard_real"
+    out = os.path.abspath(args.out)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w") as f:
+        f.write(sdf_header(world_name, cfg, args.terrain_model,
+                           step_size=args.step_size,
+                           collision_detector=args.collision_detector))
+        f.write(f"\n    <!-- farm.json: {os.path.relpath(args.farm)}"
+                f" (image_sha256 {farm['image_sha256'][:12]}…)"
+                f" / 열 {R} · 열간 {cfg['row_spacing']:.4f} m · 주간 {cfg['tree_spacing']:.2f} m"
+                f" / 회전 {farm['rotation_deg']}° -->\n")
+        f.write(f"    <!-- 나무 {stats['bg']} 배경 + {stats['instrumented']} 계측"
+                f" / 결주 {stats['missing']} / 과실 인스턴스 {stats['apples']} -->\n")
+        f.writelines(body)
+        if robot_block:
+            f.write("\n    <!-- 로봇 -->\n")
+            f.write(robot_block)
+        f.write(sdf_footer())
+
+    total = ((stats.get("groups") or stats["bg"]) + stats["instrumented"]
+             + stats["apples"] + stats.get("rowdetail", 0) + 1 + len(robot_specs))
+    xs = [farm_row_span(farm, r)[0] for r in range(R)]
+    print(f"[gen_world] {out}   (월드 이름 {world_name})")
+    print(f"[gen_world]   farm.json {os.path.relpath(args.farm)} · 지형 {args.terrain_model}"
+          f" (profile={prof})")
+    print(f"[gen_world]   열 {R} (x {min(xs):.1f}~{max(xs):.1f} m) · 통로 {R - 1}"
+          f" · 열 길이 {min(farm['row_lengths_m']):.1f}~{max(farm['row_lengths_m']):.1f} m")
+    print(f"[gen_world]   배경목 {stats['bg']:,} / 계측목 {stats['instrumented']}"
+          f" / 결주 {stats['missing']} / 과실 인스턴스 {stats['apples']:,}")
+    if stats.get("groups"):
+        print(f"[gen_world]   배경목 묶음 모델 {stats['groups']} (열 단위 — 엔티티 "
+              f"{stats['bg']:,} → {stats['groups']})")
+    if stats.get("rowdetail"):
+        print(f"[gen_world]   열 구조물 모델 {stats['rowdetail']} (지주·와이어·말단 앵커·입상관)")
+    for s in spawn_notes:
+        print(f"[gen_world]   스폰 {s}")
+    if spawn_notes:
+        print("[gen_world]   ※ '남단' = world y 가 큰 쪽 = 지리적 남 (farm.json axes_note: "
+              "world +y 는 이미지 +y 와 나란하고 지리적 북이 아니다). 계단식 월드와 부호가 반대.")
+    print(f"[gen_world]   대략 총 엔티티 {total:,}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", type=int, default=4)
@@ -935,9 +1405,28 @@ def main():
                     help="나무 영역 밖 방풍림·창고·물탱크 배치")
     ap.add_argument("--flip-x", action="store_true", help="지형 x 샘플링 뒤집기 (경사 방향 안 맞을 때)")
     ap.add_argument("--flip-y", action="store_true", help="지형 y 샘플링 뒤집기")
+    # ── 실사 농장 모드 (스펙 ④ §3) ──────────────────────────────────────
+    ap.add_argument("--farm", default=None,
+                    help="농장 기하 매니페스트(maps/orchard_real/farm.json). "
+                         "주면 --rows/--trees-per-row 대신 이 파일의 열 기하로 심는다")
+    ap.add_argument("--world-name", default=None,
+                    help="월드 이름(gz 토픽 스코프). 기본: 격자 모드 orchard_RxT / --farm 은 orchard_real")
+    ap.add_argument("--tree-group", default="row-merged",
+                    choices=["row-merged", "row", "none"],
+                    help="--farm 전용 배경목 상세도 계층(RTF 대책 — grouped_row_trees 독스트링). "
+                         "row-merged=열 단위 모델 + 부위 미분리 visual 1개(기본, 가장 쌈) / "
+                         "row=열 단위 모델 + 부위별 visual(부위 semantic 라벨 유지) / "
+                         "none=그루당 <include>(부위 라벨 + 그루별 인스턴스, 가장 비쌈)")
+    ap.add_argument("--robots-alleys", default=None,
+                    help='--farm 전용. "이름:통로번호[:north|south]" 공백 구분 목록. '
+                         "스폰 좌표를 farm.json 에서 계산한다(기본 남단 = y 최대 쪽, "
+                         "farm_alley_spawn 독스트링의 axes_note 근거 참조)")
     for k, v in DEFAULTS.items():
         ap.add_argument(f"--{k.replace('_', '-')}", type=type(v), default=v)
     args = ap.parse_args()
+
+    if args.farm:
+        return main_farm(args)
 
     cfg = {k: getattr(args, k) for k in DEFAULTS}
     rng = random.Random(args.seed)
@@ -1067,7 +1556,7 @@ def main():
         rz = zf(rx, ry) + 0.20                          # 경사면 위 + 여유
         robot_block += robot_include(name, model, rx, ry, rz, yaw_rad)
 
-    world_name = f"orchard_{R}x{T}"
+    world_name = args.world_name or f"orchard_{R}x{T}"
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:

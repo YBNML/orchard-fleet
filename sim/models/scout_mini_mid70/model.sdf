@@ -13,6 +13,14 @@
 
   좌표: base_link 를 섀시 중심의 지면 투영점에 둔다 (z=0 이 지면).
 
+  ── 상부 하이브리드 (스펙 ④ §3, 2026-08-15) ─────────────────────────────
+  마스트(라이다 0.645 m)를 **롤바 아치**로 교체했다. 지상 높이 확정치:
+      MID-360 0.80 m (아치 상단 중앙) · D455 0.55 m 하향 12°(시각+프레임만)
+      분석 카메라 L/R 0.62 m (아치 다리 측면) · 적재 데크 0.32 m · 경광등 0.44 m
+  하류 영향(같이 고쳐야 하는 곳): config/fastlio_mid70.yaml 의 extrinsic_T z,
+  map_localizer/ros_sensors 의 **센서기준 z 대역**(지상 0.3~1.5 m 를 뜻하던
+  −0.35~0.9 는 라이다가 0.155 m 올라간 만큼 −0.50~0.75 로 옮겨야 같은 대역이다).
+
   ── 토픽 스코프 (다중 로봇, 2026-08-14) ──────────────────────────────────
   센서·플러그인에 <topic>/<odom_topic>/<tf_topic>/<frame_id>/<child_frame_id> 를
   **일부러 쓰지 않는다.** gz-sim 은 이 태그가 있으면 그 문자열을 리터럴 전역
@@ -225,31 +233,210 @@
       <axis><xyz>0 1 0</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis>
     </joint>
 
-    <!-- ═══════════════ 마스트 + MID-70 (D12) ═══════════════ -->
-    <!-- 로봇과 같은 방향(틸트 없음), 로봇보다 40cm 높게 z=0.645, 앞면 정렬 x=0.275 -->
-    <link name="livox_mast">
-      <pose>0.275 0 0.40 0 0 0</pose>
-      <inertial><mass>0.5</mass>
-        <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.001</izz>
+    <!-- ═══════════════ 상부 하이브리드 — 롤바 아치 + 노즈 D455 (스펙 ④ §3) ═══════════════ -->
+    <!--
+      확정 수치(스펙 ④ Global Constraints, 전부 **지상 높이** = 모델 원점 기준 z):
+        · MID-360  = 아치 상단 중앙, 0.80 m   (종전 0.645 m 마스트를 대체)
+        · D455     = 노즈 브래킷,   0.55 m, 하향 12°  — ④는 시각 지오메트리 +
+                     d455_link 프레임까지. **센서 플러그인은 스펙 ⑤의 몫**이라
+                     여기에 <sensor> 를 달지 않는다.
+        · 분석 카메라 L/R = 아치 다리 측면 / 앰버 경광등 / 아치 뒤 적재 데크
+
+      x=0.275 는 종전 마스트·라이다의 전후 위치를 **그대로** 물려받은 값이다.
+      높이만 0.645→0.80 으로 올린다 — x 까지 옮기면 FAST-LIO2 외부파라미터
+      (config/fastlio_mid70.yaml extrinsic_T)와 map_localizer 의 sensor_fwd_m
+      (0.275)까지 동시에 흔들려, 이번 태스크의 회귀 표면이 불필요하게 넓어진다.
+
+      자기반사 설계: 아치 크로스바 윗면(0.762)·다리 꼭대기(0.74)·D455 상단
+      (0.565)·데크(0.32)·경광등(0.44) 이 **전부 MID-360 하한 원뿔(-7°) 아래**에
+      오도록 치수를 잡았다. 하한 원뿔의 높이는 z(d) = 0.80 - d·tan(7°) 이므로
+      바(반경 0.022, 반길이 0.235)의 끝에서도 0.769 > 0.762 다. 실측은 리포트
+      §자기반사 참조.
+    -->
+    <link name="sensor_arch">
+      <pose>0.275 0 0 0 0 0</pose>
+      <inertial><mass>1.2</mass>
+        <inertia><ixx>0.02</ixx><iyy>0.02</iyy><izz>0.01</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
-      <visual name="mast"><geometry><cylinder><radius>0.02</radius><length>0.50</length></cylinder></geometry>
-        <material><ambient>0.30 0.31 0.33 1</ambient><diffuse>0.42 0.43 0.46 1</diffuse>
+      <!-- 롤바 다리 좌/우 (차폭 스팬 0.47 m — 윤거 0.49 m 안쪽) -->
+      <visual name="arch_leg_l">
+        <pose>0 0.235 0.49 0 0 0</pose>
+        <geometry><cylinder><radius>0.022</radius><length>0.50</length></cylinder></geometry>
+        <material><ambient>0.24 0.25 0.27 1</ambient><diffuse>0.38 0.40 0.43 1</diffuse>
           <specular>0.5 0.5 0.5 1</specular>
-          <pbr><metal><metalness>0.85</metalness><roughness>0.30</roughness></metal></pbr>
-        </material></visual>
-      <visual name="sensor_body">
-        <pose>0 0 0.29 0 0 0</pose>
-        <geometry><box><size>0.0627 0.097 0.064</size></box></geometry>
-        <material><ambient>0.05 0.05 0.05 1</ambient><diffuse>0.05 0.05 0.05 1</diffuse></material>
+          <pbr><metal><metalness>0.85</metalness><roughness>0.32</roughness></metal></pbr>
+        </material>
+      </visual>
+      <visual name="arch_leg_r">
+        <pose>0 -0.235 0.49 0 0 0</pose>
+        <geometry><cylinder><radius>0.022</radius><length>0.50</length></cylinder></geometry>
+        <material><ambient>0.24 0.25 0.27 1</ambient><diffuse>0.38 0.40 0.43 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+          <pbr><metal><metalness>0.85</metalness><roughness>0.32</roughness></metal></pbr>
+        </material>
+      </visual>
+      <!-- 상단 크로스바 (축이 y — roll 90°) -->
+      <visual name="arch_top">
+        <pose>0 0 0.74 1.5708 0 0</pose>
+        <geometry><cylinder><radius>0.022</radius><length>0.47</length></cylinder></geometry>
+        <material><ambient>0.24 0.25 0.27 1</ambient><diffuse>0.38 0.40 0.43 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+          <pbr><metal><metalness>0.85</metalness><roughness>0.32</roughness></metal></pbr>
+        </material>
+      </visual>
+      <!-- 다리 밑동 플랜지 -->
+      <visual name="arch_foot_l">
+        <pose>0 0.235 0.238 0 0 0</pose>
+        <geometry><box><size>0.07 0.06 0.016</size></box></geometry>
+        <material><ambient>0.18 0.19 0.20 1</ambient><diffuse>0.28 0.29 0.31 1</diffuse></material>
+      </visual>
+      <visual name="arch_foot_r">
+        <pose>0 -0.235 0.238 0 0 0</pose>
+        <geometry><box><size>0.07 0.06 0.016</size></box></geometry>
+        <material><ambient>0.18 0.19 0.20 1</ambient><diffuse>0.28 0.29 0.31 1</diffuse></material>
+      </visual>
+      <!-- MID-360 라이저 (크로스바 윗면 0.762 → 센서 밑면 0.771) -->
+      <visual name="lidar_riser">
+        <pose>0 0 0.7665 0 0 0</pose>
+        <geometry><cylinder><radius>0.016</radius><length>0.020</length></cylinder></geometry>
+        <material><ambient>0.18 0.19 0.20 1</ambient><diffuse>0.28 0.29 0.31 1</diffuse></material>
+      </visual>
+      <!-- 분석 카메라 L/R 하우징 (아치 다리 측면) -->
+      <visual name="cam_housing_l">
+        <pose>0 0.275 0.62 0 0 0</pose>
+        <geometry><box><size>0.052 0.034 0.042</size></box></geometry>
+        <material><ambient>0.10 0.10 0.11 1</ambient><diffuse>0.16 0.16 0.18 1</diffuse></material>
+      </visual>
+      <visual name="cam_housing_r">
+        <pose>0 -0.275 0.62 0 0 0</pose>
+        <geometry><box><size>0.052 0.034 0.042</size></box></geometry>
+        <material><ambient>0.10 0.10 0.11 1</ambient><diffuse>0.16 0.16 0.18 1</diffuse></material>
+      </visual>
+      <!-- D455 노즈 브래킷 (아치 앞 0.055 m, 지상 0.25→0.545) -->
+      <visual name="d455_bracket_post">
+        <pose>0.055 0 0.40 0 0 0</pose>
+        <geometry><cylinder><radius>0.012</radius><length>0.30</length></cylinder></geometry>
+        <material><ambient>0.20 0.21 0.22 1</ambient><diffuse>0.32 0.33 0.35 1</diffuse></material>
+      </visual>
+      <visual name="d455_bracket_arm">
+        <pose>0.055 0 0.5455 0 0.2094 0</pose>
+        <geometry><box><size>0.05 0.07 0.012</size></box></geometry>
+        <material><ambient>0.20 0.21 0.22 1</ambient><diffuse>0.32 0.33 0.35 1</diffuse></material>
       </visual>
     </link>
-    <joint name="livox_mast_joint" type="fixed">
-      <parent>base_link</parent><child>livox_mast</child>
+    <joint name="sensor_arch_joint" type="fixed">
+      <parent>base_link</parent><child>sensor_arch</child>
     </joint>
 
-    <!-- MID-70 광학 원점: base_link 기준 (0.275, 0, 0.645). 마스트 링크 기준 z=0.29 -->
+    <!-- ═══════════════ 적재 데크 (아치 뒤) + 앰버 경광등 ═══════════════ -->
+    <link name="cargo_deck">
+      <pose>-0.06 0 0 0 0 0</pose>
+      <inertial><mass>0.8</mass>
+        <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz>
+                 <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+      <visual name="deck_plate">
+        <pose>0 0 0.305 0 0 0</pose>
+        <geometry><box><size>0.40 0.44 0.018</size></box></geometry>
+        <material><ambient>0.46 0.47 0.49 1</ambient><diffuse>0.66 0.67 0.69 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+          <pbr><metal><metalness>0.7</metalness><roughness>0.45</roughness></metal></pbr>
+        </material>
+      </visual>
+      <visual name="deck_rail_rear">
+        <pose>-0.19 0 0.339 0 0 0</pose>
+        <geometry><box><size>0.018 0.44 0.050</size></box></geometry>
+        <material><ambient>0.40 0.41 0.43 1</ambient><diffuse>0.58 0.59 0.61 1</diffuse></material>
+      </visual>
+      <visual name="deck_post_fl">
+        <pose>0.17 0.19 0.272 0 0 0</pose>
+        <geometry><cylinder><radius>0.012</radius><length>0.06</length></cylinder></geometry>
+        <material><ambient>0.20 0.21 0.22 1</ambient><diffuse>0.32 0.33 0.35 1</diffuse></material>
+      </visual>
+      <visual name="deck_post_fr">
+        <pose>0.17 -0.19 0.272 0 0 0</pose>
+        <geometry><cylinder><radius>0.012</radius><length>0.06</length></cylinder></geometry>
+        <material><ambient>0.20 0.21 0.22 1</ambient><diffuse>0.32 0.33 0.35 1</diffuse></material>
+      </visual>
+      <visual name="deck_post_rl">
+        <pose>-0.17 0.19 0.272 0 0 0</pose>
+        <geometry><cylinder><radius>0.012</radius><length>0.06</length></cylinder></geometry>
+        <material><ambient>0.20 0.21 0.22 1</ambient><diffuse>0.32 0.33 0.35 1</diffuse></material>
+      </visual>
+      <visual name="deck_post_rr">
+        <pose>-0.17 -0.19 0.272 0 0 0</pose>
+        <geometry><cylinder><radius>0.012</radius><length>0.06</length></cylinder></geometry>
+        <material><ambient>0.20 0.21 0.22 1</ambient><diffuse>0.32 0.33 0.35 1</diffuse></material>
+      </visual>
+      <!-- 앰버 경광등 — 데크 좌후방. 라이다 하한 원뿔(그 자리에서 0.737) 아래다 -->
+      <visual name="beacon_stalk">
+        <pose>-0.15 0.16 0.349 0 0 0</pose>
+        <geometry><cylinder><radius>0.010</radius><length>0.070</length></cylinder></geometry>
+        <material><ambient>0.15 0.15 0.16 1</ambient><diffuse>0.24 0.24 0.26 1</diffuse></material>
+      </visual>
+      <visual name="beacon_dome">
+        <pose>-0.15 0.16 0.412 0 0 0</pose>
+        <geometry><cylinder><radius>0.032</radius><length>0.056</length></cylinder></geometry>
+        <material><ambient>0.55 0.30 0.02 1</ambient><diffuse>1.00 0.62 0.05 1</diffuse>
+          <specular>0.8 0.6 0.3 1</specular><emissive>0.45 0.22 0.01 1</emissive></material>
+      </visual>
+      <visual name="beacon_cap">
+        <pose>-0.15 0.16 0.444 0 0 0</pose>
+        <geometry><cylinder><radius>0.030</radius><length>0.010</length></cylinder></geometry>
+        <material><ambient>0.15 0.15 0.16 1</ambient><diffuse>0.24 0.24 0.26 1</diffuse></material>
+      </visual>
+    </link>
+    <joint name="cargo_deck_joint" type="fixed">
+      <parent>base_link</parent><child>cargo_deck</child>
+    </joint>
+
+    <!-- ═══════════════ D455 (시각 + 프레임만 — 센서 플러그인은 스펙 ⑤) ═══════════════ -->
+    <!-- 지상 0.55 m, 하향 12°(pitch +0.2094 rad — gz 에서 양의 pitch 가 하향이다). -->
+    <link name="d455_link">
+      <pose>0.330 0 0.550 0 0.2094 0</pose>
+      <inertial><mass>0.1</mass>
+        <inertia><ixx>1e-4</ixx><iyy>1e-4</iyy><izz>1e-4</izz>
+                 <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+      <visual name="d455_body">
+        <geometry><box><size>0.026 0.124 0.029</size></box></geometry>
+        <material><ambient>0.10 0.11 0.12 1</ambient><diffuse>0.17 0.18 0.20 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular></material>
+      </visual>
+      <visual name="d455_lens_l">
+        <pose>0.014 0.045 0 0 1.5708 0</pose>
+        <geometry><cylinder><radius>0.0075</radius><length>0.006</length></cylinder></geometry>
+        <material><ambient>0.02 0.03 0.06 1</ambient><diffuse>0.05 0.07 0.14 1</diffuse>
+          <specular>0.9 0.9 0.9 1</specular></material>
+      </visual>
+      <visual name="d455_lens_c">
+        <pose>0.014 0 0 0 1.5708 0</pose>
+        <geometry><cylinder><radius>0.0060</radius><length>0.006</length></cylinder></geometry>
+        <material><ambient>0.06 0.05 0.02 1</ambient><diffuse>0.14 0.11 0.04 1</diffuse>
+          <specular>0.9 0.9 0.9 1</specular></material>
+      </visual>
+      <visual name="d455_lens_r">
+        <pose>0.014 -0.045 0 0 1.5708 0</pose>
+        <geometry><cylinder><radius>0.0075</radius><length>0.006</length></cylinder></geometry>
+        <material><ambient>0.02 0.03 0.06 1</ambient><diffuse>0.05 0.07 0.14 1</diffuse>
+          <specular>0.9 0.9 0.9 1</specular></material>
+      </visual>
+    </link>
+    <joint name="d455_joint" type="fixed">
+      <parent>base_link</parent><child>d455_link</child>
+    </joint>
+
+    <!-- MID-360 광학 원점: base_link 기준 (0.275, 0, 0.80) — 아치 상단 중앙 -->
     <link name="livox_frame">
-      <pose>0.275 0 0.645 0 0 0</pose>
+      <pose>0.275 0 0.800 0 0 0</pose>
+      <visual name="mid360_body">
+        <geometry><cylinder><radius>0.0325</radius><length>0.058</length></cylinder></geometry>
+        <material><ambient>0.06 0.06 0.07 1</ambient><diffuse>0.11 0.11 0.13 1</diffuse></material>
+      </visual>
+      <visual name="mid360_window">
+        <pose>0 0 0.012 0 0 0</pose>
+        <geometry><cylinder><radius>0.0330</radius><length>0.020</length></cylinder></geometry>
+        <material><ambient>0.02 0.02 0.03 1</ambient><diffuse>0.04 0.04 0.06 1</diffuse>
+          <specular>0.7 0.7 0.7 1</specular></material>
+      </visual>
       <inertial><mass>0.01</mass>
         <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
@@ -317,15 +504,22 @@
       <parent>base_link</parent><child>navsat_link</child>
     </joint>
 
-    <!-- ═══════════════ 수관 촬영 카메라 좌/우 (설계서 §5.4 #5·#6) ═══════════════ -->
+    <!-- ═══════════════ 수관 촬영(분석) 카메라 좌/우 — 아치 다리 측면 (스펙 ④ §3) ═══════════════ -->
+    <!-- 종전 (0.05, ±0.26, 1.20) 는 마스트보다 높은 허공에 떠 있던 자리다.
+         상부가 아치로 바뀌면서 실제 마운트 면(다리 측면, 지상 0.62 m)으로 내려왔고,
+         낮아진 만큼 수관을 담으려 상향각을 12°→20°(pitch -0.35 rad) 로 키웠다. -->
     <link name="cam_canopy_left">
-      <pose>0.05 0.26 1.20 0 -0.209 1.5708</pose>
+      <pose>0.275 0.285 0.62 0 -0.35 1.5708</pose>
       <inertial><mass>0.05</mass>
         <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="cam_canopy_left" type="camera">
         <update_rate>10</update_rate>
-        <always_on>1</always_on>
+        <always_on>0</always_on>
+        <!-- always_on=0: 구독자가 없으면 렌더링하지 않는다. 실사 월드는 장면이
+             6배라 렌더 스레드가 병목이고, 1920x1080 카메라 4대(2로봇)가 10 Hz 로
+             무조건 도는 동안 gpu_lidar 가 10 Hz 를 못 채웠다(2026-08-15 실측).
+             cameras:=true 로 브리지가 붙으면 그대로 다시 돈다 — 계약 불변. -->
         <camera>
           <horizontal_fov>1.047</horizontal_fov>
           <image><width>1920</width><height>1080</height><format>R8G8B8</format></image>
@@ -338,13 +532,17 @@
     </joint>
 
     <link name="cam_canopy_right">
-      <pose>0.05 -0.26 1.20 0 -0.209 -1.5708</pose>
+      <pose>0.275 -0.285 0.62 0 -0.35 -1.5708</pose>
       <inertial><mass>0.05</mass>
         <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="cam_canopy_right" type="camera">
         <update_rate>10</update_rate>
-        <always_on>1</always_on>
+        <always_on>0</always_on>
+        <!-- always_on=0: 구독자가 없으면 렌더링하지 않는다. 실사 월드는 장면이
+             6배라 렌더 스레드가 병목이고, 1920x1080 카메라 4대(2로봇)가 10 Hz 로
+             무조건 도는 동안 gpu_lidar 가 10 Hz 를 못 채웠다(2026-08-15 실측).
+             cameras:=true 로 브리지가 붙으면 그대로 다시 돈다 — 계약 불변. -->
         <camera>
           <horizontal_fov>1.047</horizontal_fov>
           <image><width>1920</width><height>1080</height><format>R8G8B8</format></image>
@@ -364,7 +562,11 @@
                  <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
       <sensor name="cam_forward" type="rgbd_camera">
         <update_rate>10</update_rate>
-        <always_on>1</always_on>
+        <always_on>0</always_on>
+        <!-- always_on=0: 구독자가 없으면 렌더링하지 않는다. 실사 월드는 장면이
+             6배라 렌더 스레드가 병목이고, 1920x1080 카메라 4대(2로봇)가 10 Hz 로
+             무조건 도는 동안 gpu_lidar 가 10 Hz 를 못 채웠다(2026-08-15 실측).
+             cameras:=true 로 브리지가 붙으면 그대로 다시 돈다 — 계약 불변. -->
         <camera>
           <horizontal_fov>1.204</horizontal_fov>
           <image><width>640</width><height>480</height></image>

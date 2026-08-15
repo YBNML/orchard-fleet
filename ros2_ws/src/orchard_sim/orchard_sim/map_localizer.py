@@ -495,7 +495,10 @@ class MapLocalizer(Node):
         # 상한 없이는 수관이 '벽 3~6 m'로 읽혀 앵커가 est 를 13 m 끌었다
         # (실측 775~790초 순간이동, 08-03). 벽 면 대역(지상 0.3~1.5 m)만 본다.
         cone = (ang < math.radians(8.0)) & (r > 2.0) \
-            & (pts[:, 2] > -0.35) & (pts[:, 2] < 0.9)   # r>2: 자기 기체 반사 제외(MID-360)
+            & (pts[:, 2] > -0.50) & (pts[:, 2] < 0.75)  # r>2: 자기 기체 반사 제외(MID-360)
+        # z 대역은 센서 기준이다 — 뜻은 "지상 0.3~1.5 m 의 벽 면". 2026-08-15
+        # 상부 하이브리드로 라이다가 0.645→0.80 m 로 올라가 (−0.35,0.9) 에서
+        # 재도출했다(스펙 ④ §3). 옮기지 않으면 대역이 통째로 위로 밀린다.
         if cone.sum() < 40:
             self._try_rear_anchor(pts, est, hx, hy, r, ang)
             return
@@ -586,7 +589,7 @@ class MapLocalizer(Node):
         if abs(hy) < 0.95:
             return
         rear = (ang > math.radians(172.0)) & (r > 2.0) \
-            & (pts[:, 2] > -0.35) & (pts[:, 2] < 0.9)
+            & (pts[:, 2] > -0.50) & (pts[:, 2] < 0.75)   # 라이다 0.80 m 기준 재도출
         if rear.sum() < 40:
             return
         measured = float(np.percentile(r[rear], 10))
