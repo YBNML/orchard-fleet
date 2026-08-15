@@ -51,6 +51,10 @@ ARGS = [
     DeclareLaunchArgument("clock", default_value="true",
                           description="/clock 브리지. gz 인스턴스당 하나면 충분하다 — "
                                       "두 번째 로봇 스택은 false"),
+    DeclareLaunchArgument("gt_localizer", default_value="true",
+                          description="참값 로컬라이저. map→<ns>/odom 을 내는 노드는 "
+                                      "하나뿐이어야 하므로, map_localizer 를 쓸 때는 "
+                                      "false (control.launch.py slam:=maplocalizer)"),
 ]
 
 
@@ -119,9 +123,10 @@ def _setup(context, *_a, **_k):
                       parameters=[dict(common, robot_id=robot,
                                        model_sdf=cfg("model_sdf"))]))
 
-    nodes.append(Node(package="orchard_sim", executable="gt_localizer",
-                      name="gt_localizer", namespace=ns, output="screen",
-                      parameters=[dict(common, robot_id=robot)]))
+    if flag("gt_localizer"):
+        nodes.append(Node(package="orchard_sim", executable="gt_localizer",
+                          name="gt_localizer", namespace=ns, output="screen",
+                          parameters=[dict(common, robot_id=robot)]))
 
     nodes.append(Node(package="orchard_sim", executable="livox_sim_bridge",
                       name="livox_sim_bridge", namespace=ns, output="screen",

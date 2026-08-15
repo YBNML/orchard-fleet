@@ -50,6 +50,22 @@ from launch_ros.parameter_descriptions import ParameterValue
 REAL_WORLD_NAME = "orchard_real"
 TERRACED_WORLD_NAME = "orchard_10x41"
 DEFAULT_FARM = "maps/orchard_real/farm.json"
+DEFAULT_BUNDLE = {"real": "maps/orchard_real", "terraced": "maps/orchard_v1"}
+
+# 측위 상실 격상(자동 정지) 문턱 [초, **벽시계**] — world 별 기본값.
+#
+# 계단식 150 은 그 월드에서 실측한 값이다(정상 횡단 최대 ~120초).
+# **실사 월드는 420 이다.** 근거 둘:
+#   ① 이 월드에는 겉보기 벽이 하나도 없다(47 캘리브레이션 52/52 미검출).
+#      `map_localizer._tick` 의 격상 조건은 `(now-last_ok) > T AND
+#      (now-last_anchor) > T` 인데, 앵커가 영원히 안 잡히면 last_anchor_t 는
+#      기동 시각에 멈춘 채 영구 노화한다 — AND 가 사실상 last_ok 단독으로
+#      환원되고, 그 순간 이 문턱이 **유일한 방어선**이 된다.
+#   ② 문턱은 벽시계인데 판단 대상은 시뮬 사건이다. 실사 월드 RTF 실측 0.37
+#      에서 150초 벽시계는 시뮬 55초뿐이라, 열 끝 밖 구조점 사막(통로 종단 →
+#      횡단선 → 다음 통로 진입, 약 19 m)을 못 버틴다. 420초는 시뮬 약 155초로
+#      원 설계 의도(">120초")를 복원한 값이다.
+LOST_CRITICAL_S = {"real": "420.0", "terraced": "150.0"}
 
 
 def _farm_geom(farm_path):
@@ -126,7 +142,19 @@ def generate_launch_description():
         DeclareLaunchArgument("clock", default_value="true",
                               description="/clock 브리지. 2호기부터는 false"),
         DeclareLaunchArgument("slam", default_value="groundtruth",
-                              description="groundtruth | fastlio"),
+                              description="groundtruth | fastlio | maplocalizer. "
+                                          "maplocalizer 는 참값 로컬라이저 대신 "
+                                          "사전 맵 번들 위에서 위치를 잡는다"),
+        DeclareLaunchArgument("bundle", default_value="",
+                              description="slam:=maplocalizer 의 맵 번들. 비우면 "
+                                          "world 에서 정한다(real → maps/orchard_real)"),
+        DeclareLaunchArgument("init_x", default_value="0.0"),
+        DeclareLaunchArgument("init_y", default_value="0.0"),
+        DeclareLaunchArgument("init_yaw", default_value="0.0"),
+        DeclareLaunchArgument(
+            "lost_critical_s", default_value="",
+            description="측위 상실 격상(자동 정지) 문턱 [s, 벽시계]. 비우면 "
+                        "world 에서 정한다 — terraced 150 / real 420"),
         DeclareLaunchArgument("speed", default_value="0.7"),
         DeclareLaunchArgument("cameras", default_value="false"),
         # 보안 — 비우면 개방 모드로 뜨고 기동 로그에 경고가 남는다.
@@ -183,6 +211,12 @@ def _launch_setup(context, *a, **kw):
     # 구독/발행해 서로 어긋난다. 에러도 경고도 없이 그냥 데이터가 안
     # 온다(무증상 무데이터) — 다중 로봇으로 늘릴 때 가장 조용히 새는 지점.
     ns = cfg("ns") or cfg("robot_id")
+    slam = cfg("slam")
+    if slam not in ("groundtruth", "fastlio", "maplocalizer"):
+        raise RuntimeError(
+            f"slam 은 groundtruth | fastlio | maplocalizer 여야 합니다: {slam!r}")
+    # map→<ns>/odom 을 내는 노드는 하나뿐이어야 한다 — map_localizer 를 쓰면
+    # stage0 의 참값 로컬라이저를 끈다(둘이 같이 돌면 TF 가 번갈아 덮인다).
     nodes = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -192,15 +226,37 @@ def _launch_setup(context, *a, **kw):
                               "robot_id": robot_id,
                               "ns": ns,
                               "clock": LaunchConfiguration("clock"),
+                              "gt_localizer": ("false" if slam == "maplocalizer"
+                                               else "true"),
                               "cameras": LaunchConfiguration("cameras")}.items()),
     ]
     # FAST-LIO2 는 토픽을 절대 이름(/Odometry 등)으로 발행한다 — 네임스페이스를
     # 씌워도 갈라지지 않는다. 다중 로봇 SLAM 은 별건이라 여기서는 손대지 않고,
     # 참값 경로(slam:=groundtruth)만 다중화 대상이다.
-    if cfg("slam") == "fastlio":
+    if slam == "fastlio":
         nodes.append(Node(package="fast_lio", executable="fastlio_mapping",
                           name="fastlio_mapping", namespace=ns, output="screen",
                           parameters=[fastlio_cfg, {"use_sim_time": ust}]))
+    if slam == "maplocalizer":
+        # 게이트 재현 경로 — 번들·격상 문턱의 기본값이 여기 있어야 저장소만으로
+        # 같은 조건을 다시 세울 수 있다(문턱 산정 근거는 LOST_CRITICAL_S 주석).
+        bundle = cfg("bundle") or DEFAULT_BUNDLE[world]
+        if not os.path.exists(bundle):
+            raise RuntimeError(
+                f"slam:=maplocalizer 인데 맵 번들이 없습니다: {bundle}\n"
+                f"    python3 scripts/37_build_map_bundle.py"
+                + (f" --farm {cfg('farm')} --terrain sim/models/orchard_terrain_real"
+                   f" --out {bundle}" if world == "real" else f" --out {bundle}"))
+        nodes.append(Node(
+            package="orchard_sim", executable="map_localizer",
+            name="map_localizer", namespace=ns, output="screen",
+            parameters=[{"use_sim_time": ust, "robot_id": robot_id,
+                         "bundle": bundle,
+                         "init_x": LaunchConfiguration("init_x"),
+                         "init_y": LaunchConfiguration("init_y"),
+                         "init_yaw": LaunchConfiguration("init_yaw"),
+                         "lost_critical_s": float(
+                             cfg("lost_critical_s") or LOST_CRITICAL_S[world])}]))
 
     nodes.append(
         Node(package="orchard_sim", executable="control_agent",
