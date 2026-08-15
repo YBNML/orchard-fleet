@@ -96,8 +96,10 @@ Registry·CommandRouter)을 조립하고, ROS 콜백에서 그 부품들을 호�
 ### 현장 기하 `site_geom` — 통로 좌표의 단일 출처 (개정 v2, additive)
 
 호스트가 `bb.extra["site_geom"]` 에 얹고, `hello` 의 최상위 기하와
-`site.geometry` 가 **같은 객체**를 가리킨다. `relocalize {alley,end}` 의 좌표
-환산(`features/maintenance.py::_grid_pose`)이 이 표만 본다.
+`site.geometry` 가 **같은 객체**를 가리킨다. 이 표를 읽는 곳은 둘이고 해석
+코드는 한 벌이다(`sdk/sitegeom.py`): `relocalize {alley,end}` 의 좌표 환산
+(`features/maintenance.py::_grid_pose`)과 임무 웨이포인트 생성
+(`profiles/orchard/mission.py::build_waypoints`).
 
 | 키 | 필수 | 뜻 |
 |---|---|---|
@@ -107,10 +109,17 @@ Registry·CommandRouter)을 조립하고, ROS 콜백에서 그 부품들을 호�
 | `col_len` | ✔ | 대표 열 길이 m (균일 격자 폴백: 블록이 ±col_len/2) |
 | `headland` | ✔ | 선회 구간 폭 m |
 | **`alley_centers_x`** | ✱ | **신규(선택)** 통로별 중심 x 배열, 길이 = `alleys`. 있으면 `x0`+균일 간격 대신 이걸 쓴다 |
-| **`row_span_y`** | ✱ | **신규(선택)** `[y_남단, y_북단]`(전 통로 공통) 또는 `[[y_남단, y_북단], …]`(통로별, 길이 = `alleys`). **원소 순서가 곧 남단/북단의 정의다** — 0번이 south, 1번이 north |
+| **`row_span_y`** | ✱ | **신규(선택)** `[y_남단, y_북단]`(전 통로 공통) 또는 `[[y_남단, y_북단], …]`(통로별, 길이 = `alleys`). **원소 순서가 곧 남단/북단의 정의다** — 0번이 south, 1번이 north. 값은 통로의 **안쪽 끝**(이웃 두 열 중 짧은 쪽) |
+| **`alley_cross_y`** | ✱ | **신규(선택, v2.1)** `row_span_y` 와 같은 두 형태. 통로를 **드나드는 횡단선** y. 없으면 `±(col_len/2 + headland·0.6667)` 폴백 |
 
-- **하위 호환**: 두 신규 키가 없으면 종전 균일 격자 계산 그대로다(계단식
-  월드 경로 불변). 있으면 우선한다.
+- **하위 호환**: 세 신규 키가 없으면 종전 균일 격자 계산 그대로다(계단식
+  월드 경로 불변 — 웨이포인트가 한 점도 안 바뀐다는 단위시험 있음). 있으면 우선한다.
+- **`alley_cross_y` 가 `row_span_y` 로 대체되지 않는 이유**: `row_span_y` 는
+  통로의 **안쪽 끝**이라 정지·재정위에는 맞지만, 통로 **사이를 가로지르는**
+  선은 그 사이 열을 넘어가야 한다. 그 열의 끝 나무는 안쪽 끝보다 최대 2.7 m
+  바깥에 있고(실사 농장 실측), 그 정보는 `row_span_y` 안에 없다 — 양쪽 통로
+  모두에서 '바깥'이라 max/min 어느 쪽으로도 안 나온다. 안쪽 기준으로 횡단선을
+  잡으면 열 끝 나무를 정면으로 들이받는다.
 - **왜 필요한가**: 균일 직사각 격자 전제(`x0 + (k+0.5)·row_spacing`, `±col_len/2`)는
   실사 정사영상 농장(스펙 ④)에서 깨진다 — 열 간격 4.75~5.25 m 불균일, 열별
   길이 128~141 m, y 비대칭 블록. 그 월드에서 균일 격자로 풀면 통로 25 재정위가
@@ -121,9 +130,11 @@ Registry·CommandRouter)을 조립하고, ROS 콜백에서 그 부품들을 호�
 - 정지선 `END_STANDOFF_M = 1.5 m` 는 그 단에서 **블록 바깥**으로 물러난 자리,
   요는 언제나 **블록 안쪽**을 본다.
 - 호스트 구현: `orchard_sim/control_agent.py` 가 런치 파라미터
-  (`alley_centers_x`·`alley_south_y`·`alley_north_y`)를 조립한다. 그 값은
-  `control.launch.py` 가 `world:=real` 일 때 `maps/orchard_real/farm.json` 에서
-  계산한다(통로 중심 = 인접 `row_origins` x 중점, y 는 `axes_note` 규약).
+  (`alley_centers_x`·`alley_south_y`·`alley_north_y`·`alley_cross_south_y`·
+  `alley_cross_north_y`)를 조립한다. 그 값은 `control.launch.py` 가
+  `world:=real` 일 때 `maps/orchard_real/farm.json` 에서 계산한다(통로 중심 =
+  인접 `row_origins` x 중점, y 는 `axes_note` 규약, 횡단선 = 이웃 두 열
+  캐노피의 **바깥** 끝 ± `headland_m`).
 
 ### hello v2 (additive)
 

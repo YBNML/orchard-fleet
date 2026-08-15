@@ -103,12 +103,20 @@ def _farm_geom(farm_path):
         return float(x), float(y0) + hl, float(y0) + float(farm["row_lengths_m"][r]) - hl
 
     centers, south, north = [], [], []
+    cross_s, cross_n = [], []
     for k in range(n - 1):
         xa, ya0, ya1 = canopy(k)
         xb, yb0, yb1 = canopy(k + 1)
         centers.append((xa + xb) / 2.0)
         south.append(min(ya1, yb1))      # y 최대 쪽 = 지리적 남
         north.append(max(ya0, yb0))      # y 최소 쪽 = 지리적 북
+        # 횡단선은 **바깥 끝** 기준이다. 통로 사이를 가로지르려면 그 사이의
+        # 열을 넘어가야 하는데, 그 열의 끝 나무는 통로의 '안쪽 끝'(위 south/
+        # north, 짧은 쪽 규약)보다 최대 2.7 m 바깥에 있다 — 안쪽 기준으로
+        # 횡단선을 잡으면 열 끝 나무를 정면으로 들이받는다. 여유는 헤드랜드
+        # 한 폭(수관 끝 ~ 이미지 프레임 실측 거리)으로 준다.
+        cross_s.append(max(ya1, yb1) + hl)
+        cross_n.append(min(ya0, yb0) - hl)
     return {
         "rows": n,
         "row_spacing": float(farm["row_spacing_m"]),
@@ -118,6 +126,8 @@ def _farm_geom(farm_path):
         "alley_centers_x": centers,
         "alley_south_y": south,
         "alley_north_y": north,
+        "alley_cross_south_y": cross_s,
+        "alley_cross_north_y": cross_n,
     }
 
 

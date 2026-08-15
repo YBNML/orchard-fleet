@@ -183,7 +183,8 @@ class ControlAgent(Node):
         # 기본값을 그렇게 선언해 두면 런치가 실수 배열을 얹는 순간
         # InvalidParameterTypeException 으로 노드가 죽는다(2026-08-15 실측).
         _dyn = ParameterDescriptor(dynamic_typing=True)
-        for _k in ("alley_centers_x", "alley_south_y", "alley_north_y"):
+        for _k in ("alley_centers_x", "alley_south_y", "alley_north_y",
+                   "alley_cross_south_y", "alley_cross_north_y"):
             if not self.has_parameter(_k):
                 self.declare_parameter(_k, [], _dyn)
         # 주행
@@ -272,6 +273,19 @@ class ControlAgent(Node):
                     f"alley_south_y/alley_north_y 길이 ({len(_sy)}/{len(_ny)}) ≠ 통로 수 {_n}")
             # 순서가 곧 정의다 — 0번이 남단, 1번이 북단 (robomw _grid_pose 참조)
             self.bb.extra["site_geom"]["row_span_y"] = [[s, n_] for s, n_ in zip(_sy, _ny)]
+        # 횡단선 — 통로 사이를 **가로지를 때** 넘어가야 하는 열의 바깥 끝 기준.
+        # row_span_y(짧은 쪽 = 안쪽 끝)로는 표현할 수 없다: 그 사이 열의 끝
+        # 나무가 안쪽 끝보다 최대 2.7 m 바깥에 있어서, 안쪽 기준 횡단선은 그
+        # 나무를 정면으로 들이받는다(실사 농장 실측). robomw sitegeom 계약 참조.
+        _cs = [float(v) for v in (g("alley_cross_south_y", []) or [])]
+        _cn = [float(v) for v in (g("alley_cross_north_y", []) or [])]
+        if _cs or _cn:
+            if not (len(_cs) == len(_cn) == _n):
+                raise SystemExit(
+                    f"alley_cross_south_y/alley_cross_north_y 길이 "
+                    f"({len(_cs)}/{len(_cn)}) ≠ 통로 수 {_n}")
+            self.bb.extra["site_geom"]["alley_cross_y"] = [
+                [s, n_] for s, n_ in zip(_cs, _cn)]
 
         # ── 어댑터 (SDK 구현) ───────────────────────────────────────────────
         # 센서 해석과 /cmd_vel 발행은 기체마다 다르다. 코어(안전·라우팅·계약)를

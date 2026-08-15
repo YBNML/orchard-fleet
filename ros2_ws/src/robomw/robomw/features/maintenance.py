@@ -34,6 +34,7 @@ import time
 
 from robomw.core.base import Feature
 from robomw.link import protocol as P
+from robomw.sdk import sitegeom
 from robomw.sdk.types import Pose
 
 # 격자 재정위의 단 정지선 — 열 끝(±col_len/2)에서 헤드랜드 쪽으로 이만큼
@@ -190,42 +191,10 @@ class MaintenanceFeature(Feature):
         return (cx, y_end + out * END_STANDOFF_M,
                 -out * math.pi / 2.0), None
 
-    @staticmethod
-    def _alley_center_x(geom, k, n):
-        """통로 k 의 중심 x. alley_centers_x 우선, 없으면 균일 격자 폴백."""
-        cxs = geom.get("alley_centers_x")
-        if cxs is not None:
-            try:
-                cxs = [float(v) for v in cxs]
-            except (TypeError, ValueError):
-                return None, "alley_centers_x 형식 오류"
-            if len(cxs) != n:
-                return None, f"alley_centers_x 길이 불일치 ({len(cxs)} vs {n})"
-            return cxs[k], None
-        try:
-            return float(geom["x0"]) + (k + 0.5) * float(geom["row_spacing"]), None
-        except (KeyError, TypeError, ValueError):
-            return None, "현장 기하 형식 오류"
-
-    @staticmethod
-    def _alley_span_y(geom, k, n):
-        """통로 k 의 (y_남단, y_북단). row_span_y 우선, 없으면 ±col_len/2 폴백."""
-        span = geom.get("row_span_y")
-        if span is not None:
-            try:
-                if len(span) == 2 and not hasattr(span[0], "__len__"):
-                    return (float(span[0]), float(span[1])), None   # 전 통로 공통
-                if len(span) != n:
-                    return None, f"row_span_y 길이 불일치 ({len(span)} vs {n})"
-                pair = span[k]
-                return (float(pair[0]), float(pair[1])), None
-            except (TypeError, ValueError, IndexError):
-                return None, "row_span_y 형식 오류"
-        try:
-            half = float(geom["col_len"]) / 2.0
-        except (KeyError, TypeError, ValueError):
-            return None, "현장 기하 형식 오류"
-        return (-half, half), None      # 계단식 규약: 남단 = y 최솟값
+    # site_geom 해석은 robomw.sdk.sitegeom 이 유일한 출처다 — mission 도 같은
+    # 함수를 쓴다(한 벌만 둔다). 이름은 호출측 호환을 위해 남긴다.
+    _alley_center_x = staticmethod(sitegeom.alley_center_x)
+    _alley_span_y = staticmethod(sitegeom.alley_span_y)
 
     def _target_pose(self, payload):
         """payload → (x, y, yaw). 좌표 직접 지정이 우선, 없으면 격자 변환."""

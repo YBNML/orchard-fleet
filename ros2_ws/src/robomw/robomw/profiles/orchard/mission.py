@@ -23,6 +23,7 @@ import time
 
 from robomw.core.base import Feature, VelocityRequest
 from robomw.link import protocol as P
+from robomw.sdk import sitegeom
 
 
 class DriveMission(Feature):
@@ -72,16 +73,107 @@ class DriveMission(Feature):
         f = 0.6667
         return sign * (self.col_l / 2.0 + self.HL * f)
 
+    # ── 현장 기하 조회 (robomw.sdk.sitegeom — maintenance 와 같은 한 벌) ────
+    #
+    # **SDK 계약 개정 (additive, 2026-08-15 T4)**: 종전 `build_waypoints` 는
+    # 통로 중심을 `x0 + (k+0.5)·row_spacing`, 열 구간을 `±col_l/2` 로 **계산**
+    # 했다. 즉 균일 직사각 격자를 전제했다. 실사 정사영상 농장(스펙 ④)에서
+    # 그 전제는 깨진다 — 실측: 통로 0 의 참 중심은 x −64.417 인데 균일 격자는
+    # −62.379 를 준다(2.04 m 오차 = 통로 반폭 2.5 m 의 82%, 즉 웨이포인트가
+    # 옆 열의 나무 0.46 m 앞에 선다). 종방향은 더 나쁘다: 참 구간이
+    # y −89.1~+34.9 인데 격자는 ∓71.0 을 줘서 통로를 36 m 지나쳐 나간다.
+    #
+    # 그래서 통로 좌표를 **계산하지 말고 site_geom 에서 읽는다**(있으면).
+    # 없으면 종전 식 그대로 — 계단식 월드의 웨이포인트는 한 점도 안 바뀐다.
+    def _site(self):
+        """호스트가 얹은 현장 기하. 아예 없으면 빈 사전 — 그때만 자체 격자를 쓴다
+        (SDK 만 단독으로 돌리는 단위시험·미배선 호스트)."""
+        return self.ctx.bb.extra.get("site_geom") or {}
+
+    def _resolve(self, fn, geom, k, n):
+        """site_geom 조회. **형식 오류를 폴백으로 삼키지 않는다** — 조용히 균일
+        격자로 떨어지면 '통로 번호는 맞는데 자리가 아닌' 주행이 되고, 증상은
+        임무 한복판의 충돌로만 나타난다. 올려서 임무를 거부하게 둔다."""
+        val, err = fn(geom, k, n)
+        if err:
+            raise ValueError(err)
+        return val
+
+    def alley_x(self, k):
+        """통로 k 의 중심 x."""
+        geom = self._site()
+        if not geom:
+            return self.x0 + (k + 0.5) * self.S
+        return float(self._resolve(sitegeom.alley_center_x, geom, k,
+                                   int(geom.get("alleys", self.R - 1))))
+
+    def alley_span(self, k):
+        """통로 k 의 (y_남단, y_북단) — 열 구간의 **안쪽** 끝(배열 순서가 정의)."""
+        geom = self._site()
+        if not geom:
+            half = self.col_l / 2.0
+            return -half, half
+        return self._resolve(sitegeom.alley_span_y, geom, k,
+                             int(geom.get("alleys", self.R - 1)))
+
+    def alley_cross(self, k):
+        """통로 k **자신의** 횡단선 (남측, 북측) — 그 통로를 낀 두 열의 바깥 끝."""
+        geom = self._site()
+        if not geom:
+            return self.cross_y(-1.0), self.cross_y(1.0)
+        return self._resolve(sitegeom.alley_cross_y, geom, k,
+                             int(geom.get("alleys", self.R - 1)))
+
+    def alley_ends(self, k):
+        """통로 k 의 (남단 웨이포인트 y, 북단 웨이포인트 y).
+
+        웨이포인트는 열 구간에서 `headland·0.25` 만큼 **바깥으로** 물린 자리다
+        (종전 `y_lo`·`y_hi` 와 같은 뜻). 바깥 방향은 배열 순서에서 나온다 —
+        `row_span_y[0]`(남단)이 `[1]`(북단)보다 크면 +y 가 바깥이다. 크기 비교로
+        '남쪽'을 추론하지 않는다: 계단식은 남단이 y 최솟값, 실사 농장은 최댓값이다.
+        """
+        ys, yn = self.alley_span(k)
+        out = 1.0 if ys > yn else -1.0          # 남단이 바깥을 향하는 부호
+        return ys + out * self.HL * 0.25, yn - out * self.HL * 0.25
+
+    def cross_lines(self, a, b):
+        """통로 a → b 로 건널 때의 횡단선 (남측, 북측).
+
+        **한 통로의 값만 쓰면 안 된다.** `alley_cross_y[k]` 는 통로 k 를 낀 두
+        열(k·k+1)의 바깥 끝이므로, 인접 전이(사이 열 하나)는 그것으로 충분하지만
+        **비인접 전이는 사이 열 전부를 넘어야 한다.** 실사 농장 실측:
+        통로 0→3 북측은 통로 3 의 값(−96.30)으로 잡으면 넘어야 할 열 1 의 첫
+        나무(−97.50)보다 1.20 m **안쪽**이고, 19→21 북측은 열 20 의 첫 나무보다
+        5.03 m 안쪽이다 — 즉 정면 충돌한다. (통로 20·23 을 피해 짜는 임무가
+        정확히 이런 비인접 전이를 만든다.)
+
+        그래서 `range(min(a,b), max(a,b)+1)` 의 횡단선들을 **측별 바깥쪽
+        극값**으로 합성한다. 그 구간의 통로들이 사이 열 전부를 덮으므로 계약을
+        늘리지 않고 기존 키만으로 해결된다. 균일 격자(계단식)에서는 전 통로가
+        같은 값이라 합성이 항등이다.
+        """
+        ks = range(min(int(a), int(b)), max(int(a), int(b)) + 1)
+        pairs = [self.alley_cross(k) for k in ks]
+        ys, yn = self.alley_span(b)
+        out = 1.0 if ys > yn else -1.0
+        pick_s, pick_n = (max, min) if out > 0 else (min, max)
+        return pick_s(p[0] for p in pairs), pick_n(p[1] for p in pairs)
+
     def build_waypoints(self, alleys):
-        y_lo = -self.col_l / 2.0 - self.HL * 0.25
-        y_hi = self.col_l / 2.0 + self.HL * 0.25
         wps = []
         for i, k in enumerate(alleys):
-            cx = self.x0 + (k + 0.5) * self.S
-            up = (i % 2 == 0)
-            y_start, y_end = (y_lo, y_hi) if up else (y_hi, y_lo)
+            cx = self.alley_x(k)
+            y_s, y_n = self.alley_ends(k)
+            # 보스트로피돈 — 짝수 번째는 남단에서 출발해 북단으로 훑는다.
+            # 계단식 월드에서는 남단이 y 최솟값이라 이것이 종전의 `up` 과 같다.
+            south_first = (i % 2 == 0)
+            y_start, y_end = (y_s, y_n) if south_first else (y_n, y_s)
             if i > 0:
-                yc = self.cross_y(-1.0 if up else 1.0)
+                # 직전 통로를 마친 단 = 이번 통로를 시작할 단. 그 단의
+                # 횡단선까지 물러나서 x 로만 건넌다. 횡단선은 **전이 구간
+                # 전체**에서 합성한다(비인접 전이의 사이 열).
+                yc_s, yc_n = self.cross_lines(alleys[i - 1], k)
+                yc = yc_s if south_first else yc_n
                 wps.append(dict(x=None, y=yc, kind="exit", alley=k))
                 # 횡단은 x 만 가면 된다 — y 까지 고정하면 출구에서 조금만
                 # 밀려 있어도 둑 모서리로 대각 진입해 램프에서 낀다 (실측:
@@ -155,13 +247,22 @@ class DriveMission(Feature):
                 return self._reject(payload,
                                     "측위 미준비 — 로컬라이저가 아직 위치를 내지 못했다",
                                     "BUSY", "측위 미준비")
+            try:
+                wps = self.build_waypoints(alleys)
+            except ValueError as e:
+                # 현장 기하가 형식부터 틀렸다 — 균일 격자로 떨어뜨리지 않고
+                # 거부한다(무음 오정위 금지). 호스트 배선을 고쳐야 하는 일이다.
+                # 블랙보드를 건드리기 **전에** 거부한다 — 거부된 임무가 work 를
+                # 남기면 다음 임무가 그 잔재를 물려받는다.
+                return self._reject(payload, f"현장 기하 오류 — {e}",
+                                    "BAD_PARAM", str(e))
             speed_scale = 1.0
             if work is not None:
                 self.ctx.bb.extra["work"] = work
                 speed_scale = float((work.get("params") or {}).get("speed_scale", 1.0))
             self._speed_scale = speed_scale
             self.mission = dict(alleys=alleys, mode=payload.get("mode", "mapping"),
-                                wps=self.build_waypoints(alleys), idx=0,
+                                wps=wps, idx=0,
                                 started=time.time(),
                                 # 완료 보고를 이 명령의 결과로 돌려주기 위한 상관 키
                                 cmd_id=payload.get("cmd_id"))
