@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent   # server/fleet_server/.. → 저장소 루트
+
 
 @dataclass
 class Settings:
@@ -19,6 +21,8 @@ class Settings:
     offline_after_s: float = 15.0         # 스펙 §3.1 — 오프라인 표시 15초
     event_ttl_days: int = 7               # Task 6 — 이벤트 보존정책(TTL 7일)
     event_ttl_safe_days: int = 90         # T6 리뷰 I2 — 안전·수명주기 kind 는 더 길게(기본 90일)
+    farm_manifest_path: Path = _REPO_ROOT / "maps/orchard_real/farm.json"   # Task 5
+    imagery_dir: Path = _REPO_ROOT / "sim/assets/imagery"                   # Task 5 — ortho 원본 위치
 
 
 def load_settings() -> Settings:
@@ -36,4 +40,8 @@ def load_settings() -> Settings:
     s.event_ttl_days = int(os.environ.get("FLEET_EVENT_TTL_DAYS", s.event_ttl_days))
     s.event_ttl_safe_days = int(os.environ.get("FLEET_EVENT_TTL_SAFE_DAYS",
                                                s.event_ttl_safe_days))
+    if os.environ.get("FLEET_FARM_MANIFEST"):
+        s.farm_manifest_path = Path(os.environ["FLEET_FARM_MANIFEST"])
+    if os.environ.get("FLEET_IMAGERY_DIR"):
+        s.imagery_dir = Path(os.environ["FLEET_IMAGERY_DIR"])
     return s

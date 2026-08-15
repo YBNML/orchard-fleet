@@ -35,7 +35,7 @@ def create_bt(body: BTBody, request: Request, db=Depends(get_db),
     """프리셋 → 인스턴스 N개. 프리셋이 고른 로봇마다 농장 권한을 확인한다
     (인가는 생성 시점에 한 번 — 이후 틱은 그 인스턴스의 발주자 권한으로 돈다)."""
     try:
-        plans = presets.build(body.preset, body.params)
+        plans = presets.build(body.preset, body.params, farm=request.app.state.farm)
     except presets.PresetError as e:
         audit.record(db, action="bt_create", result="rejected", user_id=user.id,
                      role=user.role, target=body.preset, detail=str(e))

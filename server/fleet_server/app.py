@@ -9,6 +9,7 @@ from . import auth
 from .config import Settings, load_settings
 from .db import Base, make_engine, make_session_factory
 from .event_retention import RetentionTask
+from .farm import load_farm
 from .fleet.port import InMemoryFleetPort
 from .fleet.service import FleetService
 from .migrations import ensure_events_epoch_column
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.farm = load_farm(settings)         # Task 5 — 없으면 None(대시보드 폴백)
     app.state.fleet = fleet if fleet is not None else InMemoryFleetPort(settings.offline_after_s)
     app.state.fleet_service = FleetService(session_factory)
     if fleet is not None:
@@ -80,11 +82,13 @@ def create_app(settings: Settings | None = None, engine=None, fleet=None) -> Fas
     app.include_router(auth_routes.router, prefix="/api/v1")
     app.include_router(admin_routes.router, prefix="/api/v1")
 
-    from .api import bt_routes, history_routes, mission_routes, ops_routes
+    from .api import bt_routes, farm_routes, history_routes, mission_routes, ops_routes
     app.include_router(mission_routes.router, prefix="/api/v1")
     app.include_router(history_routes.router, prefix="/api/v1")
     app.include_router(ops_routes.router, prefix="/api/v1")
     app.include_router(bt_routes.router, prefix="/api/v1")
+    app.include_router(farm_routes.router, prefix="/api/v1")
+    app.include_router(farm_routes.assets_router)   # 정적 이미지 — /assets/... (프리픽스 없음)
 
     from . import ws as ws_module
     app.include_router(ws_module.router)

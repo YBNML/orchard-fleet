@@ -22,9 +22,16 @@ def db():
 
 
 def _test_settings(**kw) -> Settings:
+    from pathlib import Path
     base = dict(db_url="sqlite://", session_secret="테스트비밀",
                 login_delay_s=0.0, admin_login="admin", admin_password="admpw",
-                allowed_origins=["http://testserver"])
+                allowed_origins=["http://testserver"],
+                # farm 은 기본적으로 없는 것으로 둔다(Task 5) — 저장소의 실제
+                # maps/orchard_real/farm.json 을 조용히 끌어와 무관한 테스트가
+                # 그 내용(rows·terrain 등)에 우연히 결합되는 일을 막는다.
+                # farm 이 필요한 테스트는 test_farm_routes.py 에서 명시적으로
+                # farm_manifest_path 를 넘긴다.
+                farm_manifest_path=Path("__no_such_farm_manifest__.json"))
     base.update(kw)
     return Settings(**base)
 
