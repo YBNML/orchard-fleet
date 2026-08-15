@@ -232,6 +232,56 @@ def test_grid_pose_rejects_wrong_length_arrays():
     assert "alley_centers_x" in last["data"]["reason"]
 
 
+def test_grid_pose_rejects_wrong_length_row_span():
+    """row_span_y 길이가 통로 수와 다르면 거부한다 — 조용히 폴백하면 엉뚱한
+    y 로 재정위되고 증상이 '통로는 맞는데 끝이 아니다'뿐이라 눈에 안 띈다."""
+    loc = FakeLocalizer()
+    geom = dict(GEOM_V2, row_span_y=[[34.920, -89.078], [37.575, -97.948],
+                                     [39.198, -97.025], [40.0, -98.0]])   # 3 이어야 함
+    f, ctx = mk_feature(loc=loc, geom=geom)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v10", "alley": 1, "end": "south"})
+    assert loc.calls == []
+    last = ctx.results[-1]
+    assert last["status"] == "rejected" and last["code"] == "BAD_PARAM"
+    assert "row_span_y" in last["data"]["reason"]
+
+
+def test_grid_pose_two_alleys_with_per_alley_span():
+    """통로가 **2개**일 때 — '공통 한 쌍'과 '통로별 목록'의 길이가 둘 다 2 라
+    휴리스틱이 유일하게 모호해지는 경우다.
+
+    판별은 길이가 아니라 **첫 원소가 배열인가**로 한다. 여기서는 배열이므로
+    통로별로 읽혀야 한다: 통로 0 과 1 의 남단이 서로 달라야 통과한다.
+    """
+    loc = FakeLocalizer()
+    geom = dict(rows=3, alleys=2, row_spacing=5.0, x0=-5.0,
+                col_len=100.0, headland=2.0,
+                alley_centers_x=[-2.5, 2.5],
+                row_span_y=[[40.0, -60.0], [45.0, -55.0]])
+    f, _ = mk_feature(loc=loc, geom=geom)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v11", "alley": 0, "end": "south"})
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v12", "alley": 1, "end": "south"})
+    assert (round(loc.calls[0].x, 4), round(loc.calls[0].y, 4)) == (-2.5, 41.5)
+    assert (round(loc.calls[1].x, 4), round(loc.calls[1].y, 4)) == (2.5, 46.5)
+
+
+def test_grid_pose_mixed_centers_only():
+    """alley_centers_x 만 있고 row_span_y 가 없으면 — x 는 배열, y 는 균일 폴백.
+
+    두 키는 서로 독립이다. 한쪽만 준 호스트를 통째로 폴백시키면 애써 준 값이
+    조용히 버려진다.
+    """
+    loc = FakeLocalizer()
+    geom = dict(GEOM, alley_centers_x=[-14.0, -9.5, -6.0, -3.0, 0.5,
+                                       4.0, 7.5, 11.0, 14.5])
+    f, _ = mk_feature(loc=loc, geom=geom)
+    f.on_command(P.CMD_RELOCALIZE, {"cmd_id": "v13", "alley": 3, "end": "south"})
+    p = loc.calls[0]
+    assert round(p.x, 6) == -3.0            # 배열에서 (균일 격자였다면 -3.5)
+    assert round(p.y, 6) == -31.5           # col_len/2 폴백 그대로
+    assert math.isclose(p.yaw, math.pi / 2)
+
+
 def test_grid_pose_alley_range_from_alleys_key():
     """통로 번호 범위는 alleys 가 정한다 — 배열이 있어도 동일."""
     loc = FakeLocalizer()

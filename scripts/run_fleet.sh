@@ -55,9 +55,32 @@ for i in $(seq 1 180); do
 done
 [[ -z "${READY:-}" ]] && { echo "!! 월드 미기동"; tail -25 "$LOG/gz_${WORLD_KIND}.log"; exit 1; }
 
+# ── 계단식 월드 전용 스폰 보정 ──────────────────────────────────────────────
+# 계단식 월드의 월드 스폰 지점 (-14, -33) 은 **헤드랜드 램프 위**다. 거기서는
+# 횡경사 11.8% 때문에 직진만 해도 옆으로 흘러 밭 밖으로 나가고 결국 전복한다
+# (2026-07-26 실측, scripts/15_drive_probe.py). 통로 안 평탄 테라스(-14, -28)로
+# 옮기면 횡경사 0% 다. run_control.sh 가 1대에 대해 하던 것과 **같은 보정**이다.
+#
+# scout02 (14, -33) 은 보정하지 않는다 — 그 자리는 선회 평지 패드 7S
+# (x 8.9~15.6, |y|≥32.5 평탄, gen_heightmap --turn-pads)의 한복판이라 이미
+# 평지다. 실사(평탄) 월드는 램프 자체가 없고 스폰 좌표를 gen_world 가
+# farm.json 에서 계산해 박아 두므로 전 로봇 보정 불요.
+fix_spawn() {   # $1=로봇 이름
+  local rid=$1 req=""
+  case "$WORLD_KIND:$rid" in
+    terraced:scout01) req='position: {x: -14.0, y: -28.0, z: 0.80}, orientation: {x: 0, y: 0, z: 0.7071068, w: 0.7071068}' ;;
+    *) return 0 ;;
+  esac
+  gz service -s "/world/$WORLD_NAME/set_pose" --reqtype gz.msgs.Pose \
+    --reptype gz.msgs.Boolean --timeout 3000 \
+    --req "name: \"$rid\", $req" >/dev/null && echo "      $rid 스폰 보정 (램프 밖 평탄 테라스로)"
+  sleep 2
+}
+
 echo "[2/2] 로봇 스택 ${N}대"
 for i in $(seq 1 "$N"); do
   RID=$(printf "scout%02d" "$i")
+  fix_spawn "$RID"
   PORT=$((8079 + i))
   CLK=$([[ $i -eq 1 ]] && echo true || echo false)
   ros2 launch orchard_sim control.launch.py \
