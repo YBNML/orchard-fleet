@@ -1401,12 +1401,22 @@ const W2S = (x,y) => [cv.width/2 + (x-view.cx)*view.scale,
    T3 N-3 인계: 로봇 hello geom(g)의 x0/row_spacing 은 통로 폭을 균일하다고
    가정한 근사값이다 — 실사 농장은 통로 간격이 4.75~15.25 m 로 불균일해서
    그 근사가 최대 8 m 이상 어긋난다(row_origins 실측 대비). GET /api/v1/farm
-   이 있으면 그 row_origins(x)를 실제 열 위치로 써서 통로 중심·경계·클릭
-   판정을 다시 계산한다 — farm 이 없거나(404) rows 개수가 안 맞으면 아래
-   함수들은 전부 기존 g 균일 격자 공식으로 그대로 떨어진다(계단식 하위호환,
-   그 경로의 산식은 한 글자도 바뀌지 않는다). */
+   이 있으면 그 row_origins(x·y)·row_lengths_m·headland_m 을 실제 값으로 써서
+   통로 중심·경계·y 범위·클릭 판정을 다시 계산한다 — farm 이 없거나(404)
+   rows 개수가 안 맞으면 아래 함수들은 전부 기존 g 균일 격자 공식으로 그대로
+   떨어진다(계단식 하위호환, 그 경로의 산식은 한 글자도 바뀌지 않는다).
+
+   **단일 출처 원칙(수정 라운드 1 Important)**: 로봇 hello geom 에는 이미
+   `alley_centers_x`·`row_span_y` 가 실측값으로 실려 있다(control.launch.py
+   가 world:=real 에서 farm.json 으로부터 계산해 파라미터로 넘기고,
+   control_agent 가 site_geom 에 얹는다 — robomw sdk/sitegeom.py 참조). 그런데
+   대시보드는 그 값을 읽지 않고 GET /api/v1/farm 에서 x·y 를 전부 다시 유도한다
+   — x 는 이미 그렇게 하고 있었고(§ 아래), 로봇 geom 과 farm.json 을 반반씩
+   섞으면 두 값의 기동 시점이 어긋나는 순간(farm.json 갱신 후 로봇 미재기동
+   등) 대시보드 두 곳이 서로 다른 통로 경계를 그리게 된다. */
 let FARM = null;                 // GET /api/v1/farm 응답, 없으면 null(폴백)
 let FARM_ROW_X = null;           // [x, …] row_origins 의 x 만 뽑은 배열(길이 = FARM.rows)
+let FARM_Y_OK = false;           // row_lengths_m·headland_m 까지 갖춰 y 범위도 유도 가능한가
 let farmWarned = false, imgWarned = false;   // 콘솔 경고는 딱 1회만
 let orthoImg = null, orthoReady = false;
 const MAPMODE_KEY = "orchard.mapmode";
@@ -1429,6 +1439,22 @@ function alleyXRange(g, k){
 function alleyCenterX(g, k){
   const [xL, xR] = alleyXRange(g, k);
   return (xL + xR) / 2;
+}
+// 통로 k 의 [yLo,yHi] — farm 있으면 row_origins 의 y + row_lengths_m 로 유도한
+// 캐노피 안쪽 교집합(이웃 두 열 중 **짧은 쪽** — robomw sdk/sitegeom.py 의
+// row_span_y 규약과 같은 공식: canY0=y0+headland, canY1=y0+길이-headland,
+// 통로는 두 이웃 열의 [canY0,canY1] 교집합). farm 없으면 기존 g.col_len/
+// headland 균일 폴백 그대로(무수정 — 검증 대상).
+function alleyYRange(g, k){
+  if (FARM_Y_OK){
+    const origins = FARM.row_origins, lens = FARM.row_lengths_m, hl = FARM.headland_m;
+    const canY0 = i => origins[i][1] + hl;
+    const canY1 = i => origins[i][1] + lens[i] - hl;
+    const north = Math.max(canY0(k), canY0(k+1));
+    const south = Math.min(canY1(k), canY1(k+1));
+    return [Math.min(north, south), Math.max(north, south)];
+  }
+  return [-g.col_len/2 - g.headland, g.col_len/2 + g.headland];
 }
 // 클릭 판정 — farm 있으면 실측 구간을 훑어 찾고(불균일 폭 대응), 없으면
 // 기존 균일 격자 역산 그대로(무수정 — 검증 대상).
@@ -1494,7 +1520,7 @@ async function loadFarm(){
   try {
     FARM = await api("/farm");
   } catch (e) {
-    FARM = null; FARM_ROW_X = null;
+    FARM = null; FARM_ROW_X = null; FARM_Y_OK = false;
     if (!farmWarned){
       console.warn("[지도] GET /api/v1/farm 실패 — 벡터 지도(로봇 geom)로 대체합니다:", e.message);
       farmWarned = true;
@@ -1505,6 +1531,9 @@ async function loadFarm(){
   }
   FARM_ROW_X = (Array.isArray(FARM.row_origins) && FARM.row_origins.length === FARM.rows)
     ? FARM.row_origins.map(p => p[0]) : null;
+  FARM_Y_OK = !!(FARM_ROW_X && Array.isArray(FARM.row_lengths_m) &&
+                 FARM.row_lengths_m.length === FARM.rows &&
+                 typeof FARM.headland_m === "number");
   preloadOrtho(FARM);
   updateMapModeUI(); updateScoutGate();
   // hello(로봇 geom)가 이 farm 응답보다 먼저 왔을 수 있다 — 그때 그린 통로
@@ -1554,10 +1583,16 @@ cv.addEventListener("click", ev => {
   const r = sel(), g = r?.geom;
   if (!g) return;
   const rect = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
-  const px = (ev.clientX - rect.left) * d;
+  const px = (ev.clientX - rect.left) * d, py = (ev.clientY - rect.top) * d;
   const wx = view.cx + (px - cv.width/2) / view.scale;
   const k = alleyAtX(g, wx);
   if (k < 0) return;
+  // y 도 그 통로의 실측 구간(alleyYRange) 안인지 본다 — 정사영상 바탕이
+  // 밭 전체보다 훨씬 넓은 캔버스를 덮으므로, x 열만 맞으면 밭 밖 허공을
+  // 눌러도 선택되던 문제를 막는다(수정 라운드 1 Important, x 와 같은 원칙).
+  const [yLo, yHi] = alleyYRange(g, k);
+  const wy = view.cy - (py - cv.height/2) / view.scale;
+  if (wy < yLo || wy > yHi) return;
   if ($("pane-mission").classList.contains("on") &&
       $("pane-mission").style.display !== "none") toggleAlley(k);
 });
@@ -1585,8 +1620,9 @@ function drawAlleyLocks(g, c){
     ctx.fillStyle = robotColor(robots.get(lock.robot_id), lock.robot_id === selKey, c);
     for (const k of ks){
       const [xL, xR] = alleyXRange(g, k);
-      const [ax, ay] = W2S(xL, -g.col_len/2 - g.headland);
-      const [bx, by] = W2S(xR, g.col_len/2 + g.headland);
+      const [yLo, yHi] = alleyYRange(g, k);
+      const [ax, ay] = W2S(xL, yLo);
+      const [bx, by] = W2S(xR, yHi);
       ctx.fillRect(ax, by, bx-ax, ay-by);
     }
   }
@@ -1603,8 +1639,9 @@ function drawNoGoAlleys(g, c){
   for (const k of FARM.no_go_alleys){
     if (k < 0 || k >= g.alleys) continue;
     const [xL, xR] = alleyXRange(g, k);
-    const [ax, ay] = W2S(xL, -g.col_len/2 - g.headland);
-    const [bx, by] = W2S(xR, g.col_len/2 + g.headland);
+    const [yLo, yHi] = alleyYRange(g, k);
+    const [ax, ay] = W2S(xL, yLo);
+    const [bx, by] = W2S(xR, yHi);
     const x = Math.min(ax,bx), y = Math.min(ay,by), w = Math.abs(bx-ax), h = Math.abs(ay-by);
     ctx.save();
     ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
